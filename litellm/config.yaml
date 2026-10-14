@@ -1,0 +1,48 @@
+# LiteLLM gateway — knowledge base models only.
+#
+# This is a trimmed, de-identified excerpt. Real keys live in environment
+# variables and are never written here. Point the app's LLM_BASE_URL at this
+# gateway and reference the model_name values below.
+
+model_list:
+  # --- Answer generation ----------------------------------------------------
+  # Any OpenAI-compatible chat model. Prefer a non-thinking model: a reasoning
+  # model can spend its whole token budget thinking and return an empty answer.
+  - model_name: kb-chat
+    litellm_params:
+      model: openai/<your-provider-model-id>
+      api_base: https://<your-provider-endpoint>/v1
+      api_key: os.environ/KB_CHAT_API_KEY
+      timeout: 120
+      num_retries: 1
+
+  # --- Image understanding (OCR) --------------------------------------------
+  # Must support image_url input. Listed first in VISION_MODELS wins.
+  - model_name: kb-vision
+    litellm_params:
+      model: openai/<your-vision-model-id>
+      api_base: https://<your-provider-endpoint>/v1
+      api_key: os.environ/KB_VISION_API_KEY
+      timeout: 90
+      num_retries: 0
+
+  # --- Embeddings -----------------------------------------------------------
+  # Self-hosted bge-base-zh-v1.5 (768 dim) reached over a private SSH tunnel.
+  # The upstream name must match what the embedding server expects.
+  - model_name: kb-embedding
+    litellm_params:
+      model: openai/BAAI/bge-base-zh-v1.5
+      api_base: http://<embedding-host>:<port>/v1
+      api_key: not-needed
+      timeout: 60
+      num_retries: 1
+
+litellm_settings:
+  drop_params: true
+  request_timeout: 180
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  # Issue a scoped virtual key per application instead of sharing the master key:
+  #   POST /key/generate {"models": ["kb-chat", "kb-vision", "kb-embedding"],
+  #                       "key_alias": "personal-knowledge-base"}

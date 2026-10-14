@@ -1,0 +1,14 @@
+# Keep LF in the repository; let Git decide the working-copy ending.
+* text=auto eol=lf
+
+# These break on Linux if they ever get CRLF.
+*.sh text eol=lf
+*.service text eol=lf
+*.service.example text eol=lf
+.env.example text eol=lf
+Dockerfile text eol=lf
+
+# Binary
+*.png binary
+*.jpg binary
+*.pdf binary

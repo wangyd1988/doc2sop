@@ -1,0 +1,31 @@
+# Private SSH tunnel: gateway host -> embedding host.
+#
+# The embedding server binds to 127.0.0.1 only and is never exposed publicly.
+# On the embedding host, restrict the key in ~/.ssh/authorized_keys:
+#   restrict,port-forwarding,permitopen="127.0.0.1:8080" ssh-ed25519 AAAA...
+#
+# Copy to /etc/systemd/system/embedding-tunnel.service and replace the
+# placeholders, then: systemctl enable --now embedding-tunnel.service
+
+[Unit]
+Description=Private SSH tunnel to the knowledge base embedding server
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -N -T \
+  -i /root/.ssh/<tunnel-key> \
+  -o BatchMode=yes \
+  -o StrictHostKeyChecking=yes \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -L 127.0.0.1:18080:127.0.0.1:8080 \
+  -L <docker-bridge-gateway>:18080:127.0.0.1:8080 \
+  <user>@<embedding-host>
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,5 @@
+{"id": "demo-001", "question": "容器的 --memory-swap 参数是什么含义？", "expected_points": ["是物理内存加 swap 的总上限", "不是额外的 swap 量"], "expected_sources": ["示例-容器内存限制.md"], "type": "fact"}
+{"id": "demo-002", "question": "改完 .env 之后为什么要重建容器？", "expected_points": ["docker restart 不会重新读取 env-file", "需要 docker rm 后 docker run 或 force-recreate"], "expected_sources": ["示例-容器内存限制.md"], "type": "fact"}
+{"id": "demo-003", "question": "向量数据库检索返回的是向量吗？", "expected_points": ["返回的是向量指向的记录", "包含原文、来源和页码", "向量只是索引"], "expected_sources": ["示例-向量检索基础.md"], "type": "concept"}
+{"id": "demo-004", "question": "为什么不能把整个文件作为一个向量？", "expected_points": ["细节会被压缩丢失", "无法定位页码"], "expected_sources": ["示例-向量检索基础.md"], "type": "concept"}
+{"id": "demo-005", "question": "知识库里有没有讲过 Kafka 的分区再均衡？", "expected_points": ["明确说明知识库中没有相关内容", "不编造答案"], "expected_sources": [], "type": "refusal"}
