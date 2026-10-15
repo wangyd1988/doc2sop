@@ -1,5 +1,21 @@
-{"id": "demo-001", "question": "容器的 --memory-swap 参数是什么含义？", "expected_points": ["是物理内存加 swap 的总上限", "不是额外的 swap 量"], "expected_sources": ["示例-容器内存限制.md"], "type": "fact"}
-{"id": "demo-002", "question": "改完 .env 之后为什么要重建容器？", "expected_points": ["docker restart 不会重新读取 env-file", "需要 docker rm 后 docker run 或 force-recreate"], "expected_sources": ["示例-容器内存限制.md"], "type": "fact"}
-{"id": "demo-003", "question": "向量数据库检索返回的是向量吗？", "expected_points": ["返回的是向量指向的记录", "包含原文、来源和页码", "向量只是索引"], "expected_sources": ["示例-向量检索基础.md"], "type": "concept"}
-{"id": "demo-004", "question": "为什么不能把整个文件作为一个向量？", "expected_points": ["细节会被压缩丢失", "无法定位页码"], "expected_sources": ["示例-向量检索基础.md"], "type": "concept"}
-{"id": "demo-005", "question": "知识库里有没有讲过 Kafka 的分区再均衡？", "expected_points": ["明确说明知识库中没有相关内容", "不编造答案"], "expected_sources": [], "type": "refusal"}
+{"id": "fact-01", "question": "容器的 --memory-swap 参数是什么含义？", "expected_points": ["是物理内存加 swap 的总上限", "不是额外的 swap 量"], "expected_sources": ["示例-容器内存限制.md"], "type": "fact"}
+{"id": "fact-02", "question": "改完 .env 之后为什么必须重建容器，而不能只 restart？", "expected_points": ["docker restart 不会重新读取 env-file", "需要 docker rm 后重新 run 或 force-recreate"], "expected_sources": ["示例-容器内存限制.md"], "type": "fact"}
+{"id": "fact-03", "question": "RAG 的切块大小一般取多少？重叠多少？", "expected_points": ["300 到 500 字", "重叠 10% 到 15%"], "expected_sources": ["示例-RAG系统设计要点.md"], "type": "fact"}
+{"id": "fact-04", "question": "bge-base-zh-v1.5 的向量维度和常驻内存大约是多少？", "expected_points": ["768 维", "约 800 MB"], "expected_sources": ["示例-小内存服务器部署.md"], "type": "fact"}
+{"id": "fact-05", "question": "TTFT 和 TPOT 分别指什么？", "expected_points": ["TTFT 是首字延迟", "TPOT 是每字延迟"], "expected_sources": ["示例-大模型推理性能.md"], "type": "fact"}
+{"id": "fact-06", "question": "链路追踪里 Trace、Span、Thread 是什么关系？", "expected_points": ["包含关系", "一个 Thread 含多个 Trace", "一个 Trace 含多个 Span"], "expected_sources": ["示例-LLM应用可观测性.md"], "type": "fact"}
+{"id": "fact-07", "question": "容器内存上限应该在实测峰值之上留多少余量？", "expected_points": ["三成左右"], "expected_sources": ["示例-小内存服务器部署.md", "示例-容器内存限制.md"], "type": "fact"}
+{"id": "concept-01", "question": "向量数据库检索返回的是向量本身吗？", "expected_points": ["不是", "返回的是向量指向的记录", "包含原文、来源和页码", "向量只是索引"], "expected_sources": ["示例-向量检索基础.md"], "type": "concept"}
+{"id": "concept-02", "question": "为什么不能把整个文件压成一个向量？", "expected_points": ["细节会被压缩丢失", "无法定位到具体页码"], "expected_sources": ["示例-向量检索基础.md"], "type": "concept"}
+{"id": "concept-03", "question": "为什么 decode 阶段算力会大量闲置？", "expected_points": ["每生成一个 token 都要读一遍完整模型权重", "瓶颈在显存带宽而不是算力"], "expected_sources": ["示例-大模型推理性能.md"], "type": "concept"}
+{"id": "concept-04", "question": "切块之间为什么要留重叠？", "expected_points": ["防止完整语义被切断", "避免前后两块都答不了同一个问题"], "expected_sources": ["示例-RAG系统设计要点.md", "示例-向量检索基础.md"], "type": "concept"}
+{"id": "concept-05", "question": "什么样的数据不适合用向量检索？", "expected_points": ["需要精确匹配的标识符", "订单号工单号这类", "文本结构相似导致向量难以区分"], "expected_sources": ["示例-向量检索基础.md"], "type": "concept"}
+{"id": "concept-06", "question": "Continuous Batching 和传统批处理的区别是什么？", "expected_points": ["调度粒度细到每一步 token 生成", "谁生成完谁走并立刻补新请求", "不用等整批完成"], "expected_sources": ["示例-大模型推理性能.md"], "type": "concept"}
+{"id": "concept-07", "question": "为什么相似度低于阈值的片段要直接丢弃？", "expected_points": ["避免闲聊也召回无关内容", "浪费 token 并干扰模型"], "expected_sources": ["示例-RAG系统设计要点.md"], "type": "concept"}
+{"id": "multi-01", "question": "一次 RAG 问答变慢，应该先怀疑检索还是模型生成？怎么判断？", "expected_points": ["分环节看耗时", "通常模型生成占大头", "首字慢看 prefill"], "expected_sources": ["示例-LLM应用可观测性.md", "示例-大模型推理性能.md"], "type": "multi_hop"}
+{"id": "multi-02", "question": "提示词里固定内容和变化内容的先后顺序会影响什么？", "expected_points": ["影响 prefix cache 命中率", "固定内容放前面", "顺序颠倒缓存会失效"], "expected_sources": ["示例-大模型推理性能.md"], "type": "multi_hop"}
+{"id": "multi-03", "question": "想把向量模型从 small 换成 base，需要注意什么？", "expected_points": ["内存占用翻倍到约 800MB", "必须重新向量化全部文档", "需要保留原始文件才能重建"], "expected_sources": ["示例-小内存服务器部署.md"], "type": "multi_hop"}
+{"id": "multi-04", "question": "文档越来越多之后检索变不准，有哪些改进方向？", "expected_points": ["加重排序做两阶段检索", "混合检索结合关键词", "适当调大 TOP_K"], "expected_sources": ["示例-RAG系统设计要点.md"], "type": "multi_hop"}
+{"id": "multi-05", "question": "为什么关闭思考的参数要实测验证，不能直接相信？", "expected_points": ["有些实现只是不再单独返回思考", "模型照样在思考", "推理内容会混进正式答案"], "expected_sources": ["示例-大模型推理性能.md"], "type": "multi_hop"}
+{"id": "refusal-01", "question": "知识库里有没有讲过 Kafka 的分区再均衡机制？", "expected_points": ["明确说明知识库中没有相关内容", "不编造答案"], "expected_sources": [], "type": "refusal"}
+{"id": "refusal-02", "question": "PostgreSQL 的 VACUUM FULL 和普通 VACUUM 有什么区别？", "expected_points": ["明确说明知识库中没有相关内容", "不编造答案"], "expected_sources": [], "type": "refusal"}
