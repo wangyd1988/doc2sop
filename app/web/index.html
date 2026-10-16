@@ -225,6 +225,13 @@ header .t { flex: 1; font-weight: 600; }
 .tl-wait .cmd { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px;
                 color: var(--muted); margin-top: 3px; }
 .tl-pick input { margin-bottom: 6px; }
+.tl-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.tl-tab { font-size: 12.5px; padding: 4px 14px; border-radius: 7px; border: 1px solid var(--border);
+          background: var(--panel); color: var(--muted); }
+.tl-tab.on { background: var(--user-bg); color: #fff; border-color: var(--user-bg); }
+.tl-script { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; white-space: pre;
+             overflow: auto; max-height: 180px; background: var(--panel-2); color: var(--text);
+             border: 1px solid var(--border); border-radius: 7px; padding: 8px; margin: 2px 0 6px; }
 .pb-pick input:focus, .pb-pick select:focus { border-color: var(--accent); }
 .pb-pick .row { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
 .pb-pick .row button { padding: 6px 13px; border-radius: 7px; font-size: 13px; }
@@ -860,7 +867,8 @@ $('pbPanel').addEventListener('dblclick', e => {
      启停、改描述 -> 直接生效，因为它们都不改变实际执行的命令；
      新增工具     -> 只能提交申请，必须有人在宿主机上批准。
    命令模板只在宿主机那份手写配置里定义，这个界面碰不到。            */
-let tlEditing = null, tlProposing = false;
+let tlEditing = null, tlProposing = false, tlProposeKind = 'command';
+let tlScripts = [], tlScriptSel = '';
 
 function tlCard(name, t) {
   const params = Object.entries(t.params || {});
@@ -897,19 +905,40 @@ function tlCard(name, t) {
 }
 
 function tlProposeForm() {
+  const common =
+    `<input id="tlNewName" placeholder="工具名，如 host_time（小写字母、数字、下划线）" maxlength="40">
+     <input id="tlNewLabel" placeholder="中文显示名，如「看时间」（可留空，只用于界面）" maxlength="40">
+     <input id="tlNewDesc" placeholder="给模型看的说明：什么情况下该调用它" maxlength="300">`;
+  const tab = (k, text) =>
+    `<button class="tl-tab ${tlProposeKind === k ? 'on' : ''}" data-tlkind="${k}">${text}</button>`;
+
+  let body, note;
+  if (tlProposeKind === 'script') {
+    const picked = tlScripts.find(s => s.name === tlScriptSel) || tlScripts[0];
+    tlScriptSel = picked ? picked.name : '';
+    body = tlScripts.length
+      ? `<select id="tlNewScript">${tlScripts.map(s =>
+           `<option value="${esc(s.name)}" ${s.name === tlScriptSel ? 'selected' : ''}>${
+             esc(s.name)}${s.executable ? '' : '（没有执行位）'}${
+             s.used_by ? '　已被 ' + esc(s.used_by) + ' 引用' : ''}</option>`).join('')}</select>
+         <div class="tl-script">${esc((picked && picked.content) || '（空）')}</div>`
+      : `<div class="pb-warn">scripts 目录下还没有脚本。先让管理员把 .sh 放进宿主机的
+           <code>/opt/ops/scripts/</code> 并 chmod +x，这里才能选。</div>`;
+    note = `脚本的<b>内容只能由宿主机管理员放入</b>，页面只能从已有脚本里选一个来引用——
+            这和「上传文档自动变工具」不同，不是上传代码。<br>
+            批准后，脚本内容一旦被改动，工具会自动停用，直到在宿主机上重新确认。`;
+  } else {
+    body = `<input id="tlNewCmd" placeholder="完整命令，如 date +%H:%M" maxlength="200">`;
+    note = `工具名会作为函数名发给模型，按 function calling 规范<b>只能用英文</b>；中文写在「显示名」里。<br>
+            只能申请<b>固定命令</b>（不带参数、不含管道和重定向）。要跑一段逻辑，请改用「脚本」。`;
+  }
+
   return `<div class="pb-pick tl-pick">
     <div class="hd">申请新工具</div>
-    <input id="tlNewName" placeholder="工具名，如 host_time（小写字母、数字、下划线）" maxlength="40">
-    <input id="tlNewLabel" placeholder="中文显示名，如「看时间」（可留空，只用于界面）" maxlength="40">
-    <input id="tlNewDesc" placeholder="给模型看的说明：什么情况下该调用它" maxlength="300">
-    <input id="tlNewCmd" placeholder="完整命令，如 date +%H:%M" maxlength="200">
-    <div class="tl-note">
-      工具名会作为函数名发给模型，按 function calling 规范<b>只能用英文</b>；
-      中文写在「显示名」里，界面上显示的就是它。<br>
-      只能申请<b>固定命令</b>（不带参数）。带参数的工具需要配套设计参数白名单正则，
-      请直接在宿主机的配置文件里添加。<br>
-      提交后<b>不会生效</b>，要在宿主机上批准——页面定义不了宿主机执行什么。
-    </div>
+    <div class="tl-tabs">${tab('command', '命令')}${tab('script', '脚本')}</div>
+    ${common}
+    ${body}
+    <div class="tl-note">${note}<br>提交后<b>不会生效</b>，要在宿主机上批准——页面定义不了宿主机执行什么。</div>
     <div class="pb-edit"><div class="row">
       <button class="ok" id="tlDoPropose">提交申请</button>
       <button class="cancel" id="tlCancelPropose">取消</button>
@@ -934,6 +963,10 @@ async function loadTools() {
   const live = names.filter(n => tools[n].enabled && tools[n].runnable).length;
   const waiting = tlProposing ? [] : await (await fetch('/api/tools/pending')).json()
     .then(r => r.pending || []).catch(() => []);
+  if (tlProposing && tlProposeKind === 'script') {
+    tlScripts = await (await fetch('/api/tools/scripts')).json()
+      .then(r => r.scripts || []).catch(() => []);
+  }
   $('tlPanel').innerHTML =
     `<div class="pb-head"><span class="t">运维工具 ${live}/${names.length} 可用</span>
        <button class="icon-btn" id="tlNew">＋ 申请新工具</button></div>` +
@@ -968,8 +1001,13 @@ async function tlSend(path, body) {
 $('tlPanel').addEventListener('click', async e => {
   const pick = key => e.target.closest(`[data-${key}]`)?.dataset[key];
 
-  if (e.target.id === 'tlNew') { tlEditing = null; tlProposing = true; return loadTools(); }
+  if (e.target.id === 'tlNew') {
+    tlEditing = null; tlProposing = true; tlProposeKind = 'command'; return loadTools();
+  }
   if (e.target.id === 'tlCancelPropose') { tlProposing = false; return loadTools(); }
+
+  const kind = pick('tlkind');
+  if (kind && kind !== tlProposeKind) { tlProposeKind = kind; return loadTools(); }
 
   const edit = pick('tledit');
   if (edit) { tlEditing = tlEditing === edit ? null : edit; return loadTools(); }
@@ -1002,24 +1040,39 @@ $('tlPanel').addEventListener('click', async e => {
   }
 
   if (e.target.id === 'tlDoPropose') {
-    const parts = $('tlNewCmd').value.trim().split(/\s+/).filter(Boolean);
     const err = $('tlProposeErr');
     const fail = msg => { err.hidden = false; err.textContent = msg; };
-    if (!parts.length) return fail('请填写完整命令');
+    const base = {name: $('tlNewName').value.trim(), label: $('tlNewLabel').value.trim(),
+                  desc: $('tlNewDesc').value.trim(), params: {}};
+    let payload;
+    if (tlProposeKind === 'script') {
+      const script = $('tlNewScript') ? $('tlNewScript').value : '';
+      if (!script) return fail('请先选择一个脚本');
+      payload = {...base, script};
+    } else {
+      const parts = $('tlNewCmd').value.trim().split(/\s+/).filter(Boolean);
+      if (!parts.length) return fail('请填写完整命令');
+      payload = {...base, binary: parts[0], argv: parts};
+    }
     try {
-      const d = await tlSend('/api/tools/propose', {
-        name: $('tlNewName').value.trim(), label: $('tlNewLabel').value.trim(),
-        desc: $('tlNewDesc').value.trim(),
-        binary: parts[0], argv: parts, params: {}});
+      const d = await tlSend('/api/tools/propose', payload);
       tlProposing = false;
       await loadTools();
+      const extra = tlProposeKind === 'script'
+        ? `  python3 /opt/ops/ops_readonly.py pending\n`
+          + `  （逐行读一遍脚本，确认无误）\n`
+          + `  python3 /opt/ops/ops_readonly.py approve ${d.pending.id}\n`
+        : `  python3 /opt/ops/ops_readonly.py pending\n`
+          + `  python3 /opt/ops/ops_readonly.py approve ${d.pending.id}\n`;
       alert(`申请已提交（编号 ${d.pending.id}）。\n\n`
-            + `它现在还不能用。请在宿主机上执行：\n`
-            + `  python3 /opt/ops/ops_readonly.py pending\n`
-            + `  python3 /opt/ops/ops_readonly.py approve ${d.pending.id}\n\n`
-            + `批准后下一次提问即可使用，无需重启。`);
+            + `它现在还不能用。请在宿主机上执行：\n` + extra
+            + `\n批准后下一次提问即可使用，无需重启。`);
     } catch (e2) { fail('提交失败：' + e2.message); }
   }
+});
+
+$('tlPanel').addEventListener('change', e => {
+  if (e.target.id === 'tlNewScript') { tlScriptSel = e.target.value; loadTools(); }
 });
 
 async function ask() {

@@ -12,6 +12,7 @@ shared token. Standard library only, so it runs on any box with Python 3.9+.
 """
 import argparse
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -40,14 +41,43 @@ PATTERNS = {"name": NAME, "k8s_name": K8S_NAME, "resource": RESOURCE}
 # 这样 docker 的 "{{.Names}}" 之类模板不会被误伤，参数值也永远独占一个 argv 项。
 PLACEHOLDER = re.compile(r"^\{([a-z_][a-z0-9_]*)\}$")
 TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
+# 脚本只能是 scripts 目录下的文件名，不能带路径，自然就跳不出目录。
+SCRIPT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 MAX_LABEL = 40
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent / "ops_tools.yaml"
+
+# 这些 binary 本身就能"执行另一段命令"，一旦允许，固定 argv 的前提就没了：
+# bash -c "任意" 、env FOO=x 任意、xargs 任意、find -exec 任意……
+# 所以普通工具不许用它们当 binary。要跑脚本，走下面的脚本型工具（哈希锁定）。
+INTERPRETERS = {
+    "bash", "sh", "dash", "zsh", "ksh", "csh", "tcsh", "fish", "rbash", "ash",
+    "python", "python2", "python3", "perl", "ruby", "node", "nodejs", "php",
+    "lua", "luajit", "tclsh", "expect", "rscript",
+    "awk", "gawk", "mawk", "nawk", "sed",
+    "env", "xargs", "find", "watch", "timeout", "nohup", "stdbuf", "setsid",
+    "unshare", "chroot", "flock", "nice", "ionice", "parallel", "script",
+    "ssh", "sshpass", "scp", "rsync", "socat", "ncat", "nc",
+    "eval", "exec", "command", "source", "make", "sudo", "su", "doas",
+}
 
 # Refuse these even if a template somehow produced them.
 FORBIDDEN = {"exec", "attach", "cp", "rm", "rmi", "kill", "stop", "start", "restart",
              "run", "create", "delete", "apply", "patch", "edit", "scale", "drain",
              "cordon", "taint", "set", "replace", "port-forward", "proxy"}
+
+
+def _scripts_dir():
+    """Where approved shell scripts live, next to the config. Root-owned."""
+    return Path(_state["path"]).parent / "scripts"
+
+
+def _hash_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class ConfigError(ValueError):
@@ -87,6 +117,29 @@ def _check_param(tool, key, raw):
     return spec
 
 
+def _check_script_tool(raw, name):
+    """脚本型工具：页面不定义脚本内容，只引用 scripts 目录里已有的脚本。
+
+    脚本文件只能由宿主机 root 放进去；页面和申请都只能"选一个已有脚本"，
+    碰不到它的内容。这和「文档自动生成工具」的区别就在这里——那是上传代码，
+    这是引用一份审过的代码。内容是否被改动，由哈希在加载和执行时各校验一次。
+    """
+    script = str(raw.get("script", "")).strip()
+    if not SCRIPT_NAME.match(script) or ".." in script:
+        raise ConfigError(f"脚本名不合法：{script[:40]!r}，只能是 scripts 目录下的文件名，"
+                          f"不能带路径")
+    path = _scripts_dir() / script
+    if not path.is_file():
+        raise ConfigError(f"scripts 目录下找不到脚本 {script}")
+    if not os.access(path, os.X_OK):
+        raise ConfigError(f"脚本 {script} 没有执行权限，先在宿主机上 chmod +x")
+    return {"name": name, "label": str(raw.get("label", "")).strip()[:MAX_LABEL],
+            "desc": str(raw.get("desc", "")).strip(),
+            "binary": str(path), "argv": [str(path)], "params": {},
+            "enabled": bool(raw.get("enabled", True)),
+            "type": "script", "script": script}
+
+
 def _check_tool(raw):
     """Validate one entry. Everything that could widen privilege is checked here."""
     if not isinstance(raw, dict):
@@ -97,9 +150,17 @@ def _check_tool(raw):
             f"工具名不合法：{name[:40]!r}。它会作为函数名发给模型，"
             f"按 function calling 的规范只能用小写字母、数字和下划线，不能用中文；"
             f"中文名请写在 label 字段里，界面会显示它。")
+
+    if raw.get("script"):
+        return _check_script_tool(raw, name)
+
     binary = str(raw.get("binary", "")).strip()
     if not binary:
         raise ConfigError(f"{name} 缺少 binary")
+    if binary.lower() in INTERPRETERS:
+        raise ConfigError(
+            f"{name} 的 binary 是 {binary}，它能执行任意命令，不能直接作为工具。"
+            f"要跑一段脚本，请把脚本放到 scripts 目录，再用 script 字段引用它。")
 
     argv = raw.get("argv")
     if not isinstance(argv, list) or not argv:
@@ -126,7 +187,7 @@ def _check_tool(raw):
     return {"name": name, "label": str(raw.get("label", "")).strip()[:MAX_LABEL],
             "desc": str(raw.get("desc", "")).strip(),
             "binary": binary, "argv": argv, "params": params,
-            "enabled": bool(raw.get("enabled", True))}
+            "enabled": bool(raw.get("enabled", True)), "type": "command"}
 
 
 def _yaml():
@@ -169,6 +230,40 @@ def _sibling(kind):
     return path.with_name(f"{path.stem}.{kind}{path.suffix}")
 
 
+def _trust_file():
+    """Approved-script hashes. Root-only; the UI never writes here."""
+    return _sibling("trust")
+
+
+def load_trust():
+    data = _read_yaml(_trust_file()).get("trusted")
+    return data if isinstance(data, dict) else {}
+
+
+def trust_script(name):
+    """Record the current hash of a script as approved. Only called on the host."""
+    digest = _hash_file(_scripts_dir() / name)
+    trusted = load_trust()
+    trusted[name] = digest
+    _write_yaml(_trust_file(), {"trusted": trusted})
+    return digest
+
+
+def _script_untrusted_reason(spec):
+    """Why a script tool must not load/run, or None if it is trusted as-is."""
+    expected = load_trust().get(spec["script"])
+    if not expected:
+        return f"脚本 {spec['script']} 还没在宿主机上确认过（trust），暂不生效"
+    try:
+        actual = _hash_file(Path(spec["binary"]))
+    except OSError as exc:
+        return f"脚本 {spec['script']} 读取失败：{exc}"
+    if actual != expected:
+        return f"脚本 {spec['script']} 的内容与登记的不一致，可能被改过，已暂停；"\
+               f"确认无误后在宿主机上重新 trust"
+    return None
+
+
 def load_tools(path):
     """Parse the definition file. A bad entry is skipped; a bad file raises."""
     entries = _read_yaml(path).get("tools")
@@ -185,6 +280,11 @@ def load_tools(path):
         if spec["name"] in tools:
             problems.append(f"工具名重复：{spec['name']}")
             continue
+        if spec.get("type") == "script":
+            reason = _script_untrusted_reason(spec)
+            if reason:
+                problems.append(reason)
+                continue
         tools[spec["name"]] = spec
     return tools, problems
 
@@ -225,7 +325,7 @@ def _apply_overrides(tools, overrides):
     return tools
 
 
-_state = {"path": DEFAULT_CONFIG, "mtime": None, "omtime": None,
+_state = {"path": DEFAULT_CONFIG, "mtime": None, "omtime": None, "tmtime": None,
           "tools": {}, "problems": []}
 
 
@@ -236,20 +336,22 @@ def _mtimes():
         except OSError:
             return None
 
-    return stamp(_state["path"]), stamp(_sibling("overrides"))
+    return (stamp(_state["path"]), stamp(_sibling("overrides")),
+            stamp(_trust_file()))
 
 
 def refresh(force=False):
-    """Reload when either file changed, so adding a tool needs no restart.
+    """Reload when any of the files changed, so changes need no restart.
 
     A broken edit must not take the service down: we keep the last good set.
     """
-    mtime, omtime = _mtimes()
+    mtime, omtime, tmtime = _mtimes()
     if mtime is None:
         if not _state["tools"]:
             _state["problems"] = [f"读不到配置文件 {_state['path']}"]
         return _state["tools"]
-    if not force and (mtime, omtime) == (_state["mtime"], _state["omtime"]):
+    if not force and (mtime, omtime, tmtime) == (
+            _state["mtime"], _state["omtime"], _state["tmtime"]):
         return _state["tools"]
 
     try:
@@ -264,7 +366,7 @@ def refresh(force=False):
         overrides = {}
         problems = problems + [f"覆盖层已忽略：{exc}"]
 
-    _state.update(mtime=mtime, omtime=omtime, problems=problems,
+    _state.update(mtime=mtime, omtime=omtime, tmtime=tmtime, problems=problems,
                   tools=_apply_overrides(tools, overrides))
     for problem in problems:
         print(f"[config] {problem}", flush=True)
@@ -289,7 +391,10 @@ def describe_tools():
     return {name: {"desc": spec["desc"], "params": spec["params"],
                    "label": spec.get("label", ""),
                    "binary": spec["binary"],
-                   "command": " ".join(spec["argv"]),
+                   "command": ("脚本：" + spec["script"]) if spec.get("type") == "script"
+                              else " ".join(spec["argv"]),
+                   "type": spec.get("type", "command"),
+                   "script": spec.get("script", ""),
                    "enabled": spec["enabled"],
                    "runnable": bool(shutil.which(spec["binary"])),
                    "overridden": spec.get("overridden", [])}
@@ -336,6 +441,43 @@ def reset_override(name):
 def list_pending():
     entries = _read_yaml(_sibling("pending")).get("pending")
     return entries if isinstance(entries, list) else []
+
+
+MAX_SCRIPT_VIEW = 8000
+
+
+def list_scripts():
+    """Scripts on disk, with trust status and which tool references each.
+
+    The UI shows these so a reviewer can read exactly what a script tool runs.
+    """
+    directory = _scripts_dir()
+    trusted = load_trust()
+    used = {spec.get("script"): name for name, spec in all_tools().items()
+            if spec.get("type") == "script"}
+    out = []
+    try:
+        names = sorted(p.name for p in directory.iterdir() if p.is_file())
+    except OSError:
+        names = []
+    for script in names:
+        path = directory / script
+        try:
+            body = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            body = f"（读取失败：{exc}）"
+        truncated = len(body) > MAX_SCRIPT_VIEW
+        current = None
+        try:
+            current = _hash_file(path)
+        except OSError:
+            pass
+        out.append({"name": script,
+                    "executable": os.access(path, os.X_OK),
+                    "trusted": bool(trusted.get(script) and trusted[script] == current),
+                    "used_by": used.get(script, ""),
+                    "content": body[:MAX_SCRIPT_VIEW] + ("\n…（已截断）" if truncated else "")})
+    return out
 
 
 def suggest_binaries(wanted, limit=3):
@@ -428,10 +570,19 @@ def approve_pending(ident):
     spec = _check_tool(item.get("tool") or {})  # 再校验一次，文件可能被改过
     if spec["name"] in all_tools():
         raise ConfigError(f"已存在同名工具：{spec['name']}")
-    block = _yaml().safe_dump([item["tool"]], allow_unicode=True,
-                              sort_keys=False, default_flow_style=None)
-    with open(_state["path"], "a", encoding="utf-8") as handle:
-        handle.write("\n" + textwrap.indent(block, "  "))
+    if spec.get("type") == "script":
+        # 批准脚本 = 认可此刻的脚本内容，把它的哈希登记为可信。
+        trust_script(spec["script"])
+    current = _read_yaml(_state["path"]).get("tools")
+    if isinstance(current, list) and current:
+        # 文件里已有条目：直接在末尾追加，保留手写的注释与格式。
+        block = _yaml().safe_dump([item["tool"]], allow_unicode=True,
+                                  sort_keys=False, default_flow_style=None)
+        with open(_state["path"], "a", encoding="utf-8") as handle:
+            handle.write("\n" + textwrap.indent(block, "  "))
+    else:
+        # 空列表（没有可追加的锚点）：整体重写一份。
+        _write_yaml(_state["path"], {"tools": (current or []) + [item["tool"]]})
     drop_pending(item["id"])
     refresh(force=True)
     return spec
@@ -482,6 +633,12 @@ def run_tool(name, args):
     if any(part in FORBIDDEN for part in argv[1:]):
         return {"ok": False, "error": "拒绝执行：命中写操作黑名单"}
 
+    # 脚本型工具：执行前再比一次哈希。配置 mtime 不变也挡得住"脚本被偷换内容"。
+    if spec.get("type") == "script":
+        reason = _script_untrusted_reason(spec)
+        if reason:
+            return {"ok": False, "error": reason}
+
     if not shutil.which(spec["binary"]):
         return {"ok": False, "error": f"本机没有 {spec['binary']}，该工具不可用"}
 
@@ -527,6 +684,8 @@ class Handler(BaseHTTPRequestHandler):
                                     "pending": len(list_pending())})
         if self.path == "/tools/pending":
             return self._send(200, {"pending": list_pending()})
+        if self.path == "/tools/scripts":
+            return self._send(200, {"scripts": list_scripts()})
         self._send(404, {"error": "Not found"})
 
     def do_POST(self):
@@ -597,7 +756,10 @@ def _print_pending():
         print(f"  [{item.get('id')}] {tool.get('name')}"
               f"    {item.get('author')} 于 {item.get('created_at')} 提交")
         print(f"      说明：{tool.get('desc')}")
-        print(f"      命令：{' '.join(str(p) for p in tool.get('argv') or [])}")
+        if tool.get("script"):
+            print(f"      脚本：scripts/{tool['script']}（批准前请逐行读脚本内容）")
+        else:
+            print(f"      命令：{' '.join(str(p) for p in tool.get('argv') or [])}")
         params = tool.get("params") or {}
         if params:
             print(f"      参数：{', '.join(params)}")
@@ -605,7 +767,25 @@ def _print_pending():
             print(f"      理由：{item['reason']}")
         print()
     print("批准：ops_readonly.py approve <id>     拒绝：ops_readonly.py reject <id>")
-    print("批准前请逐字读一遍「命令」那一行——这是它唯一会执行的东西。")
+    print("批准前请逐字读一遍「命令」或脚本内容——这是它唯一会执行的东西。")
+    return 0
+
+
+def _print_scripts():
+    scripts = list_scripts()
+    directory = _scripts_dir()
+    if not scripts:
+        print(f"{directory} 下还没有脚本。把 .sh 放进去并 chmod +x，再在页面上申请引用它。")
+        return 0
+    print(f"{directory} 下的脚本：\n")
+    for item in scripts:
+        marks = []
+        marks.append("可执行" if item["executable"] else "没有执行位")
+        marks.append("已信任" if item["trusted"] else "未信任")
+        if item["used_by"]:
+            marks.append(f"被工具 {item['used_by']} 引用")
+        print(f"  {item['name']}    （{'，'.join(marks)}）")
+    print("\n信任某个脚本的当前内容：ops_readonly.py trust <脚本名>")
     return 0
 
 
@@ -614,15 +794,26 @@ def _cli(command, ident, config):
     _state["path"] = Path(config)
     if command == "pending":
         return _print_pending()
+    if command == "scripts":
+        return _print_scripts()
     if not ident:
         print(f"用法：ops_readonly.py {command} <id>", file=sys.stderr)
         return 2
     try:
         if command == "approve":
             spec = approve_pending(ident)
+            where = ("脚本 scripts/" + spec["script"]) if spec.get("type") == "script" \
+                else "命令 " + " ".join(spec["argv"])
             print(f"已批准并写入配置：{spec['name']}")
-            print(f"  命令：{' '.join(spec['argv'])}")
+            print(f"  {where}")
             print("下一次提问即可使用，无需重启。")
+        elif command == "trust":
+            if ident not in {s["name"] for s in list_scripts()}:
+                raise ConfigError(f"scripts 目录下没有脚本 {ident}")
+            digest = trust_script(ident)
+            refresh(force=True)
+            print(f"已信任脚本 {ident} 的当前内容：{digest[:16]}…")
+            print("引用它的工具下一次提问即可使用。")
         else:
             item = drop_pending(ident)
             print(f"已拒绝：{(item.get('tool') or {}).get('name')}")
@@ -635,9 +826,10 @@ def _cli(command, ident, config):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", nargs="?", default="serve",
-                        choices=["serve", "pending", "approve", "reject"],
-                        help="serve 起服务；其余用于在宿主机上审批新工具申请")
-    parser.add_argument("ident", nargs="?", help="待审申请的 id 或工具名")
+                        choices=["serve", "pending", "approve", "reject",
+                                 "scripts", "trust"],
+                        help="serve 起服务；其余用于在宿主机上审批工具与脚本")
+    parser.add_argument("ident", nargs="?", help="待审申请的 id、工具名或脚本名")
     parser.add_argument("--port", type=int, default=8799)
     parser.add_argument("--config", default=str(DEFAULT_CONFIG),
                         help="Tool definitions; edits are picked up live.")

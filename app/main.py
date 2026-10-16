@@ -270,8 +270,10 @@ class ToolProposal(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     label: str = Field(default="", max_length=40)
     desc: str = Field(min_length=1, max_length=300)
-    binary: str = Field(min_length=1, max_length=40)
-    argv: list[str] = Field(min_length=1, max_length=20)
+    # 命令型：binary + argv；脚本型：script（二选一，具体校验在宿主机侧）
+    binary: str = Field(default="", max_length=40)
+    argv: list[str] = Field(default_factory=list, max_length=20)
+    script: str = Field(default="", max_length=80)
     params: dict = Field(default_factory=dict)
 
 
@@ -280,6 +282,11 @@ def tools_overview():
     detail = ops_client.describe_tools()
     return {"tools": detail.get("tools", {}), "pending": detail.get("pending", 0),
             "error": detail.get("error", ""), "agent_mode": AGENT_MODE}
+
+
+@app.get("/api/tools/scripts")
+def tools_scripts():
+    return {"scripts": ops_client.list_scripts()}
 
 
 @app.post("/api/tools/override")
@@ -304,8 +311,15 @@ def tools_pending():
 @app.post("/api/tools/propose")
 def tools_propose(body: ToolProposal):
     """提交新工具申请。申请不会生效，要在宿主机上批准。"""
+    tool = body.model_dump()
+    if tool.get("script"):
+        # 脚本型只引用已有脚本，不带 binary/argv，交给宿主机校验脚本是否存在。
+        tool.pop("binary", None)
+        tool.pop("argv", None)
+    else:
+        tool.pop("script", None)
     try:
-        result = ops_client.propose(body.model_dump(), author=WEB_USER)
+        result = ops_client.propose(tool, author=WEB_USER)
     except ops_client.OpsUnavailable as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     log.info("tool proposal queued: %s", body.name)

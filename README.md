@@ -127,8 +127,13 @@ OPS_TOKEN=<同一个令牌>
 | 参数必须整个占据一个 argv 项（`"{name}"`） | 不允许 `--tail={lines}` 这种拼接，参数值永远变不成新的命令片段 |
 | 字符串参数只能引用预置正则 | 不能自带正则，否则一个 `.*` 就把白名单废了 |
 | `argv[0]` 必须等于 `binary` | 防止用 `binary: docker` 过检查、实际去跑 `bash` |
+| `binary` 不能是解释器 | `bash`/`sh`/`python`/`env`/`xargs`/`find`/`ssh` 等能执行任意命令，一律拒绝 |
 | 模板里不得出现写动词 | 与运行时黑名单双保险 |
 | 非必填的字符串必须有合法默认值 | 否则运行时会往 argv 里塞空串 |
+
+其中「`binary` 不能是解释器」堵的是最致命的一类：`binary: bash, argv: [bash, -c, "任意命令"]`。
+`-c` 后面整段是一个 argv 项，写动词黑名单按词匹配根本挡不住它。所以这类 binary 直接禁，
+要跑一段逻辑请用下面的**脚本工具**。
 
 写坏了也不会让服务失去全部工具——加载失败时沿用上一份可用定义。
 `enabled: false` 可以下线某个工具，它会立刻从模型的可用列表里消失，引用它的剧本也会标红。
@@ -144,14 +149,17 @@ OPS_TOKEN=<同一个令牌>
 | 启用 / 停用 | ✅ 立即生效 | 这是**缩权**方向 |
 | 改描述、改中文显示名 | ✅ 立即生效 | 只影响人和模型怎么理解，不改变执行的命令 |
 | 改 `argv` / `binary` | ❌ | 等于让页面定义宿主机执行什么 |
-| 新增工具 | ⚠️ 只能提交申请 | 需要人在宿主机上批准后才写入配置 |
+| 新增命令工具 | ⚠️ 只能提交申请 | 需要人在宿主机上批准后才写入配置 |
+| 新增脚本工具 | ⚠️ 只能引用已有脚本 | 脚本内容只有宿主机能放，页面只能选，且哈希锁定 |
 
 这个边界靠**文件分权**落实，而不是靠接口自觉：
 
 ```
 ops_tools.yaml             root 手写，唯一能定义命令的地方，页面无权写
-ops_tools.overrides.yaml   页面可写，加载时只认 enabled / desc 两个字段
+ops_tools.overrides.yaml   页面可写，加载时只认 enabled / desc / label 三个字段
 ops_tools.pending.yaml     页面可写，待审队列，永远不参与加载
+ops_tools.trust.yaml       脚本哈希表，只有宿主机批准/trust 时写，页面无权写
+scripts/                   脚本目录，只有宿主机能放文件，页面只能引用
 ```
 
 即使覆盖层文件被完全控制，写进 `argv: [cat, /etc/shadow]` 也会被直接忽略——
@@ -174,7 +182,6 @@ python3 deploy/ops_readonly.py reject <id>
 ```
 
 ### 工具名为什么只能用英文
-
 工具名会作为函数名发给模型，function calling 的规范只允许字母、数字、下划线，
 中文名会被接口拒绝。所以多了一个 `label` 字段专门放中文：
 
@@ -189,6 +196,35 @@ python3 deploy/ops_readonly.py reject <id>
 
 `label` 只用于界面，不会进入发给模型的工具定义——模型拿到的始终是
 `{desc, params}`，和英文函数名。`label` 和 `desc` 一样可以在页面上直接改。
+
+### 脚本工具：把一串只读命令固化成一个工具
+
+有时一个判断要跑好几条命令（先列容器、再逐个查重启次数、再挑出异常的）。
+与其让模型自己拼，不如写成一个脚本，让它成为一个工具。但「页面能定义脚本内容」
+就等于「上传可执行代码」——文档投毒那套风险会原样回来。所以这里的规矩是：
+
+- **脚本内容只能由宿主机管理员放进 `scripts/` 目录**，页面碰不到内容
+- 页面和申请都只能**从已有脚本里选一个来引用**
+- 批准时登记脚本的 **SHA-256**；加载和执行前各校验一次，**内容一旦被改就自动停用**
+
+```yaml
+  - name: container_health
+    label: 容器体检
+    desc: 一眼看懂所有容器的状态和重启次数
+    script: container_health.sh   # 只能是 scripts 目录下的文件名，不能带路径
+    params: {}
+```
+
+```bash
+# 宿主机放脚本（必须 LF 换行、可执行）
+cp container_health.sh /opt/ops/scripts/ && chmod +x /opt/ops/scripts/container_health.sh
+python3 deploy/ops_readonly.py scripts            # 列出脚本与信任状态
+python3 deploy/ops_readonly.py approve <id>       # 批准引用它的申请，顺带登记哈希
+python3 deploy/ops_readonly.py trust <脚本名>     # 合法更新脚本内容后，重新登记哈希
+```
+
+这和「剧本只能引用已有工具」是同一个思路：**能力（脚本/工具）由宿主机掌控，
+页面只能编排与引用，永远扩不了权。**
 
 ## 快速开始
 

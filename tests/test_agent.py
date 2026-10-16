@@ -166,6 +166,27 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(tools, {})
         self.assertIn("未声明的参数", problems[0])
 
+    def test_interpreters_cannot_be_the_binary(self):
+        """bash -c「任意命令」这类必须在加载时就被挡掉——这是最危险的一类。"""
+        for binary, argv in [
+            ("bash", "[bash, -c, 'cat /etc/shadow']"),
+            ("sh", "[sh, -c, 'id']"),
+            ("python3", "[python3, -c, 'import os']"),
+            ("env", "[env, FOO=1, whoami]"),
+            ("xargs", "[xargs, -I_, sh]"),
+            ("find", "[find, /, -exec, sh]"),
+            ("ssh", "[ssh, host, ls]"),
+        ]:
+            with self.subTest(binary=binary):
+                tools, problems = self.load(
+                    "tools:\n"
+                    f"  - name: danger\n"
+                    f"    binary: {binary}\n"
+                    f"    argv: {argv}\n"
+                    "    params: {}\n")
+                self.assertEqual(tools, {})
+                self.assertIn("能执行任意命令", problems[0])
+
     def test_write_verb_in_template_is_rejected(self):
         tools, problems = self.load(
             "tools:\n"
@@ -618,6 +639,100 @@ class ManagementTests(unittest.TestCase):
         ops.propose_tool(self.GOOD)
         ops.approve_pending("three")
         self.assertIn("three", ops.all_tools())
+
+
+class ScriptToolTests(unittest.TestCase):
+    """脚本型工具：页面只能引用已有脚本，内容由哈希锁定，改了就停用。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.main = Path(self.tmp.name) / "ops_tools.yaml"
+        self.main.write_text("tools: []\n", encoding="utf-8")
+        self.scripts = Path(self.tmp.name) / "scripts"
+        self.scripts.mkdir()
+        patcher = patch.dict(ops._state, {"path": self.main, "mtime": None, "omtime": None,
+                                          "tmtime": None, "tools": {}, "problems": []})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def put_script(self, name="check.sh", body="#!/bin/sh\necho ok\n", executable=True):
+        path = self.scripts / name
+        path.write_text(body, encoding="utf-8")
+        if executable:
+            os.chmod(path, 0o755)
+        return path
+
+    DEF = {"name": "health", "label": "体检", "desc": "看容器健康",
+           "script": "check.sh", "params": {}}
+
+    def test_proposal_must_reference_an_existing_executable_script(self):
+        with self.assertRaises(ops.ConfigError):   # 脚本不存在
+            ops.propose_tool(self.DEF)
+        self.put_script(executable=False)
+        with self.assertRaises(ops.ConfigError) as caught:   # 没有执行位
+            ops.propose_tool(self.DEF)
+        self.assertIn("执行权限", str(caught.exception))
+
+    def test_path_traversal_in_script_name_is_rejected(self):
+        self.put_script()
+        for bad in ["../ops_tools.yaml", "/etc/passwd", "a/b.sh"]:
+            with self.subTest(bad=bad), self.assertRaises(ops.ConfigError):
+                ops.propose_tool({**self.DEF, "script": bad})
+
+    def test_a_script_tool_stays_inert_until_trusted(self):
+        """批准前脚本没登记哈希，就算配置里写了也不加载。"""
+        self.put_script()
+        self.main.write_text(
+            "tools:\n  - {name: health, desc: x, script: check.sh, params: {}}\n",
+            encoding="utf-8")
+        ops.refresh(force=True)
+        self.assertNotIn("health", ops.all_tools())   # 未 trust
+        self.assertTrue(any("还没在宿主机上确认" in p for p in ops._state["problems"]))
+
+    def test_full_lifecycle_propose_approve_run(self):
+        self.put_script(body="#!/bin/sh\necho healthy\n")
+        item = ops.propose_tool(self.DEF)
+        self.assertNotIn("health", ops.all_tools())   # 申请阶段不可用
+        spec = ops.approve_pending(item["id"])
+        self.assertEqual(spec["type"], "script")
+        self.assertIn("health", ops.all_tools())       # 批准后可用
+        self.assertEqual(ops.describe_tools()["health"]["command"], "脚本：check.sh")
+        result = ops.run_tool("health", {})
+        self.assertTrue(result["ok"])
+        self.assertIn("healthy", result["output"])
+
+    def test_tampering_with_the_script_disables_it(self):
+        """批准后脚本内容被改 = 投毒，必须立刻停用，而不是照跑。"""
+        self.put_script(body="#!/bin/sh\necho ok\n")
+        ops.approve_pending(ops.propose_tool(self.DEF)["id"])
+        self.assertIn("health", ops.all_tools())
+        # 偷偷把脚本换成别的内容
+        self.put_script(body="#!/bin/sh\ncat /etc/passwd\n")
+        self.assertEqual(ops.run_tool("health", {})["ok"], False)
+        self.assertIn("内容与登记的不一致", ops.run_tool("health", {})["error"])
+        ops.refresh(force=True)
+        self.assertNotIn("health", ops.all_tools())
+
+    def test_retrusting_after_a_legit_edit_restores_it(self):
+        self.put_script(body="#!/bin/sh\necho v1\n")
+        ops.approve_pending(ops.propose_tool(self.DEF)["id"])
+        self.put_script(body="#!/bin/sh\necho v2\n")   # 管理员合法更新
+        ops.refresh(force=True)
+        self.assertNotIn("health", ops.all_tools())
+        ops.trust_script("check.sh")
+        ops.refresh(force=True)
+        self.assertIn("health", ops.all_tools())
+        self.assertIn("v2", ops.run_tool("health", {})["output"])
+
+    def test_list_scripts_shows_content_and_trust(self):
+        self.put_script(body="#!/bin/sh\necho hi\n")
+        listing = ops.list_scripts()
+        self.assertEqual(listing[0]["name"], "check.sh")
+        self.assertIn("echo hi", listing[0]["content"])
+        self.assertFalse(listing[0]["trusted"])   # 还没 trust
+        ops.trust_script("check.sh")
+        self.assertTrue(ops.list_scripts()[0]["trusted"])
 
 
 if __name__ == "__main__":

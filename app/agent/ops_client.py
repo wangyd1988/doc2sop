@@ -69,6 +69,16 @@ def list_pending() -> list:
         return []
 
 
+def list_scripts() -> list:
+    """Scripts available on the ops host, with content for the reviewer to read."""
+    if not enabled():
+        return []
+    try:
+        return _request("/tools/scripts", timeout=10).get("scripts", [])
+    except OpsUnavailable:
+        return []
+
+
 def override(name: str, enabled_flag=None, desc=None, label=None, reset=False) -> dict:
     """Toggle a tool, reword it, or rename it for display. Never changes commands."""
     payload = {"name": name, "reset": bool(reset)}
