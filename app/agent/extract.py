@@ -12,6 +12,9 @@ from langsmith import traceable
 from app.clients import chat_model
 from app.config import log, why
 
+# 推理型模型会先输出思考再给答案，预算不足时正式输出会是空的。给足余量。
+MAX_OUTPUT_TOKENS = 8000
+
 EXTRACT_PROMPT = """你要从一份技术文档里，整理出可复用的「排查剧本」。
 
 剧本 = 遇到某类问题时，按顺序调用哪些工具、每步看什么。
@@ -41,48 +44,84 @@ EXTRACT_PROMPT = """你要从一份技术文档里，整理出可复用的「排
 
 
 def _parse(text):
-    """模型可能裹着代码块或前后有解释，尽量把 JSON 数组捞出来。"""
+    """把 JSON 数组捞出来。返回 None 表示解析失败，返回 [] 表示模型明确说没有。
+
+    两者要分开：前者该让用户重试，后者是正常结论。
+    """
     text = (text or "").strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
     start, end = text.find("["), text.rfind("]")
     if start == -1 or end <= start:
-        return []
+        return None
     try:
         parsed = json.loads(text[start:end + 1])
     except ValueError:
-        return []
-    return parsed if isinstance(parsed, list) else []
+        return None
+    return parsed if isinstance(parsed, list) else None
 
 
 @traceable(name="剧本抽取", run_type="chain")
 def extract(document_name: str, text: str, known_tools: dict):
-    """返回候选剧本列表；失败或无流程时返回空列表，绝不抛异常。"""
+    """返回 (候选剧本列表, 说明)。失败时返回空列表，绝不抛异常。"""
     if not known_tools:
-        return []
+        return [], "当前没有可用的现场工具"
     listing = "\n".join(f"- {name}：{desc}" for name, desc in sorted(known_tools.items()))
-    model = chat_model(timeout=90, max_retries=0, max_tokens=2000)
-    try:
-        reply = model.invoke([
-            ("system", EXTRACT_PROMPT.format(tools=listing)),
-            ("human", f"文档名：{document_name}\n\n文档内容：\n{text[:6000]}")])
-    except Exception as exc:
-        log.info("playbook extraction failed for %s: %s", document_name, why(exc))
-        return []
+    # 推理型模型会先输出一段思考，长度不稳定。预算给够，并对空返回重试一次——
+    # 实测同一份文档同样的预算，有时能正常输出，有时思考就把预算吃光了。
+    model = chat_model(timeout=150, max_retries=0, max_tokens=MAX_OUTPUT_TOKENS)
+    messages = [("system", EXTRACT_PROMPT.format(tools=listing)),
+                ("human", f"文档名：{document_name}\n\n文档内容：\n{text[:6000]}")]
 
-    candidates = []
-    for item in _parse(reply.content)[:3]:
+    content = ""
+    for attempt in (1, 2):
+        try:
+            content = (model.invoke(messages).content or "").strip()
+        except Exception as exc:
+            log.info("playbook extraction failed for %s: %s", document_name, why(exc))
+            return [], f"模型调用失败：{why(exc)}"
+        if content:
+            break
+        log.info("empty extraction response for %s (attempt %d)", document_name, attempt)
+    if not content:
+        return [], "模型没有返回内容，请重试"
+
+    parsed = _parse(content)
+    if parsed is None:
+        return [], "模型返回的内容无法解析为剧本，请重试"
+    if not parsed:
+        # 模型明确返回空数组：这篇文档确实没有可编排的流程。
+        return [], "这篇文档里没有描述可用现有工具编排的排查步骤"
+
+    candidates, dropped = [], set()
+    for item in parsed[:3]:
         if not isinstance(item, dict):
             continue
         steps = item.get("steps")
         if not isinstance(steps, list) or not steps:
             continue
-        # 丢掉引用了不存在工具的步骤，而不是整份丢弃。
-        kept = [s for s in steps[:6]
-                if isinstance(s, dict) and s.get("tool") in known_tools]
+        kept = []
+        for step in steps[:6]:
+            if not isinstance(step, dict):
+                continue
+            tool = step.get("tool")
+            if tool in known_tools:
+                kept.append(step)
+            elif tool:
+                dropped.add(str(tool))
         if not kept:
             continue
         candidates.append({"name": str(item.get("name") or document_name)[:60],
                            "trigger": str(item.get("trigger") or "")[:200],
                            "steps": kept})
-    log.info("extracted %d playbook(s) from %s", len(candidates), document_name)
-    return candidates
+
+    log.info("extracted %d playbook(s) from %s, dropped tools: %s",
+             len(candidates), document_name, sorted(dropped) or "none")
+    if not candidates:
+        if dropped:
+            return [], ("这篇文档的排查流程需要当前没有的工具："
+                        f"{'、'.join(sorted(dropped))}")
+        return [], "这篇文档里没有描述可编排的排查步骤"
+    note = ""
+    if dropped:
+        note = f"已跳过需要以下工具的步骤：{'、'.join(sorted(dropped))}"
+    return candidates, note

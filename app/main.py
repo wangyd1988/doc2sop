@@ -236,7 +236,7 @@ def extract_from_document(body: ExtractBody):
         raise HTTPException(404, "文档不存在")
     text = "\n".join(chunks["documents"][:30])
 
-    candidates = extract_playbooks(name, text, tools)
+    candidates, note = extract_playbooks(name, text, tools)
     saved = []
     for item in candidates:
         try:
@@ -248,7 +248,7 @@ def extract_from_document(body: ExtractBody):
             continue
         saved.append(playbooks.get(playbook_id))
     # 抽取结果默认停用，确认无误后再启用，避免自动生成的流程直接上线。
-    return {"source": name, "extracted": saved}
+    return {"source": name, "extracted": saved, "note": note}
 
 
 # --- Conversations -----------------------------------------------------------
