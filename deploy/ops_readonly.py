@@ -363,19 +363,37 @@ def suggest_binaries(wanted, limit=3):
     return (prefix + [n for n in fuzzy if n not in prefix])[:limit]
 
 
+def _missing_binary(binary):
+    hint = suggest_binaries(binary)
+    return (f"本机没有 {binary} 这个命令"
+            + (f"，你是不是想用 {hint[0]}？" if hint else "。")
+            + (f"（相近的还有：{'、'.join(hint[1:])}）" if len(hint) > 1 else ""))
+
+
 def propose_tool(raw, author="web"):
     """Queue a new tool for review. Proposals are never loaded as usable tools."""
-    spec = _check_tool(raw)  # 当场校验，让申请人立刻看到问题
+    # 页面上最常见的两类错误一次说全，别让人改一处、提交、再撞下一处。
+    # 措辞用表单上的栏目名，而不是配置文件里的字段名。
+    raw = raw if isinstance(raw, dict) else {}
+    name = str(raw.get("name", "")).strip()
+    binary = str(raw.get("binary", "")).strip()
+    problems = []
+    if not TOOL_NAME.match(name):
+        problems.append(
+            f"工具名「{name[:40]}」不能用：它会作为函数名发给模型，只能用小写英文字母、"
+            f"数字和下划线，例如 host_time。中文请填在「中文显示名」那一栏。")
+    if binary and not shutil.which(binary):
+        # 批准之后才发现跑不了，是最差的体验：现在就说清楚，并给出替代。
+        problems.append(_missing_binary(binary)
+                        + " 申请的工具必须现在就能跑；要先装软件再用，请直接写进配置文件。")
+    if problems:
+        if len(problems) == 1:
+            raise ConfigError(problems[0])
+        raise ConfigError("\n".join(f"{i}. {p}" for i, p in enumerate(problems, 1)))
+
+    spec = _check_tool(raw)  # 其余规则（argv 首项、写动词、占位符）与正式配置一致
     if spec["name"] in all_tools():
         raise ConfigError(f"已存在同名工具：{spec['name']}")
-    if not shutil.which(spec["binary"]):
-        # 批准之后才发现跑不了，是最差的体验：现在就说清楚，并给出替代。
-        hint = suggest_binaries(spec["binary"])
-        raise ConfigError(
-            f"本机没有 {spec['binary']} 这个命令"
-            + (f"，你是不是想用 {hint[0]}？" if hint else "。")
-            + (f"（相近的还有：{'、'.join(hint[1:])}）" if len(hint) > 1 else "")
-            + " 申请的工具必须现在就能跑；若要装好再用，请直接写进配置文件。")
     entries = list_pending()
     if any((item.get("tool") or {}).get("name") == spec["name"] for item in entries):
         raise ConfigError(f"已有同名待审申请：{spec['name']}")

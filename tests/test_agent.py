@@ -509,7 +509,7 @@ class ManagementTests(unittest.TestCase):
         with self.assertRaises(ops.ConfigError) as caught:
             ops.propose_tool({"name": "看时间", "desc": "几点了",
                               "binary": "date", "argv": ["date"], "params": {}})
-        self.assertIn("label", str(caught.exception))
+        self.assertIn("中文显示名", str(caught.exception))  # 用表单上的栏目名
 
         ops.set_override("one", label="内存概览")
         self.assertEqual(ops.describe_tools()["one"]["label"], "内存概览")
@@ -576,6 +576,19 @@ class ManagementTests(unittest.TestCase):
         self.assertIn("datetime", message)
         self.assertIn("date", message)
         self.assertEqual(ops.list_pending(), [])  # 没写错的东西不进队列
+
+    def test_name_and_command_errors_are_reported_together(self):
+        """改一处、提交、再撞下一处，体验很差：一次说全。"""
+        with patch.object(ops.shutil, "which", return_value=None), \
+             patch.object(ops, "suggest_binaries", return_value=["date"]):
+            with self.assertRaises(ops.ConfigError) as caught:
+                ops.propose_tool({"name": "时间", "desc": "几点了",
+                                  "binary": "datetime", "argv": ["datetime"],
+                                  "params": {}})
+        message = str(caught.exception)
+        self.assertIn("1. 工具名", message)
+        self.assertIn("2. 本机没有 datetime", message)
+        self.assertIn("date", message)
 
     def test_suggestions_catch_the_usual_typos(self):
         with patch.dict(ops.os.environ, {"PATH": "/fake"}), \
