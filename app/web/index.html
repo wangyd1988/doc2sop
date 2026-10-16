@@ -147,6 +147,12 @@ header .t { flex: 1; font-weight: 600; }
 @keyframes blink { 50% { opacity: 0; } }
 
 .sources { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.src-unused { font-size: 12.5px; color: var(--muted); }
+.src-unused > summary { cursor: pointer; padding: 4px 2px; list-style: none; }
+.src-unused > summary::-webkit-details-marker { display: none; }
+.src-unused > summary::before { content: '▸ '; }
+.src-unused[open] > summary::before { content: '▾ '; }
+.src-unused .src { margin-top: 6px; opacity: .7; }
 .src { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; font-size: 13px;
        transition: border-color .2s; }
 .src.flash { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
@@ -590,6 +596,32 @@ function addBot(inner) {
        <div class="steps"></div><div class="card">${inner}</div><div class="sources"></div></div></div>`);
   return $('bot' + id);
 }
+/* 检索在模型判断之前就完成了，候选片段不等于答案依据。
+   回答结束后按正文里实际引用的编号整理：被引用的正常展示，其余收进一个折叠项。 */
+function arrangeSources(bot, text, done) {
+  const box = bot.querySelector('.sources');
+  const all = [...box.querySelectorAll('.src')];
+  if (!all.length) return;
+  const cited = new Set([...(text || '').matchAll(/\[(W?\d{1,2})\]/g)].map(m => m[1]));
+  const used = all.filter(s => cited.has(s.dataset.n));
+  const unused = all.filter(s => !cited.has(s.dataset.n));
+  box.innerHTML = '';
+  used.forEach(s => box.appendChild(s));
+  if (!unused.length) return;
+  const kb = unused.filter(s => !s.classList.contains('web')).length;
+  const web = unused.length - kb;
+  const usedKb = used.some(s => !s.classList.contains('web'));
+  let label;
+  if (!done) label = `候选片段 ${unused.length} 个，正在判断是否相关…`;
+  else if (kb && !usedKb) label = `知识库检索到 ${kb} 个片段，判断与问题无关，未采用`
+                                  + (web ? `；另有 ${web} 条网络结果未引用` : '');
+  else label = `另有 ${[kb && kb + ' 个知识库片段', web && web + ' 条网络结果'].filter(Boolean).join('、')} 未被引用`;
+  const group = document.createElement('details');
+  group.className = 'src-unused';
+  group.innerHTML = `<summary>${esc(label)}（点击展开）</summary>`;
+  unused.forEach(s => group.appendChild(s));
+  box.appendChild(group);
+}
 function addTools(bot, text, question, sources) {
   bot.dataset.raw = text;
   bot.dataset.q = question;
@@ -677,6 +709,7 @@ async function openConv(id) {
     if (m.role === 'user') { addUser(m.content); lastQuestion = m.content; continue; }
     const bot = addBot(`<div class="answer">${md(m.content)}</div>`);
     bot.querySelector('.sources').innerHTML = sourcesHtml(m.sources);
+    arrangeSources(bot, m.content, true);
     addTools(bot, m.content, lastQuestion, m.sources);
   }
   if (!d.messages.length) welcome();
@@ -1215,8 +1248,9 @@ async function ask() {
         if (msg.conversation) {
           convId = msg.conversation.id;
         } else if (msg.sources) {
-          card.querySelector('.status').innerHTML = msg.sources.length ? `<span class="spin"></span>找到 ${msg.sources.length} 个相关片段，正在生成回答…` : '';
+          card.querySelector('.status').innerHTML = msg.sources.length ? `<span class="spin"></span>检索到 ${msg.sources.length} 个候选片段，正在判断是否相关…` : '';
           bot.querySelector('.sources').innerHTML = sourcesHtml(msg.sources);
+          arrangeSources(bot, '', false);
         } else if (msg.tool_call) {
           const isWeb = msg.tool_call.tool === 'web_search';
           const args = isWeb ? (msg.tool_call.args || {}).query || ''
@@ -1234,6 +1268,7 @@ async function ask() {
         } else if (msg.web_sources) {
           webSrc.push(...msg.web_sources);
           bot.querySelector('.sources').insertAdjacentHTML('beforeend', sourcesHtml(msg.web_sources));
+          arrangeSources(bot, '', false);
         } else if (msg.tool_result) {
           const steps = bot.querySelectorAll('.step.running');
           const step = steps[steps.length - 1];
@@ -1259,6 +1294,7 @@ async function ask() {
     ans.innerHTML = md(text) + `<p class="error">请求失败：${esc(e.message)}</p>`;
   } finally {
     ans.classList.remove('cursor');
+    arrangeSources(bot, text, true);
     addTools(bot, text, q, webSrc);
     $('askBtn').disabled = false; $('question').focus();
     loadConvs();
