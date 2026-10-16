@@ -1,0 +1,180 @@
+# 只读运维工具定义 —— 这是工具的唯一真相源。
+#
+# 改完这个文件，下一次提问就生效：不需要重启 ops-readonly，也不需要重建 kb-app 镜像。
+# 应用侧会从 /tools 拉取这里的描述与参数，动态生成给模型的函数签名。
+#
+# 安全约定（加载时会强制校验，不满足则该工具不加载）：
+#   1. argv 是固定列表，不经过 shell。参数只能"整个占据"一个元素，写成 "{参数名}"。
+#      不允许和字面量拼接："--tail={lines}" 非法，必须写成 [--tail, "{lines}"]。
+#      这样参数值永远只能是一个独立的 argv 项，拼不出新的命令片段。
+#   2. 字符串参数必须声明 pattern，且只能引用下面的预置正则，不能自己写正则，
+#      以免一个 ".*" 把白名单废掉。
+#   3. 只放只读命令。写操作动词另有黑名单兜底，命中直接拒绝执行。
+#
+# pattern 预置值：
+#   name       容器名一类：字母或数字开头，可含 . _ -
+#   k8s_name   K8s 资源名：小写字母或数字开头，可含 . -
+#   resource   K8s 资源类型：小写字母开头，可含 . -
+#
+# 字段说明：
+#   binary    本机没有这个可执行文件时，该工具自动不对外提供
+#   enabled   设为 false 则完全下线（不出现在列表里，也不能执行）
+#   params    留空表示该工具不接受任何参数
+
+tools:
+  - name: list_containers
+    desc: 列出宿主机上所有容器及其运行状态。想知道某个服务是否在跑、是否反复重启时先用它。
+    binary: docker
+    argv: [docker, ps, -a, --no-trunc, --format,
+           "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"]
+    params: {}
+
+  - name: container_logs
+    desc: 查看指定容器最近的日志，用于定位报错原因。
+    binary: docker
+    argv: [docker, logs, --tail, "{lines}", "{name}"]
+    params:
+      name:
+        type: str
+        pattern: name
+        required: true
+        desc: 容器名，例如 kb-app
+      lines:
+        type: int
+        default: 100
+        max: 500
+        desc: 查看最近多少行，默认 100，最多 500
+
+  - name: container_stats
+    desc: 查看所有容器当前的 CPU 与内存占用，用于判断是否资源不足。
+    binary: docker
+    argv: [docker, stats, --no-stream, --format,
+           "{{.Name}}\tCPU={{.CPUPerc}}\tMEM={{.MemUsage}} ({{.MemPerc}})"]
+    params: {}
+
+  - name: container_inspect
+    desc: 查看容器的配置：镜像、内存上限、网络模式、挂载、重启次数。怀疑配置问题时用它。
+    binary: docker
+    argv: [docker, inspect, --format,
+           "镜像={{.Config.Image}}\n状态={{.State.Status}}\n重启次数={{.RestartCount}}\n内存上限={{.HostConfig.Memory}}\n网络={{.HostConfig.NetworkMode}}\n挂载={{range .Mounts}}{{.Source}}->{{.Destination}} {{end}}",
+           "{name}"]
+    params:
+      name:
+        type: str
+        pattern: name
+        required: true
+        desc: 容器名，例如 kb-app
+
+  - name: host_resources
+    desc: 查看宿主机剩余内存与 swap 使用情况。怀疑内存不足、容器被 OOM 杀掉时用它。
+    binary: free
+    argv: [free, -m]
+    params: {}
+
+  - name: host_disk
+    desc: 查看宿主机各挂载点的磁盘使用率。容器写日志失败、镜像拉不下来时先看这个。
+    binary: df
+    argv: [df, -h]
+    params: {}
+
+  - name: host_ports
+    desc: 查看宿主机正在监听的端口以及对应进程。排查端口冲突、服务没起来时用它。
+    binary: ss
+    argv: [ss, -ltnp]
+    params: {}
+
+  - name: kube_list
+    desc: 列出某一类 Kubernetes 资源，例如 pod、svc、ingress。先用它看整体状态。
+    binary: kubectl
+    argv: [kubectl, get, "{resource}", -n, "{namespace}", -o, wide]
+    params:
+      resource:
+        type: str
+        pattern: resource
+        required: true
+        desc: 资源类型，例如 pod、svc、ingress
+      namespace:
+        type: str
+        pattern: k8s_name
+        default: default
+        desc: 命名空间，默认 default
+
+  - name: kube_yaml
+    desc: 查看某个 Kubernetes 资源的完整 YAML，用于核对具体字段配置是否写对。
+    binary: kubectl
+    argv: [kubectl, get, "{resource}", "{name}", -n, "{namespace}", -o, yaml]
+    params:
+      resource:
+        type: str
+        pattern: resource
+        required: true
+        desc: 资源类型，例如 pod、ingress
+      name:
+        type: str
+        pattern: k8s_name
+        required: true
+        desc: 资源名
+      namespace:
+        type: str
+        pattern: k8s_name
+        default: default
+        desc: 命名空间，默认 default
+
+  - name: kube_describe
+    desc: 查看某个 Kubernetes 资源的详情与相关事件，适合定位调度失败、探针失败。
+    binary: kubectl
+    argv: [kubectl, describe, "{resource}", "{name}", -n, "{namespace}"]
+    params:
+      resource:
+        type: str
+        pattern: resource
+        required: true
+        desc: 资源类型，例如 pod、subnet
+      name:
+        type: str
+        pattern: k8s_name
+        required: true
+        desc: 资源名
+      namespace:
+        type: str
+        pattern: k8s_name
+        default: default
+        desc: 命名空间，默认 default
+
+  - name: kube_logs
+    desc: 查看 Pod 日志。
+    binary: kubectl
+    argv: [kubectl, logs, "{name}", -n, "{namespace}", --tail, "{lines}"]
+    params:
+      name:
+        type: str
+        pattern: k8s_name
+        required: true
+        desc: Pod 名
+      namespace:
+        type: str
+        pattern: k8s_name
+        default: default
+        desc: 命名空间，默认 default
+      lines:
+        type: int
+        default: 100
+        max: 500
+        desc: 查看最近多少行
+
+  - name: kube_events
+    desc: 按时间顺序查看命名空间下的最近事件，用于发现调度或探针失败。
+    binary: kubectl
+    argv: [kubectl, get, events, -n, "{namespace}", --sort-by=.lastTimestamp]
+    params:
+      namespace:
+        type: str
+        pattern: k8s_name
+        default: default
+        desc: 命名空间，默认 default
+
+  - name: host_uptime
+    desc: 查看宿主机已经开机多久、当前 1/5/15 分钟平均负载。怀疑系统过载或刚重启过时用它。
+    binary: uptime
+    argv: [uptime]
+    params: {}

@@ -1,66 +1,37 @@
 """Tool schemas exposed to the model.
 
-Only tools whose backing command exists on the ops host are advertised, so the
-model never tries to call something that cannot run.
+The ops host is the single source of truth. It reports each tool's description
+and parameter spec, and we turn that into the function signature the model sees.
+Adding a tool is therefore an edit to the host's definition file — no schema to
+keep in sync here, and no rebuild of this image.
 """
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from app.agent import ops_client
-from app.config import log
+from app.config import log, why
 
 
 class Empty(BaseModel):
     pass
 
 
-class ContainerName(BaseModel):
-    name: str = Field(description="容器名，例如 kb-app")
+def _field(spec: dict):
+    """One declared parameter as a (type, Field) pair for create_model."""
+    description = str(spec.get("desc") or "")
+    if spec.get("type") == "int":
+        return int, Field(default=int(spec.get("default", 100)),
+                          description=description)
+    if spec.get("required"):
+        return str, Field(description=description)
+    return str, Field(default=str(spec.get("default", "")), description=description)
 
 
-class ContainerLogs(BaseModel):
-    name: str = Field(description="容器名")
-    lines: int = Field(default=100, description="查看最近多少行，默认 100，最多 500")
-
-
-class KubeGet(BaseModel):
-    resource: str = Field(description="资源类型，例如 pod、svc、subnet、ingress")
-    name: str = Field(default="", description="资源名；留空则列出该类型全部资源")
-    namespace: str = Field(default="default", description="命名空间")
-
-
-class KubeNamed(BaseModel):
-    resource: str = Field(description="资源类型，例如 pod、subnet")
-    name: str = Field(description="资源名")
-    namespace: str = Field(default="default", description="命名空间")
-
-
-class KubeLogs(BaseModel):
-    name: str = Field(description="Pod 名")
-    namespace: str = Field(default="default", description="命名空间")
-    lines: int = Field(default=100, description="查看最近多少行")
-
-
-class KubeEvents(BaseModel):
-    namespace: str = Field(default="default", description="命名空间")
-
-
-# tool name -> (给模型看的说明, 参数模型)
-SCHEMAS = {
-    "list_containers": ("列出宿主机上所有容器及其运行状态。想知道某个服务是否在跑、"
-                        "是否反复重启时先用它。", Empty),
-    "container_logs": ("查看指定容器最近的日志，用于定位报错原因。", ContainerLogs),
-    "container_stats": ("查看所有容器当前的 CPU 与内存占用，用于判断是否资源不足。", Empty),
-    "container_inspect": ("查看容器的配置：镜像、内存上限、网络模式、挂载、重启次数。"
-                          "怀疑配置问题时用它。", ContainerName),
-    "host_resources": ("查看宿主机剩余内存与 swap 使用情况。", Empty),
-    "kube_get": ("查询 Kubernetes 资源。不传 name 时列出该类型全部资源；"
-                 "传 name 时返回该资源完整 YAML，用于核对具体字段配置。", KubeGet),
-    "kube_describe": ("查看某个 Kubernetes 资源的详情与相关事件。", KubeNamed),
-    "kube_logs": ("查看 Pod 日志。", KubeLogs),
-    "kube_events": ("按时间顺序查看命名空间下的最近事件，用于发现调度或探针失败。",
-                    KubeEvents),
-}
+def _args_schema(name: str, params: dict):
+    if not params:
+        return Empty
+    return create_model(f"{name}_args",
+                        **{key: _field(spec) for key, spec in params.items()})
 
 
 def _make(name: str, description: str, schema):
@@ -76,11 +47,16 @@ def _make(name: str, description: str, schema):
 
 
 def build_tools():
-    """Build the tool list from whatever the ops host currently supports."""
-    available = ops_client.available_tools()
-    if not available:
-        return []
-    tools = [_make(name, meta[0], meta[1])
-             for name, meta in SCHEMAS.items() if name in available]
+    """Build the tool list from whatever the ops host currently advertises."""
+    tools = []
+    for name, meta in sorted(ops_client.available_tools().items()):
+        # 老版本接口只回描述字符串；按无参数处理，别让整轮对话挂掉。
+        if not isinstance(meta, dict):
+            meta = {"desc": str(meta), "params": {}}
+        try:
+            tools.append(_make(name, meta.get("desc", ""),
+                               _args_schema(name, meta.get("params") or {})))
+        except Exception as exc:
+            log.warning("tool %s skipped: %s", name, why(exc))
     log.info("ops tools enabled: %s", ", ".join(t.name for t in tools) or "none")
     return tools

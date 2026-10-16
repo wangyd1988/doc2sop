@@ -14,7 +14,6 @@ from app import conversations, playbooks
 from app.agent import loop as agent_loop
 from app.agent import ops_client
 from app.agent.extract import extract as extract_playbooks
-from app.agent.tools import SCHEMAS as TOOL_SCHEMAS
 from app.config import (AGENT_MODE, ALLOWED_SUFFIXES, CATEGORY_MAX, CHAT_MODEL, BOT_NAME,
                         FILES_DIR, IMAGE_SUFFIXES, MAX_FILE_BYTES, WEB_PASSWORD, WEB_USER,
                         log)
@@ -64,14 +63,15 @@ def index():
 # --- Documents ---------------------------------------------------------------
 
 def usable_tools() -> dict:
-    """宿主机报告的工具里，应用侧也定义了参数结构的那部分。
+    """宿主机当前对外提供的工具：名字 -> 说明。
 
-    两边取交集才是模型真正拿得到的；只看任意一边都会和实际对不上。
+    工具定义只在宿主机那一份配置里维护，应用侧不再留第二份清单，
+    否则两边迟早对不上（界面显示 6 个、模型实际拿到 5 个就是这么来的）。
     """
     if AGENT_MODE == "off":
         return {}
-    return {name: desc for name, desc in ops_client.available_tools().items()
-            if name in TOOL_SCHEMAS}
+    return {name: (meta.get("desc", "") if isinstance(meta, dict) else str(meta))
+            for name, meta in ops_client.available_tools().items()}
 
 
 @app.get("/api/documents")

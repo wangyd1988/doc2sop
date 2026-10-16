@@ -22,6 +22,7 @@
 | 图片识别 | 文档内嵌的截图、架构图经多模态模型识别后**插回原文位置**，一并可检索 |
 | 多轮对话 | 追问时自动补全指代（「那它的上限呢」→ 补成完整问题再检索） |
 | **现场排障** | **可选开启只读运维工具，Agent 自行决定是否查看环境实况，并与知识库对照** |
+| **排查剧本** | **从上传的文档自动抽取排查步骤，页面上可编排启停，只能引用已有工具** |
 | 来源可核对 | 回答中的 `[1]` 可点开，显示原文片段、来源文件、PDF 页码和相似度 |
 | 自动分类 | 上传时模型建议分类，可手工覆盖，侧栏按分类分组 |
 | 原文下载 | 随时取回当初上传的原始文件 |
@@ -93,6 +94,45 @@ OPS_TOKEN=<同一个令牌>
 不配置 `OPS_URL` 时工具自动关闭，退化为纯知识库问答。注入防护与轮次上限均有测试覆盖
 （`tests/test_agent.py`）。
 
+### 加一个工具
+
+工具定义只有一份，就是宿主机上的 [`deploy/ops_tools.yaml`](deploy/ops_tools.yaml)。
+应用侧不保存任何工具清单，而是每次提问从接口拉取描述与参数，动态生成模型看到的函数签名。
+所以**加工具只改这个文件，不用重启服务，也不用重建镜像**：
+
+```yaml
+  - name: host_uptime
+    desc: 查看宿主机已经开机多久、当前 1/5/15 分钟平均负载。
+    binary: uptime
+    argv: [uptime]
+    params: {}
+```
+
+保存后下一次提问就能用上。带参数的工具这样写：
+
+```yaml
+  - name: container_logs
+    desc: 查看指定容器最近的日志，用于定位报错原因。
+    binary: docker
+    argv: [docker, logs, --tail, "{lines}", "{name}"]
+    params:
+      name:  {type: str, pattern: name, required: true, desc: 容器名}
+      lines: {type: int, default: 100, max: 500, desc: 查看最近多少行}
+```
+
+配置本身就是安全边界，所以加载时强制校验，不合规的条目会被跳过并记录原因：
+
+| 约束 | 为什么 |
+|---|---|
+| 参数必须整个占据一个 argv 项（`"{name}"`） | 不允许 `--tail={lines}` 这种拼接，参数值永远变不成新的命令片段 |
+| 字符串参数只能引用预置正则 | 不能自带正则，否则一个 `.*` 就把白名单废了 |
+| `argv[0]` 必须等于 `binary` | 防止用 `binary: docker` 过检查、实际去跑 `bash` |
+| 模板里不得出现写动词 | 与运行时黑名单双保险 |
+| 非必填的字符串必须有合法默认值 | 否则运行时会往 argv 里塞空串 |
+
+写坏了也不会让服务失去全部工具——加载失败时沿用上一份可用定义。
+`enabled: false` 可以下线某个工具，它会立刻从模型的可用列表里消失，引用它的剧本也会标红。
+
 ## 快速开始
 
 需要一个 OpenAI 兼容的模型网关（LiteLLM 配置样例见 [`litellm/config.yaml`](litellm/config.yaml)）。
@@ -124,10 +164,12 @@ app/
 ├── config.py          环境变量配置
 ├── clients.py         模型客户端（经网关）
 ├── conversations.py   多轮记忆（SQLite）
+├── playbooks.py       排查剧本：存储与校验（只能引用已有工具）
 ├── tracing.py         LangSmith 追踪
 ├── agent/
 │   ├── loop.py        排障循环：检索 → 调工具 → 对照 → 结论
-│   ├── tools.py       工具 schema，按宿主机实际能力动态生成
+│   ├── tools.py       按宿主机下发的定义动态生成工具签名
+│   ├── extract.py     从文档抽取排查剧本
 │   └── ops_client.py  只读接口客户端
 ├── rag/
 │   ├── chunking.py    切分
@@ -140,7 +182,8 @@ app/
     └── vision.py      多模态 OCR
 
 deploy/
-└── ops_readonly.py    宿主机上的只读运维接口（白名单 + 令牌）
+├── ops_readonly.py    宿主机上的只读运维接口（白名单 + 令牌）
+└── ops_tools.yaml     工具定义的唯一真相源，改完即时生效
 ```
 
 ## 设计决策

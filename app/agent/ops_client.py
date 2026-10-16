@@ -35,7 +35,7 @@ def _request(path, payload=None, timeout=30):
 
 
 def available_tools() -> dict:
-    """Tool name -> description, limited to what the host can actually run."""
+    """Tool name -> {desc, params}, limited to what the host can actually run."""
     if not enabled():
         return {}
     try:

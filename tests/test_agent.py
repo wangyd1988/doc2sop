@@ -3,7 +3,10 @@
 重点是安全边界：Agent 永远拿不到 shell，一切参数都要过白名单。
 """
 import importlib.util
+import os
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -26,11 +29,16 @@ class AllowlistTests(unittest.TestCase):
 
     def test_shell_metacharacters_are_rejected(self):
         for evil in ["kb-app; rm -rf /", "kb-app && reboot", "$(whoami)", "`id`",
-                     "a|b", "a>b", "../../etc/passwd", "kb app", ""]:
+                     "a|b", "a>b", "../../etc/passwd", "kb app"]:
             with self.subTest(evil=evil):
                 result = ops.run_tool("container_logs", {"name": evil})
                 self.assertFalse(result["ok"])
-                self.assertIn("参数不合法", result["error"])
+                self.assertIn("不合法", result["error"])
+
+    def test_required_argument_cannot_be_empty(self):
+        result = ops.run_tool("container_logs", {"name": ""})
+        self.assertFalse(result["ok"])
+        self.assertIn("缺少必填参数", result["error"])
 
     def test_unknown_tool_is_rejected(self):
         for name in ["docker_exec", "shell", "container_rm", ""]:
@@ -39,25 +47,35 @@ class AllowlistTests(unittest.TestCase):
             self.assertIn("未知工具", result["error"])
 
     def test_write_verbs_are_not_reachable(self):
-        """白名单里不存在任何写动词。"""
-        for name, (_desc, _binary, build) in ops.TOOLS.items():
-            try:
-                argv = build({"name": "safe", "resource": "pod", "namespace": "default"})
-            except ValueError:
-                continue
+        """发布出去的配置里不存在任何写动词。"""
+        sample = {"name": "safe", "resource": "pod", "namespace": "default", "lines": 10}
+        for name, spec in ops.all_tools().items():
             with self.subTest(tool=name):
+                argv = ops.build_argv(spec, sample)
                 self.assertFalse(set(argv[1:]) & ops.FORBIDDEN,
                                  f"{name} 的命令模板包含写操作：{argv}")
 
     def test_line_count_is_clamped(self):
-        for value, expected in [(5, 5), (-1, 1), (99999, 500), ("abc", 100), (None, 100)]:
-            self.assertEqual(ops._lines(value), expected)
+        spec = ops.all_tools()["container_logs"]
+        for value, expected in [(5, "5"), (-1, "1"), (99999, "500"),
+                                ("abc", "100"), (None, "100")]:
+            with self.subTest(value=value):
+                argv = ops.build_argv(spec, {"name": "kb-app", "lines": value})
+                self.assertEqual(argv[argv.index("--tail") + 1], expected)
 
     def test_kubernetes_names_follow_dns_rules(self):
-        self.assertEqual(ops._name("my-pod-1", ops.K8S_NAME), "my-pod-1")
+        spec = ops.all_tools()["kube_logs"]
+        self.assertIn("my-pod-1", ops.build_argv(spec, {"name": "my-pod-1"}))
         for bad in ["MyPod", "pod;ls", "pod/../x", "-leading"]:
             with self.subTest(bad=bad), self.assertRaises(ValueError):
-                ops._name(bad, ops.K8S_NAME)
+                ops.build_argv(spec, {"name": bad})
+
+    def test_arguments_never_merge_into_a_literal(self):
+        """参数只能独占一个 argv 项，拼不出新的命令片段。"""
+        spec = ops.all_tools()["container_logs"]
+        argv = ops.build_argv(spec, {"name": "kb-app", "lines": 20})
+        self.assertIn("kb-app", argv)
+        self.assertFalse([part for part in argv if part.startswith("--tail=")])
 
     def test_commands_never_use_a_shell(self):
         """执行时必须是 argv 形式，shell=False。"""
@@ -91,7 +109,7 @@ class AllowlistTests(unittest.TestCase):
 
     def test_missing_binary_is_reported_not_executed(self):
         with patch.object(ops.shutil, "which", return_value=None):
-            result = ops.run_tool("kube_get", {"resource": "pod"})
+            result = ops.run_tool("kube_list", {"resource": "pod"})
         self.assertFalse(result["ok"])
         self.assertIn("没有 kubectl", result["error"])
 
@@ -100,7 +118,147 @@ class AllowlistTests(unittest.TestCase):
                           if binary == "docker" else None):
             advertised = ops.available_tools()
         self.assertIn("container_logs", advertised)
-        self.assertNotIn("kube_get", advertised)
+        self.assertNotIn("kube_list", advertised)
+
+    def test_advertised_tools_carry_their_parameters(self):
+        """应用侧靠这份 params 生成函数签名，不能只给描述。"""
+        with patch.object(ops.shutil, "which", return_value="/usr/bin/docker"):
+            meta = ops.available_tools()["container_logs"]
+        self.assertTrue(meta["desc"])
+        self.assertEqual(sorted(meta["params"]), ["lines", "name"])
+        self.assertTrue(meta["params"]["name"]["required"])
+
+
+class ConfigTests(unittest.TestCase):
+    """工具定义来自配置文件，所以配置本身就是安全边界的一部分。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def write(self, body, name="tools.yaml"):
+        path = Path(self.tmp.name) / name
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def load(self, body):
+        return ops.load_tools(self.write(body))
+
+    def test_custom_regex_is_not_allowed(self):
+        """只能引用预置正则，否则一个 .* 就把白名单废了。"""
+        tools, problems = self.load(
+            "tools:\n"
+            "  - name: bad\n"
+            "    binary: docker\n"
+            "    argv: [docker, logs, '{name}']\n"
+            "    params:\n"
+            "      name: {type: str, pattern: '.*', required: true}\n")
+        self.assertEqual(tools, {})
+        self.assertIn("pattern", problems[0])
+
+    def test_undeclared_placeholder_is_rejected(self):
+        tools, problems = self.load(
+            "tools:\n"
+            "  - name: bad\n"
+            "    binary: docker\n"
+            "    argv: [docker, logs, '{nope}']\n"
+            "    params: {}\n")
+        self.assertEqual(tools, {})
+        self.assertIn("未声明的参数", problems[0])
+
+    def test_write_verb_in_template_is_rejected(self):
+        tools, problems = self.load(
+            "tools:\n"
+            "  - name: bad\n"
+            "    binary: docker\n"
+            "    argv: [docker, rm, '-f', '{name}']\n"
+            "    params:\n"
+            "      name: {type: str, pattern: name, required: true}\n")
+        self.assertEqual(tools, {})
+        self.assertIn("写操作", problems[0])
+
+    def test_argv_head_must_match_binary(self):
+        """不能借 binary 过了存在性检查，却去执行别的命令。"""
+        tools, problems = self.load(
+            "tools:\n"
+            "  - name: bad\n"
+            "    binary: docker\n"
+            "    argv: [bash, -c, whoami]\n"
+            "    params: {}\n")
+        self.assertEqual(tools, {})
+        self.assertIn("第一项", problems[0])
+
+    def test_optional_string_needs_a_valid_default(self):
+        tools, problems = self.load(
+            "tools:\n"
+            "  - name: bad\n"
+            "    binary: docker\n"
+            "    argv: [docker, logs, '{name}']\n"
+            "    params:\n"
+            "      name: {type: str, pattern: name}\n")
+        self.assertEqual(tools, {})
+        self.assertIn("default", problems[0])
+
+    def test_one_bad_entry_does_not_drop_the_good_ones(self):
+        tools, problems = self.load(
+            "tools:\n"
+            "  - name: good\n"
+            "    binary: free\n"
+            "    argv: [free, -m]\n"
+            "    params: {}\n"
+            "  - name: bad\n"
+            "    binary: docker\n"
+            "    argv: [docker, rm, '{name}']\n"
+            "    params:\n"
+            "      name: {type: str, pattern: name, required: true}\n")
+        self.assertEqual(sorted(tools), ["good"])
+        self.assertEqual(len(problems), 1)
+
+    def test_go_template_is_not_treated_as_a_placeholder(self):
+        """docker --format 里的 {{.Names}} 不能被当成参数。"""
+        tools, _ = self.load(
+            "tools:\n"
+            "  - name: ok\n"
+            "    binary: docker\n"
+            "    argv: [docker, ps, --format, '{{.Names}}']\n"
+            "    params: {}\n")
+        self.assertEqual(ops.build_argv(tools["ok"], {}),
+                         ["docker", "ps", "--format", "{{.Names}}"])
+
+    def test_disabled_tool_is_neither_listed_nor_runnable(self):
+        path = self.write(
+            "tools:\n"
+            "  - {name: one, binary: free, argv: [free, -m], params: {},"
+            " enabled: false}\n")
+        with patch.dict(ops._state, {"path": path, "mtime": None, "tools": {}}):
+            self.assertEqual(ops.available_tools(), {})
+            self.assertIn("未知工具", ops.run_tool("one", {})["error"])
+
+    def test_edits_take_effect_without_a_restart(self):
+        """加一个工具只改配置，下一次调用就该看见。"""
+        path = self.write(
+            "tools:\n  - {name: one, binary: free, argv: [free, -m], params: {}}\n")
+        with patch.dict(ops._state, {"path": path, "mtime": None, "tools": {}}):
+            self.assertEqual(sorted(ops.all_tools()), ["one"])
+            path.write_text(
+                "tools:\n"
+                "  - {name: one, binary: free, argv: [free, -m], params: {}}\n"
+                "  - {name: two, binary: df, argv: [df, -h], params: {}}\n",
+                encoding="utf-8")
+            later = time.time() + 2
+            os.utime(path, (later, later))
+            self.assertEqual(sorted(ops.all_tools()), ["one", "two"])
+
+    def test_broken_edit_keeps_the_last_good_set(self):
+        """配置写坏了不能让服务当场失去全部工具。"""
+        path = self.write(
+            "tools:\n  - {name: one, binary: free, argv: [free, -m], params: {}}\n")
+        with patch.dict(ops._state, {"path": path, "mtime": None, "tools": {}}):
+            self.assertEqual(sorted(ops.all_tools()), ["one"])
+            path.write_text("tools:\n  - [this is not a mapping\n", encoding="utf-8")
+            later = time.time() + 2
+            os.utime(path, (later, later))
+            self.assertEqual(sorted(ops.all_tools()), ["one"])
 
 
 class ToolLayerTests(unittest.TestCase):
@@ -110,19 +268,51 @@ class ToolLayerTests(unittest.TestCase):
             self.assertEqual(ops_client.available_tools(), {})
 
     def test_tools_are_built_from_host_capabilities(self):
-        with patch.object(agent_tools.ops_client, "available_tools",
-                          return_value={"container_logs": "看日志", "host_resources": "看内存"}):
+        with patch.object(agent_tools.ops_client, "available_tools", return_value={
+                "container_logs": {"desc": "看日志", "params": {}},
+                "host_resources": {"desc": "看内存", "params": {}}}):
             built = agent_tools.build_tools()
-        self.assertEqual(sorted(t.name for t in built), ["container_logs", "host_resources"])
+        self.assertEqual(sorted(t.name for t in built),
+                         ["container_logs", "host_resources"])
+
+    def test_signature_comes_from_the_host(self):
+        """参数结构由宿主机下发，应用侧不再维护第二份清单。"""
+        with patch.object(agent_tools.ops_client, "available_tools", return_value={
+                "container_logs": {"desc": "看日志", "params": {
+                    "name": {"type": "str", "required": True, "desc": "容器名"},
+                    "lines": {"type": "int", "default": 100, "desc": "行数"}}}}):
+            tool = agent_tools.build_tools()[0]
+        fields = tool.args_schema.model_fields
+        self.assertEqual(sorted(fields), ["lines", "name"])
+        self.assertTrue(fields["name"].is_required())
+        self.assertEqual(fields["lines"].default, 100)
+        self.assertEqual(fields["name"].description, "容器名")
+
+    def test_a_new_host_tool_needs_no_code_change(self):
+        """宿主机加一个工具，应用侧不改代码、不重建镜像也能用上。"""
+        with patch.object(agent_tools.ops_client, "available_tools", return_value={
+                "host_disk": {"desc": "看磁盘", "params": {}}}):
+            built = agent_tools.build_tools()
+        self.assertEqual([t.name for t in built], ["host_disk"])
+        self.assertEqual(built[0].description, "看磁盘")
 
     def test_tool_failure_is_returned_as_text_not_raised(self):
         """工具失败不能中断对话，要让模型看到失败原因。"""
-        with patch.object(agent_tools.ops_client, "available_tools",
-                          return_value={"container_logs": "看日志"}), \
+        with patch.object(agent_tools.ops_client, "available_tools", return_value={
+                "container_logs": {"desc": "看日志", "params": {
+                    "name": {"type": "str", "required": True, "desc": "容器名"},
+                    "lines": {"type": "int", "default": 100, "desc": "行数"}}}}), \
              patch.object(agent_tools.ops_client, "execute",
                           return_value={"ok": False, "error": "容器不存在"}):
             tool = agent_tools.build_tools()[0]
             self.assertIn("容器不存在", tool.invoke({"name": "ghost", "lines": 10}))
+
+    def test_legacy_endpoint_response_still_works(self):
+        """滚动升级期间宿主机可能还是老版本，只回一个描述字符串。"""
+        with patch.object(agent_tools.ops_client, "available_tools",
+                          return_value={"host_resources": "看内存"}):
+            built = agent_tools.build_tools()
+        self.assertEqual([t.name for t in built], ["host_resources"])
 
     def test_endpoint_outage_degrades_to_a_message(self):
         def boom(*args, **kwargs):
