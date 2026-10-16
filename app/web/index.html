@@ -1276,9 +1276,10 @@ async function ask() {
   const card = bot.querySelector('.card'), ans = bot.querySelector('.answer');
   toBottom();
   $('askBtn').disabled = true;
-  let text = '', pending = false;
+  let text = '', pending = false, finished = false;
   const webSrc = [];
-  const paint = () => { pending = false; const stick = nearBottom(); ans.innerHTML = md(text); ans.classList.add('cursor'); if (stick) toBottom(); };
+  // 渲染推迟到下一帧；流结束后才执行的那一帧不能再把光标加回去。
+  const paint = () => { pending = false; if (finished) return; const stick = nearBottom(); ans.innerHTML = md(text); ans.classList.add('cursor'); if (stick) toBottom(); };
   try {
     const r = await fetch('/api/ask', {method: 'POST', headers: {'Content-Type': 'application/json'},
                                        body: JSON.stringify({question: q, conversation_id: convId, web: webOn})});
@@ -1331,12 +1332,15 @@ async function ask() {
         }
       }
     }
+    finished = true;
     card.querySelector('.status')?.remove();
     ans.innerHTML = md(text || '（没有返回内容）');
   } catch (e) {
+    finished = true;
     card.querySelector('.status')?.remove();
     ans.innerHTML = md(text) + `<p class="error">请求失败：${esc(e.message)}</p>`;
   } finally {
+    finished = true;
     ans.classList.remove('cursor');
     arrangeSources(bot, text, true);
     addTools(bot, text, q, webSrc);
