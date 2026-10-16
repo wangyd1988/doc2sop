@@ -81,13 +81,41 @@ aside { width: 300px; flex-shrink: 0; background: var(--panel); border-right: 1p
 
 /* Main */
 main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-header { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--border);
-         background: var(--panel); }
-header .t { flex: 1; font-weight: 600; }
+header { display: flex; align-items: center; gap: 6px; padding: 10px 18px; border-bottom: 1px solid var(--border);
+         background: color-mix(in srgb, var(--panel) 88%, transparent); backdrop-filter: blur(8px);
+         position: relative; z-index: 30; }
+.head-title { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; }
+.head-title .t { font-weight: 650; font-size: 15px; letter-spacing: .2px; white-space: nowrap; }
+.model-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
+              background: var(--panel-2); border: 1px solid var(--border); padding: 3px 10px; border-radius: 999px;
+              max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-chip::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex-shrink: 0;
+                      box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
+header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9;
+             stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+.nav-btn { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 11px; border-radius: 10px;
+           color: var(--text); font-size: 13px; transition: background .15s, color .15s; }
+.nav-btn:hover { background: var(--panel-2); }
+.nav-btn.open { background: var(--accent-soft); color: var(--accent); }
+.nav-btn.icon-only { padding: 0 9px; }
+.new-btn { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border-radius: 10px;
+           background: var(--user-bg); color: #fff; font-size: 13px; font-weight: 500;
+           box-shadow: 0 2px 10px color-mix(in srgb, var(--accent) 30%, transparent); transition: transform .15s; }
+.new-btn:hover { transform: translateY(-1px); }
+.nav-sep { width: 1px; height: 20px; background: var(--border); margin: 0 6px; }
+.badge { min-width: 18px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 16px;
+         text-align: center; background: var(--panel-2); color: var(--muted); font-variant-numeric: tabular-nums; }
+.badge:empty { display: none; }
+.badge.on { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+.nav-btn.open .badge { background: var(--panel); }
+.pb-head .t small { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 6px; }
+@media (max-width: 1000px) { .model-chip { display: none; } }
+@media (max-width: 700px) { .nav-btn .lbl, .new-btn .lbl, .nav-sep { display: none; } }
 .icon-btn { padding: 6px 10px; border-radius: 8px; color: var(--muted); font-size: 13px; }
 .icon-btn:hover { background: var(--panel-2); color: var(--text); }
-.hist-wrap { position: relative; }
-.hist { position: absolute; top: 38px; right: 0; width: 300px; max-height: 60vh; overflow-y: auto;
+.hist-wrap { position: static; }
+.hist { position: absolute; top: calc(100% + 6px); right: 12px; width: 300px; max-width: calc(100vw - 24px);
+        max-height: 60vh; overflow-y: auto;
         background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 6px;
         box-shadow: var(--shadow); z-index: 40; }
 .conv { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 9px; cursor: pointer; }
@@ -99,7 +127,7 @@ header .t { flex: 1; font-weight: 600; }
 .conv .del { opacity: 0; color: var(--muted); padding: 4px 6px; border-radius: 6px; }
 .conv:hover .del { opacity: 1; }
 .conv .del:hover { color: var(--danger); background: var(--panel); }
-#menuBtn { display: none; font-size: 18px; }
+#menuBtn { display: none; }
 #chat { flex: 1; overflow-y: auto; padding: 24px 20px 12px; scroll-behavior: smooth; }
 .wrap { max-width: 820px; margin: 0 auto; }
 
@@ -179,8 +207,9 @@ header .t { flex: 1; font-weight: 600; }
 .step.running .cmd { color: #f59e0b; }
 
 /* Playbooks */
-.pb-wrap { position: relative; }
-.pb-panel { position: absolute; top: 38px; right: 0; width: 520px; max-height: 72vh; overflow-y: auto;
+.pb-wrap { position: static; }
+.pb-panel { position: absolute; top: calc(100% + 6px); right: 12px; width: 540px; max-width: calc(100vw - 24px);
+            max-height: 72vh; overflow-y: auto;
             background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px;
             box-shadow: var(--shadow); z-index: 40; }
 .pb-head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 10px; }
@@ -219,7 +248,7 @@ header .t { flex: 1; font-weight: 600; }
                                   background: var(--panel); color: var(--text); outline: none; }
 .pb-pick select { margin-top: 6px; padding: 4px; }
 .pb-pick select option { padding: 4px 6px; }
-.tl-wrap { position: relative; }
+.tl-wrap { position: static; }
 .tl-cmd { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--accent);
           background: var(--panel-2); border-radius: 6px; padding: 5px 8px; margin: 2px 0 5px;
           overflow-x: auto; white-space: nowrap; }
@@ -289,7 +318,7 @@ header .t { flex: 1; font-weight: 600; }
   aside { position: fixed; inset: 0 auto 0 0; transform: translateX(-100%); box-shadow: var(--shadow); }
   body.menu aside { transform: none; }
   body.menu .scrim { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 10; }
-  #menuBtn { display: block; }
+  #menuBtn { display: inline-flex; }
   #chat { padding: 16px 12px 8px; } .composer { padding: 8px 12px 12px; }
   .bubble-user { max-width: 88%; } .avatar { display: none; }
 }
@@ -312,20 +341,31 @@ header .t { flex: 1; font-weight: 600; }
 
 <main>
   <header>
-    <button class="icon-btn" id="menuBtn" title="文档">☰</button>
-    <div class="t">知识库问答</div>
-    <span class="icon-btn" id="modelInfo" style="cursor:default"></span>
-    <button class="icon-btn" id="newBtn" title="开始新对话">＋ 新对话</button>
+    <button class="nav-btn icon-only" id="menuBtn" title="文档" aria-label="文档">
+      <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    <div class="head-title">
+      <span class="t">知识库问答</span>
+      <span class="model-chip" id="modelInfo" hidden></span>
+    </div>
+    <button class="new-btn" id="newBtn" title="开始新对话">
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="lbl">新对话</span></button>
+    <span class="nav-sep"></span>
     <div class="tl-wrap">
-      <button class="icon-btn" id="tlBtn" title="工具：Agent 能查询的真实数据，全部只读">🔧 工具</button>
+      <button class="nav-btn" id="tlBtn" title="工具：Agent 能查询的真实数据，全部只读">
+        <svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/></svg>
+        <span class="lbl">工具</span><span class="badge" id="tlBadge"></span></button>
       <div class="pb-panel" id="tlPanel" hidden></div>
     </div>
     <div class="pb-wrap">
-      <button class="icon-btn" id="pbBtn" title="技能：从文档里学会的做法，按步骤调用已有工具">🧩 技能</button>
+      <button class="nav-btn" id="pbBtn" title="技能：从文档里学会的做法，按步骤调用已有工具">
+        <svg viewBox="0 0 24 24"><path d="M12 3l2.2 5.3L20 9l-4.4 3.9L17 19l-5-3-5 3 1.4-6.1L4 9l5.8-.7z"/></svg>
+        <span class="lbl">技能</span><span class="badge" id="pbBadge"></span></button>
       <div class="pb-panel" id="pbPanel" hidden></div>
     </div>
     <div class="hist-wrap">
-      <button class="icon-btn" id="histBtn" title="历史对话">🕘 历史</button>
+      <button class="nav-btn" id="histBtn" title="历史对话">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        <span class="lbl">历史</span></button>
       <div class="hist" id="histPanel" hidden></div>
     </div>
   </header>
@@ -441,11 +481,10 @@ async function loadDocs() {
   }
   $('catList').innerHTML = (d.categories || []).map(c => `<option value="${esc(c)}">`).join('');
   const tools = d.tools || [];
-  const books = d.playbooks || 0;
-  $('modelInfo').textContent = '🤖 ' + d.chat_model
-    + (tools.length ? ` · 🔧 ${tools.length} 工具` : '')
-    + (books ? ` · 🧩 ${books} 技能` : '');
-  $('modelInfo').title = tools.length ? '可调用的只读工具：' + tools.join('、') : '';
+  $('modelInfo').textContent = d.chat_model;
+  $('modelInfo').title = '当前对话模型：' + d.chat_model;
+  $('modelInfo').hidden = !d.chat_model;
+  refreshBadges();
   $('webBtn').hidden = !d.web_search;
   paintWeb();
   const chunks = allDocs.reduce((a, x) => a + x.chunks, 0);
@@ -830,8 +869,10 @@ async function loadPlaybooks() {
   const d = await (await fetch('/api/playbooks')).json();
   pbTools = d.tools || {};
   const list = d.playbooks || [];
+  const sc = countSkills(list);
+  setBadge('pbBadge', sc, '生效');
   $('pbPanel').innerHTML =
-    `<div class="pb-head"><span class="t">技能 ${list.length}</span>
+    `<div class="pb-head"><span class="t">技能<small>${sc.live} 个生效 · 共 ${sc.total} 个</small></span>
        <button class="icon-btn" id="pbNew">＋ 新建</button>
        <button class="icon-btn" id="pbFromDoc">从文档抽取</button></div>
      <div class="tl-note">📄 文档写了怎么做 → 🧩 技能定好按什么顺序做 → 🔧 工具去执行。<br>
@@ -1102,7 +1143,10 @@ async function loadTools() {
   const d = await (await fetch('/api/tools')).json();
   const tools = d.tools || {};
   const names = Object.keys(tools).sort();
-  const live = names.filter(n => tools[n].enabled && tools[n].runnable).length;
+  const tc = countTools(tools);
+  setBadge('tlBadge', tc, '可用');
+  // 工具停用/启用会改变技能是否生效，顺带刷新技能徽标。
+  fetch('/api/playbooks').then(r => r.json()).then(p => setBadge('pbBadge', countSkills(p.playbooks), '生效')).catch(() => {});
   const waiting = tlProposing ? [] : await (await fetch('/api/tools/pending')).json()
     .then(r => r.pending || []).catch(() => []);
   if (tlProposing && tlProposeKind === 'script') {
@@ -1111,7 +1155,7 @@ async function loadTools() {
     tlScriptDir = s.directory || '';
   }
   $('tlPanel').innerHTML =
-    `<div class="pb-head"><span class="t">工具 ${live}/${names.length} 可用</span>
+    `<div class="pb-head"><span class="t">工具<small>${tc.live} 个可用 · 共 ${tc.total} 个</small></span>
        <button class="icon-btn" id="tlNew">＋ 申请新工具</button></div>` +
     (d.error ? `<div class="pb-warn">工具接口不可用：${esc(d.error)}</div>` : '') +
     (tlProposing ? tlProposeForm() : tlWaiting(waiting)) +
@@ -1302,6 +1346,37 @@ async function ask() {
 }
 
 function autosize() { const t = $('question'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 180) + 'px'; }
+
+/* 顶栏徽标与面板标题共用同一套口径，避免两处数字对不上：
+   工具「可用」= 已启用且本机能运行；技能「生效」= 已启用且引用的工具都可用。 */
+const countTools = tools => {
+  const all = Object.values(tools || {});
+  return {live: all.filter(t => t.enabled && t.runnable).length, total: all.length};
+};
+const countSkills = list => ({
+  live: (list || []).filter(p => p.enabled && !(p.missing_tools || []).length).length,
+  total: (list || []).length,
+});
+function setBadge(id, c, what) {
+  const b = $(id);
+  b.textContent = c.total ? `${c.live}/${c.total}` : '';
+  b.classList.toggle('on', c.live > 0);
+  b.title = `${c.live} 个${what}，共 ${c.total} 个`;
+}
+async function refreshBadges() {
+  try {
+    const [t, p] = await Promise.all([fetch('/api/tools').then(r => r.json()),
+                                      fetch('/api/playbooks').then(r => r.json())]);
+    setBadge('tlBadge', countTools(t.tools), '可用');
+    setBadge('pbBadge', countSkills(p.playbooks), '生效');
+  } catch (_) { /* 徽标只是提示，失败不影响使用 */ }
+}
+/* 面板开着时，对应按钮高亮。 */
+document.addEventListener('click', () => setTimeout(() => {
+  $('tlBtn').classList.toggle('open', !$('tlPanel').hidden);
+  $('pbBtn').classList.toggle('open', !$('pbPanel').hidden);
+  $('histBtn').classList.toggle('open', !$('histPanel').hidden);
+}, 0));
 
 /* 联网开关：默认开启，记在浏览器里。服务端没配置搜索时按钮不显示。 */
 let webOn = localStorage.getItem('kb-web') !== 'off';
