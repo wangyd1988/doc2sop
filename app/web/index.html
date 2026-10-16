@@ -243,6 +243,21 @@ header .t { flex: 1; font-weight: 600; }
 .pb-pick .cnt { flex: 1; font-size: 12px; color: var(--muted); }
 .tools button { font-size: 12px; color: var(--muted); padding: 3px 8px; border-radius: 6px; }
 .tools button:hover { background: var(--panel-2); color: var(--text); }
+.tools button[data-savenote] { color: #0284c7; }
+.note-edit { margin-top: 8px; border: 1px solid #0ea5e9; border-radius: 10px; padding: 10px;
+             background: rgba(14,165,233,.06); font-size: 13px; }
+.note-edit .hd { font-weight: 600; margin-bottom: 6px; }
+.note-edit input, .note-edit textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px;
+             padding: 7px 9px; border-radius: 7px; border: 1px solid var(--border);
+             background: var(--panel); color: var(--text); margin-bottom: 6px; }
+.note-edit textarea { min-height: 160px; resize: vertical; }
+.note-edit .src-list, .note-edit .tip { font-size: 12px; color: var(--muted); }
+.note-edit .row { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+.note-edit .row button { padding: 5px 13px; border-radius: 7px; font-size: 13px; }
+.note-edit .ok { background: var(--user-bg); color: #fff; }
+.note-edit .cancel { background: var(--panel-2); color: var(--muted); }
+.note-edit .msg { font-size: 12px; color: var(--muted); }
+.note-edit .done { color: #059669; }
 
 /* Composer */
 .composer { padding: 10px 20px 18px; }
@@ -575,10 +590,51 @@ function addBot(inner) {
        <div class="steps"></div><div class="card">${inner}</div><div class="sources"></div></div></div>`);
   return $('bot' + id);
 }
-function addTools(bot, text, question) {
+function addTools(bot, text, question, sources) {
   bot.dataset.raw = text;
+  bot.dataset.q = question;
+  const web = (sources || []).filter(s => s.web);
+  bot._web = web;
   bot.insertAdjacentHTML('beforeend',
-    `<div class="tools"><button data-copy>⧉ 复制</button><button data-retry="${esc(question)}">↻ 重新回答</button></div>`);
+    `<div class="tools"><button data-copy>⧉ 复制</button><button data-retry="${esc(question)}">↻ 重新回答</button>${
+      web.length && text.trim() ? '<button data-savenote title="确认这段网络答案可信后，存为知识库文档，下次直接从知识库回答">📥 存入知识库</button>' : ''}</div>`);
+}
+
+/* 把联网得到的答案存进知识库：先给出可编辑的预览，人确认后才入库。 */
+function noteEditor(bot) {
+  const box = document.createElement('div');
+  box.className = 'note-edit';
+  const title = (bot.dataset.q || '').replace(/[？?。！!\s]+$/, '').slice(0, 40);
+  box.innerHTML = `<div class="hd">存入知识库 · 请先确认内容无误</div>
+    <input class="nt" maxlength="60" value="${esc(title)}" placeholder="文档标题">
+    <textarea class="nb">${esc((bot.dataset.raw || '').replace(/^\s*(\*\*)?知识库(里|中)没有[^\n]*\n+/, ''))}</textarea>
+    <div class="src-list">参考来源：${bot._web.map(s => esc(s.index) + ' ' + esc(s.location)).join('；')}</div>
+    <div class="row"><button class="ok" data-notego>确认存入</button><button class="cancel" data-notecancel>取消</button>
+      <span class="msg"></span></div>
+    <div class="tip">将保存为分类「网络补充」下的文档，标注来源链接和存入日期；删除方式与普通文档相同。</div>`;
+  bot.querySelector('.tools').after(box);
+  box.querySelector('.nt').focus();
+}
+async function saveNote(bot, box) {
+  const msg = box.querySelector('.msg');
+  const body = {title: box.querySelector('.nt').value.trim(), question: bot.dataset.q || '',
+                answer: box.querySelector('.nb').value.trim(),
+                sources: bot._web.map(s => ({index: s.index, location: s.location, url: s.url}))};
+  if (!body.title || !body.answer) { msg.textContent = '标题和内容都不能为空'; return; }
+  box.querySelector('[data-notego]').disabled = true;
+  msg.textContent = '正在入库…';
+  try {
+    const r = await fetch('/api/web-notes', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                             body: JSON.stringify(body)});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : '保存失败');
+    box.innerHTML = `<div class="done">✓ 已存入知识库：${esc(d.source)}（${d.chunks} 个片段）。下次问到相同问题会直接从知识库回答。</div>`;
+    const btn = bot.querySelector('[data-savenote]'); if (btn) { btn.textContent = '✓ 已存入'; btn.disabled = true; }
+    loadDocs();
+  } catch (err) {
+    msg.textContent = '失败：' + err.message;
+    box.querySelector('[data-notego]').disabled = false;
+  }
 }
 $('thread').addEventListener('click', e => {
   const chip = e.target.closest('.chip'); if (chip) { $('question').value = chip.textContent; ask(); return; }
@@ -592,6 +648,10 @@ $('thread').addEventListener('click', e => {
   if (copy) { navigator.clipboard?.writeText(copy.closest('.bot').dataset.raw || ''); copy.textContent = '✓ 已复制'; setTimeout(() => copy.textContent = '⧉ 复制', 1500); }
   const retry = e.target.closest('[data-retry]');
   if (retry) { $('question').value = retry.dataset.retry; ask(); }
+  const save = e.target.closest('[data-savenote]');
+  if (save) { const bot = save.closest('.bot'); if (!bot.querySelector('.note-edit')) noteEditor(bot); return; }
+  if (e.target.closest('[data-notecancel]')) { e.target.closest('.note-edit').remove(); return; }
+  if (e.target.closest('[data-notego]')) { const box = e.target.closest('.note-edit'); saveNote(box.closest('.bot'), box); }
 });
 const nearBottom = () => { const c = $('chat'); return c.scrollHeight - c.scrollTop - c.clientHeight < 120; };
 const toBottom = () => { $('chat').scrollTop = $('chat').scrollHeight; };
@@ -617,7 +677,7 @@ async function openConv(id) {
     if (m.role === 'user') { addUser(m.content); lastQuestion = m.content; continue; }
     const bot = addBot(`<div class="answer">${md(m.content)}</div>`);
     bot.querySelector('.sources').innerHTML = sourcesHtml(m.sources);
-    addTools(bot, m.content, lastQuestion);
+    addTools(bot, m.content, lastQuestion, m.sources);
   }
   if (!d.messages.length) welcome();
   toBottom();
@@ -1140,6 +1200,7 @@ async function ask() {
   toBottom();
   $('askBtn').disabled = true;
   let text = '', pending = false;
+  const webSrc = [];
   const paint = () => { pending = false; const stick = nearBottom(); ans.innerHTML = md(text); ans.classList.add('cursor'); if (stick) toBottom(); };
   try {
     const r = await fetch('/api/ask', {method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1171,6 +1232,7 @@ async function ask() {
              <div class="out"></div></details>`);
           if (nearBottom()) toBottom();
         } else if (msg.web_sources) {
+          webSrc.push(...msg.web_sources);
           bot.querySelector('.sources').insertAdjacentHTML('beforeend', sourcesHtml(msg.web_sources));
         } else if (msg.tool_result) {
           const steps = bot.querySelectorAll('.step.running');
@@ -1197,7 +1259,7 @@ async function ask() {
     ans.innerHTML = md(text) + `<p class="error">请求失败：${esc(e.message)}</p>`;
   } finally {
     ans.classList.remove('cursor');
-    addTools(bot, text, q);
+    addTools(bot, text, q, webSrc);
     $('askBtn').disabled = false; $('question').focus();
     loadConvs();
   }

@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 import secrets
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
@@ -92,6 +93,11 @@ def upload(file: UploadFile = File(...), category: str = Form("")):
         raise HTTPException(413, f"文件超过 {MAX_FILE_BYTES // 1024 // 1024}MB")
     if not data:
         raise HTTPException(400, "文件为空")
+    return ingest(name, data, category)
+
+
+def ingest(name: str, data: bytes, category: str = ""):
+    """Parse, chunk, embed and store one file. Shared by uploads and saved web notes."""
     digest = hashlib.sha256(data).hexdigest()
 
     images = ImageCollector()
@@ -122,6 +128,54 @@ def upload(file: UploadFile = File(...), category: str = Form("")):
     (FILES_DIR / name).write_bytes(data)
     return {"source": name, "chunks": len(texts), "images": images.stats(),
             "category": chosen}
+
+
+# --- Saving web answers ------------------------------------------------------
+#
+# 知识库答不了、联网搜到了之后，由人确认再存进知识库，下次就不用再搜。
+# 只能由用户在页面上点按钮触发，模型自己不能往知识库里写东西——
+# 否则一次被网页内容带偏的回答就会变成"团队知识"，以后每次都被当成权威引用。
+
+WEB_NOTE_CATEGORY = "网络补充"
+CITE_KB = re.compile(r"\[(\d{1,2})\]")
+# 回答开头那句「知识库里没有找到……以下来自网络搜索」，存进知识库后就成了错误信息。
+WEB_PREAMBLE = re.compile(r"^\s*(?:\*\*)?知识库(?:里|中)没有[^\n]*\n+")
+
+
+class WebNoteSource(BaseModel):
+    index: str = Field(pattern=r"^W\d{1,2}$")
+    location: str = Field(default="", max_length=200)
+    url: str = Field(pattern=r"^https?://", max_length=500)
+
+
+class WebNote(BaseModel):
+    title: str = Field(min_length=1, max_length=60)
+    question: str = Field(min_length=1, max_length=2000)
+    answer: str = Field(min_length=1, max_length=20000)
+    sources: list[WebNoteSource] = Field(min_length=1, max_length=20)
+
+
+def web_note_markdown(note: WebNote, saved_by: str, today: str) -> str:
+    # 知识库片段的 [1][2] 指向的是别的文档，存进来就成了悬空引用，去掉；网络来源 [W1] 保留并列出链接。
+    answer = WEB_PREAMBLE.sub("", CITE_KB.sub("", note.answer)).strip()
+    refs = "\n".join(f"- [{s.index}] {s.location or s.url} — {s.url}" for s in note.sources)
+    return (f"# {note.title}\n\n"
+            f"> 来源：网络搜索，{today} 由 {saved_by} 确认后存入知识库。"
+            f"网络内容可能随时间变化，引用时请注意时效，必要时打开原链接核对。\n\n"
+            f"## 问题\n\n{note.question.strip()}\n\n"
+            f"## 答案\n\n{answer}\n\n"
+            f"## 参考来源\n\n{refs}\n")
+
+
+@app.post("/api/web-notes")
+def save_web_note(note: WebNote):
+    """把一条联网得到的回答存成知识库文档（Markdown），走和上传完全相同的入库流程。"""
+    today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+    name = safe_name(f"{WEB_NOTE_CATEGORY}-{note.title.strip()}.md")
+    data = web_note_markdown(note, WEB_USER, today).encode("utf-8")
+    result = ingest(name, data, WEB_NOTE_CATEGORY)
+    log.info("saved web note %s (%d chunks)", name, result["chunks"])
+    return result
 
 
 class CategoryUpdate(BaseModel):

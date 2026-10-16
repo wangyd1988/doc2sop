@@ -228,5 +228,61 @@ class DocumentTests(unittest.TestCase):
         self.assertFalse((FILES_DIR / "待删除.txt").exists())
 
 
+class WebNoteTests(unittest.TestCase):
+    """联网得到的答案，经人确认后存成知识库文档。"""
+
+    setUp = DocumentTests.setUp
+    documents = DocumentTests.documents
+
+    NOTE = {"title": "PostgreSQL VACUUM 区别", "question": "VACUUM FULL 和 VACUUM 有什么区别？",
+            "answer": "知识库里没有找到相关内容，以下内容来自网络搜索。\n\n"
+                      "VACUUM FULL 会重写整表并锁表 [W1]；参见内部规范 [2]。",
+            "sources": [{"index": "W1", "location": "PostgreSQL 文档",
+                         "url": "https://www.postgresql.org/docs/current/sql-vacuum.html"}]}
+
+    def save(self, **change):
+        return self.client.post("/api/web-notes", json={**self.NOTE, **change}, auth=self.auth)
+
+    def test_saved_note_becomes_a_normal_document(self):
+        response = self.save()
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["source"], "网络补充-PostgreSQL VACUUM 区别.md")
+        self.assertEqual(body["category"], "网络补充")
+        listed = self.documents()["documents"]
+        self.assertEqual([d["source"] for d in listed], [body["source"]])
+
+    def test_note_records_where_it_came_from_and_when(self):
+        self.save()
+        text = (FILES_DIR / "网络补充-PostgreSQL VACUUM 区别.md").read_text(encoding="utf-8")
+        self.assertIn("来源：网络搜索", text)
+        self.assertIn(WEB_USER, text)
+        self.assertIn("https://www.postgresql.org/docs/current/sql-vacuum.html", text)
+        self.assertIn("[W1]", text)
+        self.assertNotIn("[2]", text)   # 指向别的知识库文档的引用存进来会悬空，要去掉
+        self.assertNotIn("知识库里没有", text)   # 存进来之后这句话就不成立了
+        self.assertIn("VACUUM FULL 会重写整表", text)
+
+    def test_only_web_sources_with_real_links_are_accepted(self):
+        bad_sources = [
+            [],
+            [{"index": "1", "location": "x", "url": "https://a.example"}],
+            [{"index": "W1", "location": "x", "url": "javascript:alert(1)"}],
+        ]
+        for sources in bad_sources:
+            with self.subTest(sources=sources):
+                self.assertEqual(self.save(sources=sources).status_code, 422)
+
+    def test_title_cannot_escape_the_files_directory(self):
+        response = self.save(title="../../etc/passwd")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn("/", response.json()["source"])
+        self.assertTrue((FILES_DIR / response.json()["source"]).is_file())
+
+    def test_requires_login(self):
+        response = self.client.post("/api/web-notes", json=self.NOTE)
+        self.assertEqual(response.status_code, 401)
+
+
 if __name__ == "__main__":
     unittest.main()
