@@ -504,6 +504,22 @@ class ManagementTests(unittest.TestCase):
         with self.assertRaises(ops.ConfigError):
             ops.set_override("one", desc="x" * (ops.MAX_DESC + 1))
 
+    def test_tool_names_stay_english_but_display_names_can_be_chinese(self):
+        """工具名是发给模型的函数名，按协议只能用英文；中文放 label。"""
+        with self.assertRaises(ops.ConfigError) as caught:
+            ops.propose_tool({"name": "看时间", "desc": "几点了",
+                              "binary": "date", "argv": ["date"], "params": {}})
+        self.assertIn("label", str(caught.exception))
+
+        ops.set_override("one", label="内存概览")
+        self.assertEqual(ops.describe_tools()["one"]["label"], "内存概览")
+        self.assertEqual(ops.all_tools()["one"]["argv"], ["free", "-m"])
+
+    def test_display_name_never_reaches_the_model(self):
+        ops.set_override("one", label="内存概览")
+        advertised = ops.available_tools()["one"]
+        self.assertEqual(sorted(advertised), ["desc", "params"])
+
     def test_a_broken_overrides_file_does_not_lose_the_tools(self):
         self.overrides_file().write_text("overrides: [not a mapping]\n", encoding="utf-8")
         ops.refresh(force=True)
@@ -547,6 +563,28 @@ class ManagementTests(unittest.TestCase):
         ops.propose_tool(self.GOOD)
         with self.assertRaises(ops.ConfigError):
             ops.propose_tool(self.GOOD)
+
+    def test_a_missing_command_is_refused_with_a_suggestion(self):
+        """命令写错时当场说清原因并给替代，而不是批准后才发现跑不了。"""
+        with patch.object(ops.shutil, "which", return_value=None), \
+             patch.object(ops, "suggest_binaries", return_value=["date", "dateutils"]):
+            with self.assertRaises(ops.ConfigError) as caught:
+                ops.propose_tool({"name": "clock", "desc": "看时间",
+                                  "binary": "datetime", "argv": ["datetime"],
+                                  "params": {}})
+        message = str(caught.exception)
+        self.assertIn("datetime", message)
+        self.assertIn("date", message)
+        self.assertEqual(ops.list_pending(), [])  # 没写错的东西不进队列
+
+    def test_suggestions_catch_the_usual_typos(self):
+        with patch.dict(ops.os.environ, {"PATH": "/fake"}), \
+             patch.object(ops.os, "listdir",
+                          return_value=["date", "df", "who", "uptime", "ss"]):
+            self.assertEqual(ops.suggest_binaries("datetime")[0], "date")
+            self.assertIn("date", ops.suggest_binaries("dat"))
+            self.assertIn("uptime", ops.suggest_binaries("uptim"))
+            self.assertEqual(ops.suggest_binaries("zzzzzzzz"), [])
 
     def test_approval_writes_it_into_the_main_file_and_takes_effect(self):
         item = ops.propose_tool(self.GOOD)

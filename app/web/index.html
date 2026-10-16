@@ -865,19 +865,22 @@ let tlEditing = null, tlProposing = false;
 function tlCard(name, t) {
   const params = Object.entries(t.params || {});
   const editing = tlEditing === name;
+  const field = 'width:100%;box-sizing:border-box;font:inherit;font-size:12.5px;padding:7px;'
+              + 'border-radius:7px;border:1px solid var(--border);background:var(--panel-2);color:var(--text)';
   return `<div class="pb ${t.enabled ? '' : 'off'} ${t.runnable ? '' : 'bad'}">
     <div class="pb-top">
-      <span class="nm">${esc(name)}</span>
+      <span class="nm">${esc(t.label || name)}</span>
+      ${t.label ? `<span class="src">${esc(name)}</span>` : ''}
       ${(t.overridden || []).length ? '<span class="src">已在页面改过</span>' : ''}
-      <button data-tledit="${esc(name)}">${editing ? '收起' : '改说明'}</button>
+      <button data-tledit="${esc(name)}">${editing ? '收起' : '改名/说明'}</button>
       <button data-tltoggle="${esc(name)}">${t.enabled ? '停用' : '启用'}</button>
     </div>
     <div class="pb-body">
-      ${editing ? `<textarea id="tlDesc" maxlength="300"
-                     placeholder="这个工具能回答什么问题？写清楚，模型靠它判断要不要调用"
-                     style="width:100%;box-sizing:border-box;min-height:62px;font:inherit;font-size:12.5px;
-                            padding:7px;border-radius:7px;border:1px solid var(--border);
-                            background:var(--panel-2);color:var(--text);resize:vertical">${esc(t.desc)}</textarea>
+      ${editing ? `<input id="tlLabel" maxlength="40" style="${field};margin-bottom:5px"
+                     placeholder="中文显示名，可留空（工具名 ${esc(name)} 是发给模型的，不能改）"
+                     value="${esc(t.label || '')}">
+          <textarea id="tlDesc" maxlength="300" style="${field};min-height:62px;resize:vertical"
+                     placeholder="这个工具能回答什么问题？写清楚，模型靠它判断要不要调用">${esc(t.desc)}</textarea>
           <div class="pb-edit"><div class="row">
             <button class="ok" data-tlsave="${esc(name)}">保存</button>
             ${(t.overridden || []).length
@@ -896,10 +899,13 @@ function tlCard(name, t) {
 function tlProposeForm() {
   return `<div class="pb-pick tl-pick">
     <div class="hd">申请新工具</div>
-    <input id="tlNewName" placeholder="工具名，如 host_who（小写字母、数字、下划线）" maxlength="40">
+    <input id="tlNewName" placeholder="工具名，如 host_time（小写字母、数字、下划线）" maxlength="40">
+    <input id="tlNewLabel" placeholder="中文显示名，如「看时间」（可留空，只用于界面）" maxlength="40">
     <input id="tlNewDesc" placeholder="给模型看的说明：什么情况下该调用它" maxlength="300">
-    <input id="tlNewCmd" placeholder="完整命令，如 who -H" maxlength="200">
+    <input id="tlNewCmd" placeholder="完整命令，如 date +%H:%M" maxlength="200">
     <div class="tl-note">
+      工具名会作为函数名发给模型，按 function calling 规范<b>只能用英文</b>；
+      中文写在「显示名」里，界面上显示的就是它。<br>
       只能申请<b>固定命令</b>（不带参数）。带参数的工具需要配套设计参数白名单正则，
       请直接在宿主机的配置文件里添加。<br>
       提交后<b>不会生效</b>，要在宿主机上批准——页面定义不了宿主机执行什么。
@@ -938,7 +944,7 @@ async function loadTools() {
     `<div class="tl-note">停用和改说明立刻生效，不重启服务；新增工具需要宿主机批准。</div>`;
   if (tlProposing) $('tlNewName').focus();
   if (tlEditing) {
-    const box = $('tlDesc');
+    const box = $('tlLabel') || $('tlDesc');
     if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
   }
 }
@@ -980,8 +986,11 @@ $('tlPanel').addEventListener('click', async e => {
   if (save) {
     const desc = $('tlDesc').value.trim();
     if (!desc) return alert('说明不能为空');
-    try { await tlSend('/api/tools/override', {name: save, desc}); tlEditing = null; }
-    catch (err) { alert('保存失败：' + err.message); }
+    try {
+      await tlSend('/api/tools/override',
+                   {name: save, desc, label: $('tlLabel').value.trim()});
+      tlEditing = null;
+    } catch (err) { alert('保存失败：' + err.message); }
     return loadTools();
   }
 
@@ -999,7 +1008,8 @@ $('tlPanel').addEventListener('click', async e => {
     if (!parts.length) return fail('请填写完整命令');
     try {
       const d = await tlSend('/api/tools/propose', {
-        name: $('tlNewName').value.trim(), desc: $('tlNewDesc').value.trim(),
+        name: $('tlNewName').value.trim(), label: $('tlNewLabel').value.trim(),
+        desc: $('tlNewDesc').value.trim(),
         binary: parts[0], argv: parts, params: {}});
       tlProposing = false;
       await loadTools();

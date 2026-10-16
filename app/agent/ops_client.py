@@ -69,13 +69,15 @@ def list_pending() -> list:
         return []
 
 
-def override(name: str, enabled_flag=None, desc=None, reset=False) -> dict:
-    """Toggle a tool or reword its description. Raises OpsUnavailable on refusal."""
+def override(name: str, enabled_flag=None, desc=None, label=None, reset=False) -> dict:
+    """Toggle a tool, reword it, or rename it for display. Never changes commands."""
     payload = {"name": name, "reset": bool(reset)}
     if enabled_flag is not None:
         payload["enabled"] = bool(enabled_flag)
     if desc is not None:
         payload["desc"] = desc
+    if label is not None:
+        payload["label"] = label
     return _request("/tools/override", payload).get("tool", {})
 
 

@@ -11,6 +11,7 @@ shared token. Standard library only, so it runs on any box with Python 3.9+.
     OPS_TOKEN=... python ops_readonly.py --port 8799
 """
 import argparse
+import difflib
 import json
 import os
 import re
@@ -39,6 +40,7 @@ PATTERNS = {"name": NAME, "k8s_name": K8S_NAME, "resource": RESOURCE}
 # 这样 docker 的 "{{.Names}}" 之类模板不会被误伤，参数值也永远独占一个 argv 项。
 PLACEHOLDER = re.compile(r"^\{([a-z_][a-z0-9_]*)\}$")
 TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
+MAX_LABEL = 40
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent / "ops_tools.yaml"
 
@@ -91,7 +93,10 @@ def _check_tool(raw):
         raise ConfigError("每个工具必须是映射")
     name = str(raw.get("name", "")).strip()
     if not TOOL_NAME.match(name):
-        raise ConfigError(f"工具名不合法：{name[:40]!r}")
+        raise ConfigError(
+            f"工具名不合法：{name[:40]!r}。它会作为函数名发给模型，"
+            f"按 function calling 的规范只能用小写字母、数字和下划线，不能用中文；"
+            f"中文名请写在 label 字段里，界面会显示它。")
     binary = str(raw.get("binary", "")).strip()
     if not binary:
         raise ConfigError(f"{name} 缺少 binary")
@@ -118,7 +123,8 @@ def _check_tool(raw):
         if not PLACEHOLDER.match(part) and part in FORBIDDEN:
             raise ConfigError(f"{name}.argv 含写操作动词 {part}")
 
-    return {"name": name, "desc": str(raw.get("desc", "")).strip(),
+    return {"name": name, "label": str(raw.get("label", "")).strip()[:MAX_LABEL],
+            "desc": str(raw.get("desc", "")).strip(),
             "binary": binary, "argv": argv, "params": params,
             "enabled": bool(raw.get("enabled", True))}
 
@@ -183,9 +189,9 @@ def load_tools(path):
     return tools, problems
 
 
-# 覆盖层只允许改这两个字段：一个是开关（缩权方向），一个是给模型看的说明。
-# 两者都不改变实际执行的命令，所以覆盖层即使被完全写坏也无法提权。
-OVERRIDABLE = ("enabled", "desc")
+# 覆盖层只允许改这几个字段：一个是开关（缩权方向），两个是给人和模型看的文字。
+# 它们都不改变实际执行的命令，所以覆盖层即使被完全写坏也无法提权。
+OVERRIDABLE = ("enabled", "desc", "label")
 MAX_DESC = 300
 
 
@@ -202,6 +208,8 @@ def load_overrides():
             kept["enabled"] = bool(patch["enabled"])
         if "desc" in patch:
             kept["desc"] = str(patch["desc"]).strip()[:MAX_DESC]
+        if "label" in patch:
+            kept["label"] = str(patch["label"]).strip()[:MAX_LABEL]
         if kept:
             clean[str(name)] = kept
     return clean
@@ -279,6 +287,7 @@ def available_tools():
 def describe_tools():
     """Everything the UI needs in order to show what the agent can really run."""
     return {name: {"desc": spec["desc"], "params": spec["params"],
+                   "label": spec.get("label", ""),
                    "binary": spec["binary"],
                    "command": " ".join(spec["argv"]),
                    "enabled": spec["enabled"],
@@ -287,7 +296,7 @@ def describe_tools():
             for name, spec in all_tools().items()}
 
 
-def set_override(name, enabled=None, desc=None):
+def set_override(name, enabled=None, desc=None, label=None):
     """The only change the web UI may make to a live tool."""
     if name not in all_tools():
         raise ConfigError(f"未知工具：{name}")
@@ -299,6 +308,11 @@ def set_override(name, enabled=None, desc=None):
         if not 1 <= len(text) <= MAX_DESC:
             raise ConfigError(f"描述长度需在 1..{MAX_DESC} 之间")
         patch["desc"] = text
+    if label is not None:
+        text = str(label).strip()
+        if len(text) > MAX_LABEL:
+            raise ConfigError(f"显示名不能超过 {MAX_LABEL} 个字")
+        patch["label"] = text
     if not patch:
         raise ConfigError("没有要修改的字段")
 
@@ -324,11 +338,44 @@ def list_pending():
     return entries if isinstance(entries, list) else []
 
 
+def suggest_binaries(wanted, limit=3):
+    """Commands on PATH that look like the one they typed.
+
+    Turns a blunt "no such command" into "did you mean date?", which is the
+    difference between a usable form and a guessing game.
+    """
+    wanted = str(wanted or "").strip()
+    if not wanted:
+        return []
+    names = set()
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory:
+            continue
+        try:
+            names.update(os.listdir(directory))
+        except OSError:
+            continue
+    names.discard(wanted)
+    # 先看是不是多写了后缀（datetime -> date），再退回模糊匹配。
+    prefix = sorted((n for n in names if len(n) >= 3 and wanted.startswith(n)),
+                    key=len, reverse=True)
+    fuzzy = difflib.get_close_matches(wanted, names, n=limit * 2, cutoff=0.6)
+    return (prefix + [n for n in fuzzy if n not in prefix])[:limit]
+
+
 def propose_tool(raw, author="web"):
     """Queue a new tool for review. Proposals are never loaded as usable tools."""
     spec = _check_tool(raw)  # 当场校验，让申请人立刻看到问题
     if spec["name"] in all_tools():
         raise ConfigError(f"已存在同名工具：{spec['name']}")
+    if not shutil.which(spec["binary"]):
+        # 批准之后才发现跑不了，是最差的体验：现在就说清楚，并给出替代。
+        hint = suggest_binaries(spec["binary"])
+        raise ConfigError(
+            f"本机没有 {spec['binary']} 这个命令"
+            + (f"，你是不是想用 {hint[0]}？" if hint else "。")
+            + (f"（相近的还有：{'、'.join(hint[1:])}）" if len(hint) > 1 else "")
+            + " 申请的工具必须现在就能跑；若要装好再用，请直接写进配置文件。")
     entries = list_pending()
     if any((item.get("tool") or {}).get("name") == spec["name"] for item in entries):
         raise ConfigError(f"已有同名待审申请：{spec['name']}")
@@ -498,7 +545,8 @@ class Handler(BaseHTTPRequestHandler):
                 enabled = payload.get("enabled")
                 tool = set_override(name,
                                     enabled=None if enabled is None else bool(enabled),
-                                    desc=payload.get("desc"))
+                                    desc=payload.get("desc"),
+                                    label=payload.get("label"))
                 print(f"[override] {name} enabled={enabled} "
                       f"desc={'改了' if payload.get('desc') else '未改'}", flush=True)
         except ConfigError as exc:

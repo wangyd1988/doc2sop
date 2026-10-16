@@ -262,11 +262,13 @@ class ToolOverride(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     enabled: bool | None = None
     desc: str | None = Field(default=None, max_length=300)
+    label: str | None = Field(default=None, max_length=40)
     reset: bool = False
 
 
 class ToolProposal(BaseModel):
     name: str = Field(min_length=1, max_length=40)
+    label: str = Field(default="", max_length=40)
     desc: str = Field(min_length=1, max_length=300)
     binary: str = Field(min_length=1, max_length=40)
     argv: list[str] = Field(min_length=1, max_length=20)
@@ -282,11 +284,13 @@ def tools_overview():
 
 @app.post("/api/tools/override")
 def tools_override(body: ToolOverride):
-    if body.enabled is None and body.desc is None and not body.reset:
+    if (body.enabled is None and body.desc is None
+            and body.label is None and not body.reset):
         raise HTTPException(status_code=400, detail="没有要修改的字段")
     try:
         tool = ops_client.override(body.name, enabled_flag=body.enabled,
-                                   desc=body.desc, reset=body.reset)
+                                   desc=body.desc, label=body.label,
+                                   reset=body.reset)
     except ops_client.OpsUnavailable as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"tool": tool}
