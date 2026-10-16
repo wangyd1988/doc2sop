@@ -422,5 +422,152 @@ class AgentLoopTests(unittest.TestCase):
         self.assertGreater(preview["lines"], 100)
 
 
+class ManagementTests(unittest.TestCase):
+    """页面能改什么、不能改什么，本身就是一条安全边界。
+
+    允许：启停、改说明（都不影响实际执行的命令）。
+    禁止：改命令、加工具——后者只能提申请，由人在宿主机批准。
+    """
+
+    MAIN = ("tools:\n"
+            "  - {name: one, desc: 原说明, binary: free, argv: [free, -m], params: {}}\n"
+            "  - {name: two, desc: 另一个, binary: df, argv: [df, -h], params: {}}\n")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.main = Path(self.tmp.name) / "ops_tools.yaml"
+        self.main.write_text(self.MAIN, encoding="utf-8")
+        patcher = patch.dict(ops._state, {"path": self.main, "mtime": None,
+                                          "omtime": None, "tools": {}, "problems": []})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # 假装所有命令本机都有，这样 available_tools 的差异只来自启停，断言才精确。
+        which = patch.object(ops.shutil, "which", return_value="/usr/bin/true")
+        which.start()
+        self.addCleanup(which.stop)
+
+    def overrides_file(self):
+        return Path(self.tmp.name) / "ops_tools.overrides.yaml"
+
+    def write_overrides(self, mapping):
+        import yaml
+        self.overrides_file().write_text(
+            yaml.safe_dump({"overrides": mapping}, allow_unicode=True), encoding="utf-8")
+        ops.refresh(force=True)
+
+    # --- 开关与说明 ---------------------------------------------------------
+
+    def test_disabling_hides_the_tool_and_refuses_execution(self):
+        self.assertIn("one", ops.available_tools())
+        ops.set_override("one", enabled=False)
+        self.assertNotIn("one", ops.available_tools())
+        self.assertIn("未知工具", ops.run_tool("one", {})["error"])
+        self.assertIn("one", ops.describe_tools())  # 界面上仍然看得到
+
+    def test_description_can_be_reworded_without_touching_the_command(self):
+        ops.set_override("one", desc="新说明")
+        spec = ops.all_tools()["one"]
+        self.assertEqual(spec["desc"], "新说明")
+        self.assertEqual(spec["argv"], ["free", "-m"])
+        self.assertEqual(ops.available_tools()["one"]["desc"], "新说明")
+
+    def test_overrides_cannot_change_the_command(self):
+        """整个设计的根基：覆盖层写了 argv/binary 也必须被忽略。"""
+        self.write_overrides({"one": {"desc": "伪装成人畜无害",
+                                      "argv": ["cat", "/etc/shadow"], "binary": "cat",
+                                      "params": {"x": {"type": "str"}}}})
+        spec = ops.all_tools()["one"]
+        self.assertEqual(spec["argv"], ["free", "-m"])
+        self.assertEqual(spec["binary"], "free")
+        self.assertEqual(spec["params"], {})
+        self.assertEqual(spec["desc"], "伪装成人畜无害")
+
+    def test_written_overrides_contain_only_the_two_allowed_fields(self):
+        import yaml
+        ops.set_override("one", enabled=False, desc="短说明")
+        saved = yaml.safe_load(self.overrides_file().read_text(encoding="utf-8"))
+        self.assertEqual(sorted(saved["overrides"]["one"]), ["desc", "enabled"])
+
+    def test_reset_falls_back_to_the_handwritten_definition(self):
+        ops.set_override("one", enabled=False, desc="临时说明")
+        ops.reset_override("one")
+        spec = ops.all_tools()["one"]
+        self.assertEqual(spec["desc"], "原说明")
+        self.assertTrue(spec["enabled"])
+
+    def test_override_of_an_unknown_tool_is_refused(self):
+        with self.assertRaises(ops.ConfigError):
+            ops.set_override("nope", enabled=False)
+
+    def test_description_length_is_capped(self):
+        with self.assertRaises(ops.ConfigError):
+            ops.set_override("one", desc="x" * (ops.MAX_DESC + 1))
+
+    def test_a_broken_overrides_file_does_not_lose_the_tools(self):
+        self.overrides_file().write_text("overrides: [not a mapping]\n", encoding="utf-8")
+        ops.refresh(force=True)
+        self.assertEqual(sorted(ops.all_tools()), ["one", "two"])
+
+    # --- 申请与批准 ---------------------------------------------------------
+
+    GOOD = {"name": "three", "desc": "看登录用户", "binary": "who",
+            "argv": ["who"], "params": {}}
+
+    def test_a_proposal_is_inert_until_approved(self):
+        """提交只是排队。没批准之前，模型绝不该看见它。"""
+        item = ops.propose_tool(self.GOOD)
+        self.assertNotIn("three", ops.all_tools())
+        self.assertNotIn("three", ops.available_tools())
+        self.assertIn("未知工具", ops.run_tool("three", {})["error"])
+        self.assertEqual(len(ops.list_pending()), 1)
+        self.assertEqual(item["tool"]["name"], "three")
+
+    def test_the_pending_file_is_never_loaded_as_tools(self):
+        ops.propose_tool(self.GOOD)
+        ops.refresh(force=True)
+        self.assertEqual(sorted(ops.all_tools()), ["one", "two"])
+
+    def test_proposals_face_the_same_validation(self):
+        for bad, expected in [
+            ({"name": "x", "binary": "docker", "argv": ["bash", "-c", "id"], "params": {}},
+             "第一项"),
+            ({"name": "x", "binary": "docker", "argv": ["docker", "rm", "a"], "params": {}},
+             "写操作"),
+            ({"name": "x", "binary": "cat", "argv": ["cat", "{p}"], "params": {}},
+             "未声明的参数"),
+        ]:
+            with self.subTest(bad=bad), self.assertRaises(ops.ConfigError) as caught:
+                ops.propose_tool(bad)
+            self.assertIn(expected, str(caught.exception))
+
+    def test_duplicate_names_are_refused(self):
+        with self.assertRaises(ops.ConfigError):
+            ops.propose_tool({**self.GOOD, "name": "one"})
+        ops.propose_tool(self.GOOD)
+        with self.assertRaises(ops.ConfigError):
+            ops.propose_tool(self.GOOD)
+
+    def test_approval_writes_it_into_the_main_file_and_takes_effect(self):
+        item = ops.propose_tool(self.GOOD)
+        spec = ops.approve_pending(item["id"])
+        self.assertEqual(spec["argv"], ["who"])
+        self.assertIn("three", ops.all_tools())
+        self.assertEqual(ops.list_pending(), [])
+        self.assertIn("three", self.main.read_text(encoding="utf-8"))
+
+    def test_rejection_drops_it_and_leaves_the_main_file_alone(self):
+        before = self.main.read_text(encoding="utf-8")
+        item = ops.propose_tool(self.GOOD)
+        ops.drop_pending(item["id"])
+        self.assertEqual(ops.list_pending(), [])
+        self.assertEqual(self.main.read_text(encoding="utf-8"), before)
+
+    def test_approval_can_use_the_tool_name_too(self):
+        ops.propose_tool(self.GOOD)
+        ops.approve_pending("three")
+        self.assertIn("three", ops.all_tools())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -213,6 +213,18 @@ header .t { flex: 1; font-weight: 600; }
                                   background: var(--panel); color: var(--text); outline: none; }
 .pb-pick select { margin-top: 6px; padding: 4px; }
 .pb-pick select option { padding: 4px 6px; }
+.tl-wrap { position: relative; }
+.tl-cmd { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--accent);
+          background: var(--panel-2); border-radius: 6px; padding: 5px 8px; margin: 2px 0 5px;
+          overflow-x: auto; white-space: nowrap; }
+.tl-params { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; color: var(--muted); }
+.tl-params code { color: var(--text); }
+.tl-note { font-size: 11.5px; color: var(--muted); padding: 2px 4px 8px; line-height: 1.6; }
+.tl-wait { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 10px;
+           padding: 9px 11px; margin-bottom: 8px; font-size: 12.5px; }
+.tl-wait .cmd { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px;
+                color: var(--muted); margin-top: 3px; }
+.tl-pick input { margin-bottom: 6px; }
 .pb-pick input:focus, .pb-pick select:focus { border-color: var(--accent); }
 .pb-pick .row { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
 .pb-pick .row button { padding: 6px 13px; border-radius: 7px; font-size: 13px; }
@@ -265,6 +277,10 @@ header .t { flex: 1; font-weight: 600; }
     <div class="t">知识库问答</div>
     <span class="icon-btn" id="modelInfo" style="cursor:default"></span>
     <button class="icon-btn" id="newBtn" title="开始新对话">＋ 新对话</button>
+    <div class="tl-wrap">
+      <button class="icon-btn" id="tlBtn" title="运维工具">🔧 工具</button>
+      <div class="pb-panel" id="tlPanel" hidden></div>
+    </div>
     <div class="pb-wrap">
       <button class="icon-btn" id="pbBtn" title="排查剧本">📋 剧本</button>
       <div class="pb-panel" id="pbPanel" hidden></div>
@@ -837,6 +853,163 @@ $('pbPanel').addEventListener('keydown', e => {
 
 $('pbPanel').addEventListener('dblclick', e => {
   if (e.target.closest('#pbDocSelect')) $('pbDoExtract')?.click();
+});
+
+/* ---- 运维工具面板 -------------------------------------------------------
+   页面能做的事是有意划清的：
+     启停、改描述 -> 直接生效，因为它们都不改变实际执行的命令；
+     新增工具     -> 只能提交申请，必须有人在宿主机上批准。
+   命令模板只在宿主机那份手写配置里定义，这个界面碰不到。            */
+let tlEditing = null, tlProposing = false;
+
+function tlCard(name, t) {
+  const params = Object.entries(t.params || {});
+  const editing = tlEditing === name;
+  return `<div class="pb ${t.enabled ? '' : 'off'} ${t.runnable ? '' : 'bad'}">
+    <div class="pb-top">
+      <span class="nm">${esc(name)}</span>
+      ${(t.overridden || []).length ? '<span class="src">已在页面改过</span>' : ''}
+      <button data-tledit="${esc(name)}">${editing ? '收起' : '改说明'}</button>
+      <button data-tltoggle="${esc(name)}">${t.enabled ? '停用' : '启用'}</button>
+    </div>
+    <div class="pb-body">
+      ${editing ? `<textarea id="tlDesc" maxlength="300"
+                     placeholder="这个工具能回答什么问题？写清楚，模型靠它判断要不要调用"
+                     style="width:100%;box-sizing:border-box;min-height:62px;font:inherit;font-size:12.5px;
+                            padding:7px;border-radius:7px;border:1px solid var(--border);
+                            background:var(--panel-2);color:var(--text);resize:vertical">${esc(t.desc)}</textarea>
+          <div class="pb-edit"><div class="row">
+            <button class="ok" data-tlsave="${esc(name)}">保存</button>
+            ${(t.overridden || []).length
+              ? `<button class="cancel" data-tlreset="${esc(name)}">恢复配置文件原值</button>` : ''}
+          </div></div>`
+        : `<div class="pb-trig">${esc(t.desc)}</div>`}
+      <div class="tl-cmd">${esc(t.command)}</div>
+      ${params.length ? `<div class="tl-params">${params.map(([key, p]) =>
+          `<span><code>${esc(key)}</code> ${p.required ? '必填' : '可选'}${
+            p.desc ? '：' + esc(p.desc) : ''}</span>`).join('')}</div>` : ''}
+      ${t.runnable ? '' : `<div class="pb-warn">⚠ 本机没有 ${esc(t.binary)}，该工具不可用</div>`}
+    </div>
+  </div>`;
+}
+
+function tlProposeForm() {
+  return `<div class="pb-pick tl-pick">
+    <div class="hd">申请新工具</div>
+    <input id="tlNewName" placeholder="工具名，如 host_who（小写字母、数字、下划线）" maxlength="40">
+    <input id="tlNewDesc" placeholder="给模型看的说明：什么情况下该调用它" maxlength="300">
+    <input id="tlNewCmd" placeholder="完整命令，如 who -H" maxlength="200">
+    <div class="tl-note">
+      只能申请<b>固定命令</b>（不带参数）。带参数的工具需要配套设计参数白名单正则，
+      请直接在宿主机的配置文件里添加。<br>
+      提交后<b>不会生效</b>，要在宿主机上批准——页面定义不了宿主机执行什么。
+    </div>
+    <div class="pb-edit"><div class="row">
+      <button class="ok" id="tlDoPropose">提交申请</button>
+      <button class="cancel" id="tlCancelPropose">取消</button>
+    </div></div>
+    <div class="pb-err" id="tlProposeErr" hidden></div>
+  </div>`;
+}
+
+function tlWaiting(items) {
+  if (!items.length) return '';
+  return `<div class="tl-wait">⏳ ${items.length} 条申请待批准，在宿主机上执行：
+    <div class="cmd">python3 /opt/ops/ops_readonly.py pending</div>
+    ${items.map(i => `<div class="cmd">[${esc(i.id)}] ${esc((i.tool || {}).name || '')}　${
+      esc(((i.tool || {}).argv || []).join(' '))}</div>`).join('')}
+  </div>`;
+}
+
+async function loadTools() {
+  const d = await (await fetch('/api/tools')).json();
+  const tools = d.tools || {};
+  const names = Object.keys(tools).sort();
+  const live = names.filter(n => tools[n].enabled && tools[n].runnable).length;
+  const waiting = tlProposing ? [] : await (await fetch('/api/tools/pending')).json()
+    .then(r => r.pending || []).catch(() => []);
+  $('tlPanel').innerHTML =
+    `<div class="pb-head"><span class="t">运维工具 ${live}/${names.length} 可用</span>
+       <button class="icon-btn" id="tlNew">＋ 申请新工具</button></div>` +
+    (d.error ? `<div class="pb-warn">运维接口不可用：${esc(d.error)}</div>` : '') +
+    (tlProposing ? tlProposeForm() : tlWaiting(waiting)) +
+    (names.length ? names.map(n => tlCard(n, tools[n])).join('')
+                  : '<div class="empty">还没有可用工具。配置 OPS_URL 后即可现场排障。</div>') +
+    `<div class="tl-note">停用和改说明立刻生效，不重启服务；新增工具需要宿主机批准。</div>`;
+  if (tlProposing) $('tlNewName').focus();
+  if (tlEditing) {
+    const box = $('tlDesc');
+    if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+  }
+}
+
+$('tlBtn').onclick = () => {
+  $('tlPanel').hidden = !$('tlPanel').hidden;
+  if (!$('tlPanel').hidden) { tlEditing = null; tlProposing = false; loadTools(); }
+};
+document.addEventListener('click', e => {
+  if (!e.target.closest('.tl-wrap')) $('tlPanel').hidden = true;
+});
+
+async function tlSend(path, body) {
+  const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                              body: JSON.stringify(body)});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.detail || r.status);
+  return d;
+}
+
+$('tlPanel').addEventListener('click', async e => {
+  const pick = key => e.target.closest(`[data-${key}]`)?.dataset[key];
+
+  if (e.target.id === 'tlNew') { tlEditing = null; tlProposing = true; return loadTools(); }
+  if (e.target.id === 'tlCancelPropose') { tlProposing = false; return loadTools(); }
+
+  const edit = pick('tledit');
+  if (edit) { tlEditing = tlEditing === edit ? null : edit; return loadTools(); }
+
+  const toggle = pick('tltoggle');
+  if (toggle) {
+    const was = e.target.textContent.trim() === '停用';
+    try { await tlSend('/api/tools/override', {name: toggle, enabled: !was}); }
+    catch (err) { alert('操作失败：' + err.message); }
+    return loadTools();
+  }
+
+  const save = pick('tlsave');
+  if (save) {
+    const desc = $('tlDesc').value.trim();
+    if (!desc) return alert('说明不能为空');
+    try { await tlSend('/api/tools/override', {name: save, desc}); tlEditing = null; }
+    catch (err) { alert('保存失败：' + err.message); }
+    return loadTools();
+  }
+
+  const reset = pick('tlreset');
+  if (reset) {
+    try { await tlSend('/api/tools/override', {name: reset, reset: true}); tlEditing = null; }
+    catch (err) { alert('恢复失败：' + err.message); }
+    return loadTools();
+  }
+
+  if (e.target.id === 'tlDoPropose') {
+    const parts = $('tlNewCmd').value.trim().split(/\s+/).filter(Boolean);
+    const err = $('tlProposeErr');
+    const fail = msg => { err.hidden = false; err.textContent = msg; };
+    if (!parts.length) return fail('请填写完整命令');
+    try {
+      const d = await tlSend('/api/tools/propose', {
+        name: $('tlNewName').value.trim(), desc: $('tlNewDesc').value.trim(),
+        binary: parts[0], argv: parts, params: {}});
+      tlProposing = false;
+      await loadTools();
+      alert(`申请已提交（编号 ${d.pending.id}）。\n\n`
+            + `它现在还不能用。请在宿主机上执行：\n`
+            + `  python3 /opt/ops/ops_readonly.py pending\n`
+            + `  python3 /opt/ops/ops_readonly.py approve ${d.pending.id}\n\n`
+            + `批准后下一次提问即可使用，无需重启。`);
+    } catch (e2) { fail('提交失败：' + e2.message); }
+  }
 });
 
 async function ask() {

@@ -251,6 +251,63 @@ def extract_from_document(body: ExtractBody):
     return {"source": name, "extracted": saved, "note": note}
 
 
+# --- Tools -------------------------------------------------------------------
+#
+# 页面能改工具的哪些部分，是一条安全边界：
+#   启停、改描述  -> 直接生效（都不改变实际执行的命令）
+#   新增工具      -> 只能提交申请，由人在宿主机上批准后才写入配置
+# 命令模板永远只在宿主机那份手写配置里定义，这个接口碰不到。
+
+class ToolOverride(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    enabled: bool | None = None
+    desc: str | None = Field(default=None, max_length=300)
+    reset: bool = False
+
+
+class ToolProposal(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    desc: str = Field(min_length=1, max_length=300)
+    binary: str = Field(min_length=1, max_length=40)
+    argv: list[str] = Field(min_length=1, max_length=20)
+    params: dict = Field(default_factory=dict)
+
+
+@app.get("/api/tools")
+def tools_overview():
+    detail = ops_client.describe_tools()
+    return {"tools": detail.get("tools", {}), "pending": detail.get("pending", 0),
+            "error": detail.get("error", ""), "agent_mode": AGENT_MODE}
+
+
+@app.post("/api/tools/override")
+def tools_override(body: ToolOverride):
+    if body.enabled is None and body.desc is None and not body.reset:
+        raise HTTPException(status_code=400, detail="没有要修改的字段")
+    try:
+        tool = ops_client.override(body.name, enabled_flag=body.enabled,
+                                   desc=body.desc, reset=body.reset)
+    except ops_client.OpsUnavailable as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"tool": tool}
+
+
+@app.get("/api/tools/pending")
+def tools_pending():
+    return {"pending": ops_client.list_pending()}
+
+
+@app.post("/api/tools/propose")
+def tools_propose(body: ToolProposal):
+    """提交新工具申请。申请不会生效，要在宿主机上批准。"""
+    try:
+        result = ops_client.propose(body.model_dump(), author=WEB_USER)
+    except ops_client.OpsUnavailable as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    log.info("tool proposal queued: %s", body.name)
+    return result
+
+
 # --- Conversations -----------------------------------------------------------
 
 @app.get("/api/conversations")

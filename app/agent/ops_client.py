@@ -29,7 +29,12 @@ def _request(path, payload=None, timeout=30):
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
-        raise OpsUnavailable(f"接口返回 {exc.code}") from exc
+        detail = ""
+        try:
+            detail = json.load(exc).get("error", "")
+        except Exception:
+            pass
+        raise OpsUnavailable(detail or f"接口返回 {exc.code}") from exc
     except Exception as exc:
         raise OpsUnavailable(why(exc)) from exc
 
@@ -43,6 +48,40 @@ def available_tools() -> dict:
     except OpsUnavailable as exc:
         log.info("ops endpoint unavailable: %s", exc)
         return {}
+
+
+def describe_tools() -> dict:
+    """Full definitions for the management page, including disabled ones."""
+    if not enabled():
+        return {"tools": {}, "pending": 0, "error": "未配置只读运维接口"}
+    try:
+        return _request("/tools/full", timeout=10)
+    except OpsUnavailable as exc:
+        return {"tools": {}, "pending": 0, "error": str(exc)}
+
+
+def list_pending() -> list:
+    if not enabled():
+        return []
+    try:
+        return _request("/tools/pending", timeout=10).get("pending", [])
+    except OpsUnavailable:
+        return []
+
+
+def override(name: str, enabled_flag=None, desc=None, reset=False) -> dict:
+    """Toggle a tool or reword its description. Raises OpsUnavailable on refusal."""
+    payload = {"name": name, "reset": bool(reset)}
+    if enabled_flag is not None:
+        payload["enabled"] = bool(enabled_flag)
+    if desc is not None:
+        payload["desc"] = desc
+    return _request("/tools/override", payload).get("tool", {})
+
+
+def propose(tool: dict, author: str = "web") -> dict:
+    """Queue a new tool for host-side review. It is inert until approved."""
+    return _request("/tools/propose", {"tool": tool, "author": author})
 
 
 def execute(name: str, args: dict) -> dict:

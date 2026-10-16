@@ -18,6 +18,10 @@ my_kb/
 eval/*.local.jsonl
 eval/result*.json
 
+# 工具定义的旁路文件：页面改的开关与说明、待审申请，都是本机运行状态
+deploy/ops_tools.overrides.yaml
+deploy/ops_tools.pending.yaml
+
 # 公司内部活动的投递材料，不随开源仓库发布
 docs/1024-*
 

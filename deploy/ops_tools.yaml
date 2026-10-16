@@ -178,3 +178,9 @@ tools:
     binary: uptime
     argv: [uptime]
     params: {}
+
+  - name: host_who
+    desc: 看当前有哪些用户登录在这台机器上。
+    binary: who
+    argv: [who, -H]
+    params: {}
