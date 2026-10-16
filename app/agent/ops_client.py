@@ -20,7 +20,7 @@ def enabled() -> bool:
 
 def _request(path, payload=None, timeout=30):
     if not enabled():
-        raise OpsUnavailable("未配置只读运维接口（OPS_URL / OPS_TOKEN）")
+        raise OpsUnavailable("未配置只读工具接口（OPS_URL / OPS_TOKEN）")
     request = urllib.request.Request(
         OPS_URL.rstrip("/") + path,
         json.dumps(payload).encode("utf-8") if payload is not None else None,
@@ -53,7 +53,7 @@ def available_tools() -> dict:
 def describe_tools() -> dict:
     """Full definitions for the management page, including disabled ones."""
     if not enabled():
-        return {"tools": {}, "pending": 0, "error": "未配置只读运维接口"}
+        return {"tools": {}, "pending": 0, "error": "未配置只读工具接口"}
     try:
         return _request("/tools/full", timeout=10)
     except OpsUnavailable as exc:
@@ -102,4 +102,4 @@ def execute(name: str, args: dict) -> dict:
     try:
         return _request("/exec", {"tool": name, "args": args or {}})
     except OpsUnavailable as exc:
-        return {"ok": False, "output": f"运维接口不可用：{exc}"}
+        return {"ok": False, "output": f"工具接口不可用：{exc}"}

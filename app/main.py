@@ -229,7 +229,7 @@ def extract_from_document(body: ExtractBody):
     name = safe_name(body.source)
     tools = usable_tools()
     if not tools:
-        raise HTTPException(400, "当前没有可用的现场工具，无法编排技能")
+        raise HTTPException(400, "当前没有可用的工具，无法编排技能")
 
     chunks = store.collection.get(where={"source": name}, include=["documents"])
     if not chunks["documents"]:
@@ -270,10 +270,11 @@ class ToolProposal(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     label: str = Field(default="", max_length=40)
     desc: str = Field(min_length=1, max_length=300)
-    # 命令型：binary + argv；脚本型：script（二选一，具体校验在宿主机侧）
+    # 命令型：binary + argv；脚本型：script；接口型：http（三选一，具体校验在宿主机侧）
     binary: str = Field(default="", max_length=40)
     argv: list[str] = Field(default_factory=list, max_length=20)
     script: str = Field(default="", max_length=80)
+    http: dict | None = None
     params: dict = Field(default_factory=dict)
 
 
@@ -312,12 +313,11 @@ def tools_pending():
 def tools_propose(body: ToolProposal):
     """提交新工具申请。申请不会生效，要在宿主机上批准。"""
     tool = body.model_dump()
-    if tool.get("script"):
-        # 脚本型只引用已有脚本，不带 binary/argv，交给宿主机校验脚本是否存在。
-        tool.pop("binary", None)
-        tool.pop("argv", None)
-    else:
-        tool.pop("script", None)
+    kind = "script" if tool.get("script") else "http" if tool.get("http") else "command"
+    keep = {"script": ("script",), "http": ("http",), "command": ("binary", "argv")}[kind]
+    for field in ("binary", "argv", "script", "http"):
+        if field not in keep:
+            tool.pop(field, None)
     try:
         result = ops_client.propose(tool, author=WEB_USER)
     except ops_client.OpsUnavailable as exc:
@@ -405,7 +405,7 @@ def ask(payload: Question):
                                 tool_calls.append(payload)
                             yield json.dumps({kind: payload}, ensure_ascii=False) + "\n"
                 except Exception as exc:
-                    failure = f"排障流程失败：{exc.__class__.__name__}"
+                    failure = f"工具调用流程失败：{exc.__class__.__name__}"
                     yield json.dumps({"error": failure}, ensure_ascii=False) + "\n"
             else:
                 messages = build_messages(question, context, history)

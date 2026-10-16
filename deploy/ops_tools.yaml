@@ -1,29 +1,38 @@
-# 只读运维工具定义 —— 这是工具的唯一真相源。
+# 工具定义 —— 这是工具的唯一真相源。
 #
-# 改完这个文件，下一次提问就生效：不需要重启 ops-readonly，也不需要重建 kb-app 镜像。
+# 改完这个文件，下一次提问就生效：不需要重启服务，也不需要重建应用镜像。
 # 应用侧会从 /tools 拉取这里的描述与参数，动态生成给模型的函数签名。
 #
+# 工具不限于运维：任何岗位只要有「查得到的数据」，都可以接成工具。三种类型：
+#   命令型  binary + argv     执行宿主机上的只读命令
+#   脚本型  script            执行 scripts/ 目录里经哈希登记的脚本
+#   接口型  http              调用只读 HTTP 接口（只允许 GET）
+#
 # 安全约定（加载时会强制校验，不满足则该工具不加载）：
-#   1. argv 是固定列表，不经过 shell。参数只能"整个占据"一个元素，写成 "{参数名}"。
+#   1. 命令型：argv 是固定列表，不经过 shell。参数只能"整个占据"一个元素，写成 "{参数名}"。
 #      不允许和字面量拼接："--tail={lines}" 非法，必须写成 [--tail, "{lines}"]。
-#      这样参数值永远只能是一个独立的 argv 项，拼不出新的命令片段。
-#   2. 字符串参数必须声明 pattern，且只能引用下面的预置正则，不能自己写正则，
-#      以免一个 ".*" 把白名单废掉。
-#   3. 只放只读命令。写操作动词另有黑名单兜底，命中直接拒绝执行。
+#      binary 不能是 bash/sh/python/env/xargs 等能执行任意命令的程序。
+#   2. 接口型：主机名写死，参数只能出现在路径或 query 的值里，并整体 URL 编码；
+#      请求头只能由管理员填写，凭据用 ${OPS_SECRET_xxx} 引用宿主机环境变量；不跟随跳转。
+#   3. 字符串参数必须声明 pattern，且只能引用下面的预置正则，不能自己写正则。
+#   4. 只放只读能力。写操作动词另有黑名单兜底，命中直接拒绝执行。
 #
 # pattern 预置值：
 #   name       容器名一类：字母或数字开头，可含 . _ -
 #   k8s_name   K8s 资源名：小写字母或数字开头，可含 . -
 #   resource   K8s 资源类型：小写字母开头，可含 . -
+#   date       日期：YYYY-MM-DD
 #
 # 字段说明：
-#   binary    本机没有这个可执行文件时，该工具自动不对外提供
+#   label     界面上显示的中文名（不发给模型）
+#   group     界面上的分组，例如「容器」「模型网关」「日历」
 #   enabled   设为 false 则完全下线（不出现在列表里，也不能执行）
 #   params    留空表示该工具不接受任何参数
 
 tools:
   - name: list_containers
     label: 容器清单
+    group: 容器
     desc: 列出宿主机上所有容器及其运行状态。想知道某个服务是否在跑、是否反复重启时先用它。
     binary: docker
     argv: [docker, ps, -a, --no-trunc, --format,
@@ -32,6 +41,7 @@ tools:
 
   - name: container_logs
     label: 容器日志
+    group: 容器
     desc: 查看指定容器最近的日志，用于定位报错原因。
     binary: docker
     argv: [docker, logs, --tail, "{lines}", "{name}"]
@@ -49,6 +59,7 @@ tools:
 
   - name: container_stats
     label: 容器资源占用
+    group: 容器
     desc: 查看所有容器当前的 CPU 与内存占用，用于判断是否资源不足。
     binary: docker
     argv: [docker, stats, --no-stream, --format,
@@ -57,6 +68,7 @@ tools:
 
   - name: container_inspect
     label: 容器配置
+    group: 容器
     desc: 查看容器的配置：镜像、内存上限、网络模式、挂载、重启次数。怀疑配置问题时用它。
     binary: docker
     argv: [docker, inspect, --format,
@@ -71,6 +83,7 @@ tools:
 
   - name: host_resources
     label: 宿主机内存
+    group: 宿主机
     desc: 查看宿主机剩余内存与 swap 使用情况。怀疑内存不足、容器被 OOM 杀掉时用它。
     binary: free
     argv: [free, -m]
@@ -78,6 +91,7 @@ tools:
 
   - name: host_disk
     label: 磁盘用量
+    group: 宿主机
     desc: 查看宿主机各挂载点的磁盘使用率。容器写日志失败、镜像拉不下来时先看这个。
     binary: df
     argv: [df, -h]
@@ -85,6 +99,7 @@ tools:
 
   - name: host_ports
     label: 监听端口
+    group: 宿主机
     desc: 查看宿主机正在监听的端口以及对应进程。排查端口冲突、服务没起来时用它。
     binary: ss
     argv: [ss, -ltnp]
@@ -92,6 +107,7 @@ tools:
 
   - name: kube_list
     label: K8s 资源列表
+    group: K8s
     desc: 列出某一类 Kubernetes 资源，例如 pod、svc、ingress。先用它看整体状态。
     binary: kubectl
     argv: [kubectl, get, "{resource}", -n, "{namespace}", -o, wide]
@@ -109,6 +125,7 @@ tools:
 
   - name: kube_yaml
     label: K8s 资源 YAML
+    group: K8s
     desc: 查看某个 Kubernetes 资源的完整 YAML，用于核对具体字段配置是否写对。
     binary: kubectl
     argv: [kubectl, get, "{resource}", "{name}", -n, "{namespace}", -o, yaml]
@@ -131,6 +148,7 @@ tools:
 
   - name: kube_describe
     label: K8s 资源详情
+    group: K8s
     desc: 查看某个 Kubernetes 资源的详情与相关事件，适合定位调度失败、探针失败。
     binary: kubectl
     argv: [kubectl, describe, "{resource}", "{name}", -n, "{namespace}"]
@@ -153,6 +171,7 @@ tools:
 
   - name: kube_logs
     label: Pod 日志
+    group: K8s
     desc: 查看 Pod 日志。
     binary: kubectl
     argv: [kubectl, logs, "{name}", -n, "{namespace}", --tail, "{lines}"]
@@ -175,6 +194,7 @@ tools:
 
   - name: kube_events
     label: 命名空间事件
+    group: K8s
     desc: 按时间顺序查看命名空间下的最近事件，用于发现调度或探针失败。
     binary: kubectl
     argv: [kubectl, get, events, -n, "{namespace}", --sort-by=.lastTimestamp]
@@ -187,6 +207,7 @@ tools:
 
   - name: host_uptime
     label: 开机时长与负载
+    group: 宿主机
     desc: 查看宿主机已经开机多久、当前 1/5/15 分钟平均负载。怀疑系统过载或刚重启过时用它。
     binary: uptime
     argv: [uptime]
@@ -194,6 +215,7 @@ tools:
 
   - name: host_who
     label: 登录用户
+    group: 宿主机
     desc: 看当前有哪些用户登录在这台机器上。
     binary: who
     argv: [who, -H]
@@ -201,7 +223,79 @@ tools:
 
   - name: host_time
     label: 当前时间
+    group: 宿主机
     desc: 查看宿主机当前日期时间和时区。问几点了、核对日志时间戳对不对时用它。
     binary: date
     argv: [date, "+%Y-%m-%d %H:%M:%S %Z (%A)"]
     params: {}
+
+  - name: container_health
+    label: 容器体检
+    group: 容器
+    desc: 一眼看懂所有容器的状态和重启次数，挑出重启偏多的。
+    script: container_health.sh
+    params: {}
+
+  # ---- 模型网关：给任何调用大模型的同事用 -------------------------------
+  # 网关地址和 key 都放在宿主机环境变量里，页面、模型、日志都看不到。
+
+  - name: gateway_models
+    label: 可用模型
+    group: 模型网关
+    desc: 查看当前这把网关 key 实际能调用哪些模型。遇到「模型不存在」「无权访问该模型」时先用它核对。
+    http:
+      url: "${OPS_SECRET_GATEWAY_URL}/v1/models"
+      headers: {Authorization: "Bearer ${OPS_SECRET_GATEWAY_KEY}"}
+      pick: ["data[].id"]
+    params: {}
+
+  - name: gateway_key_status
+    label: Key 额度与限制
+    group: 模型网关
+    desc: 查看当前网关 key 的别名、已花费、预算上限、到期时间、限流设置和允许的模型。排查 401/403/429、预算超限时用它。
+    http:
+      url: "${OPS_SECRET_GATEWAY_URL}/key/info"
+      headers: {Authorization: "Bearer ${OPS_SECRET_GATEWAY_KEY}"}
+      pick: [info.key_alias, info.spend, info.max_budget, info.budget_duration,
+             info.budget_reset_at, info.expires, info.models, info.tpm_limit,
+             info.rpm_limit, info.blocked]
+    params: {}
+
+  - name: gateway_health
+    label: 网关健康
+    group: 模型网关
+    desc: 查看模型网关本身是否健康、数据库是否连通。所有模型都调不通时先看它。
+    http:
+      url: "${OPS_SECRET_GATEWAY_URL}/health/readiness"
+      pick: [status, db]
+    params: {}
+
+  # ---- 日历：给行政、人事和所有要请假的同事用 ----------------------------
+
+  - name: holiday_calendar
+    label: 法定节假日
+    group: 日历
+    desc: 查询某一年国务院公布的法定节假日安排，包括放假日期和周末补班日期（isOffDay=false 表示补班，要上班）。问放假、调休、拼假时用它。若返回的 days 为空，说明当年安排尚未公布。
+    http:
+      url: "https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/{year}.json"
+      pick: [year, days]
+    params:
+      year:
+        type: int
+        default: 2026
+        min: 2007
+        max: 2035
+        desc: 年份，例如 2027
+
+  - name: date_info
+    label: 日期是星期几
+    group: 日历
+    desc: 查某个日期是星期几、当年第几周。推算请假天数、跨周末时用它，不要自己心算星期。
+    binary: date
+    argv: [date, -d, "{day}", "+%Y-%m-%d %A 第%V周"]
+    params:
+      day:
+        type: str
+        pattern: date
+        required: true
+        desc: 日期，格式 YYYY-MM-DD

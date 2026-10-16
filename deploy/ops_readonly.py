@@ -22,20 +22,36 @@ import subprocess
 import sys
 import textwrap
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MAX_OUTPUT = 20000      # characters returned to the agent
 TIMEOUT = 20            # seconds per command
+HTTP_TIMEOUT = 10       # seconds per HTTP request
+MAX_HTTP_BYTES = 512 * 1024
 
 # Argument validators. Anything not matching is refused before reaching argv.
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
 K8S_NAME = re.compile(r"^[a-z0-9][a-z0-9.-]{0,120}$")
 RESOURCE = re.compile(r"^[a-z][a-z0-9.-]{0,40}$")
+DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 # 配置里只能引用这些预置正则，不能自带正则：一个 ".*" 就能把白名单废掉。
-PATTERNS = {"name": NAME, "k8s_name": K8S_NAME, "resource": RESOURCE}
+PATTERNS = {"name": NAME, "k8s_name": K8S_NAME, "resource": RESOURCE, "date": DATE}
+
+# 接口型工具的凭据只能来自宿主机环境变量，且必须以这个前缀命名：
+# 这样即便配置写得马虎，也不可能把 OPS_TOKEN 之类的服务自身凭据发到外部接口。
+SECRET_PREFIX = "OPS_SECRET_"
+SECRET_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+URL_PARAM = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
+HEADER_NAME = re.compile(r"^[A-Za-z0-9-]{1,60}$")
+QUERY_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,60}$")
+PICK_PATH = re.compile(r"^[A-Za-z0-9_]+(\[\])?(\.[A-Za-z0-9_]+(\[\])?)*$")
+GROUP_MAX = 20
 
 # argv 元素必须"整个"是 {参数名} 才算占位符，不做片段拼接。
 # 这样 docker 的 "{{.Names}}" 之类模板不会被误伤，参数值也永远独占一个 argv 项。
@@ -140,6 +156,104 @@ def _check_script_tool(raw, name):
             "type": "script", "script": script}
 
 
+def _common(raw, name):
+    """Fields every tool type shares: what humans and the model read about it."""
+    return {"name": name, "label": str(raw.get("label", "")).strip()[:MAX_LABEL],
+            "desc": str(raw.get("desc", "")).strip(),
+            "group": str(raw.get("group", "")).strip()[:GROUP_MAX],
+            "enabled": bool(raw.get("enabled", True))}
+
+
+def _check_params(name, raw):
+    params = {}
+    for key, value in (raw.get("params") or {}).items():
+        key = str(key)
+        if not TOOL_NAME.match(key):
+            raise ConfigError(f"{name} 的参数名不合法：{key[:40]!r}")
+        params[key] = _check_param(name, key, value)
+    return params
+
+
+def _check_secret_refs(name, text):
+    for ref in SECRET_REF.findall(text):
+        if not ref.startswith(SECRET_PREFIX):
+            raise ConfigError(f"{name} 引用了环境变量 {ref}；接口凭据必须以 {SECRET_PREFIX} 开头，"
+                              f"以免把服务自身的令牌发到外部")
+
+
+def _check_http_tool(raw, name):
+    """接口型工具：只读 GET，主机名固定，参数只能落在路径段或查询参数的值里。
+
+    和命令型工具同一个思路——模型只能填空，不能改"去哪儿、怎么调"：
+      · 主机名在配置里写死（或来自宿主机环境变量），参数进不了主机名
+      · 参数值一律 URL 编码，拼不出新的路径或查询
+      · 请求头只能由管理员写，模型参数进不了请求头
+      · 不跟随重定向，避免被带到别的主机
+    """
+    http = raw.get("http")
+    if not isinstance(http, dict):
+        raise ConfigError(f"{name}.http 必须是映射")
+    method = str(http.get("method", "GET")).upper()
+    if method != "GET":
+        raise ConfigError(f"{name} 只允许 GET 请求，当前为 {method}")
+    params = _check_params(name, raw)
+
+    url = str(http.get("url", "")).strip()
+    env_base = re.match(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}(.*)$", url)
+    if env_base:
+        rest = env_base.group(2)
+    else:
+        literal = re.match(r"^https?://([^/?#]+)(.*)$", url)
+        if not literal:
+            raise ConfigError(f"{name}.http.url 必须以 http:// 或 https:// 开头")
+        if re.search(r"[{}$]", literal.group(1)):
+            raise ConfigError(f"{name}.http.url 的主机名部分不能包含参数或变量")
+        rest = literal.group(2)
+    if rest and not rest.startswith("/"):
+        raise ConfigError(f"{name}.http.url 主机名后面必须直接是路径（以 / 开头）")
+    if "?" in rest or "#" in rest:
+        raise ConfigError(f"{name}.http.url 里不能直接写查询串，请写在 http.query 里")
+    for found in URL_PARAM.findall(rest):
+        if found not in params:
+            raise ConfigError(f"{name}.http.url 用到了未声明的参数 {found}")
+    if re.search(r"[{}$]", URL_PARAM.sub("", rest)):
+        raise ConfigError(f"{name}.http.url 的路径里有无法识别的花括号或 $ 符号")
+    _check_secret_refs(name, url)
+
+    query = {}
+    for key, value in (http.get("query") or {}).items():
+        key, value = str(key), str(value)
+        if not QUERY_KEY.match(key):
+            raise ConfigError(f"{name}.http.query 的键名不合法：{key[:40]!r}")
+        whole_param = PLACEHOLDER.match(value)
+        if whole_param and whole_param.group(1) not in params:
+            raise ConfigError(f"{name}.http.query 用到了未声明的参数 {whole_param.group(1)}")
+        if not whole_param and URL_PARAM.search(value):
+            raise ConfigError(f"{name}.http.query 的值要么是固定值，要么整个是 {{参数名}}")
+        _check_secret_refs(name, value)
+        query[key] = value
+
+    headers = {}
+    for key, value in (http.get("headers") or {}).items():
+        key, value = str(key), str(value)
+        if not HEADER_NAME.match(key):
+            raise ConfigError(f"{name}.http.headers 的名字不合法：{key[:40]!r}")
+        if URL_PARAM.search(SECRET_REF.sub("", value)):
+            raise ConfigError(f"{name} 的请求头 {key} 不能使用模型参数，"
+                              f"只能写固定值或 ${{{SECRET_PREFIX}...}}")
+        _check_secret_refs(name, value)
+        headers[key] = value
+
+    pick = [str(p) for p in (http.get("pick") or [])]
+    for path in pick:
+        if not PICK_PATH.match(path):
+            raise ConfigError(f"{name}.http.pick 的路径不合法：{path[:40]!r}")
+
+    return {**_common(raw, name), "type": "http", "binary": "", "argv": [],
+            "params": params,
+            "http": {"url": url, "query": query, "headers": headers, "pick": pick}}
+
+
 def _check_tool(raw):
     """Validate one entry. Everything that could widen privilege is checked here."""
     if not isinstance(raw, dict):
@@ -152,7 +266,11 @@ def _check_tool(raw):
             f"中文名请写在 label 字段里，界面会显示它。")
 
     if raw.get("script"):
-        return _check_script_tool(raw, name)
+        spec = _check_script_tool(raw, name)
+        spec["group"] = _common(raw, name)["group"]
+        return spec
+    if raw.get("http") is not None:
+        return _check_http_tool(raw, name)
 
     binary = str(raw.get("binary", "")).strip()
     if not binary:
@@ -166,13 +284,7 @@ def _check_tool(raw):
     if not isinstance(argv, list) or not argv:
         raise ConfigError(f"{name}.argv 必须是非空列表")
     argv = [str(part) for part in argv]
-
-    params = {}
-    for key, value in (raw.get("params") or {}).items():
-        key = str(key)
-        if not TOOL_NAME.match(key):
-            raise ConfigError(f"{name} 的参数名不合法：{key[:40]!r}")
-        params[key] = _check_param(name, key, value)
+    params = _check_params(name, raw)
 
     if argv[0] != binary:
         raise ConfigError(f"{name}.argv 的第一项必须就是 binary（{binary}）")
@@ -184,10 +296,8 @@ def _check_tool(raw):
         if not PLACEHOLDER.match(part) and part in FORBIDDEN:
             raise ConfigError(f"{name}.argv 含写操作动词 {part}")
 
-    return {"name": name, "label": str(raw.get("label", "")).strip()[:MAX_LABEL],
-            "desc": str(raw.get("desc", "")).strip(),
-            "binary": binary, "argv": argv, "params": params,
-            "enabled": bool(raw.get("enabled", True)), "type": "command"}
+    return {**_common(raw, name), "binary": binary, "argv": argv, "params": params,
+            "type": "command"}
 
 
 def _yaml():
@@ -379,24 +489,50 @@ def all_tools():
     return refresh()
 
 
+def _runnable(spec):
+    """Command/script tools need their binary here; HTTP tools only need the network."""
+    if spec.get("type") == "http":
+        return True
+    return bool(spec.get("binary") and shutil.which(spec["binary"]))
+
+
+def _http_display(spec):
+    """What the UI and logs show for an HTTP tool. Never includes secret values."""
+    http = spec["http"]
+    text = "GET " + http["url"]
+    if http["query"]:
+        text += "?" + "&".join(f"{k}={v}" for k, v in http["query"].items())
+    if http["headers"]:
+        text += f"  （请求头：{'、'.join(http['headers'])}）"
+    return text
+
+
+def _display(spec):
+    if spec.get("type") == "script":
+        return "脚本：" + spec["binary"]
+    if spec.get("type") == "http":
+        return _http_display(spec)
+    return " ".join(spec["argv"])
+
+
 def available_tools():
-    """Only advertise enabled tools whose binary actually exists on this host."""
+    """Only advertise enabled tools that can actually run on this host."""
     return {name: {"desc": spec["desc"], "params": spec["params"]}
             for name, spec in all_tools().items()
-            if spec["enabled"] and shutil.which(spec["binary"])}
+            if spec["enabled"] and _runnable(spec)}
 
 
 def describe_tools():
     """Everything the UI needs in order to show what the agent can really run."""
     return {name: {"desc": spec["desc"], "params": spec["params"],
                    "label": spec.get("label", ""),
+                   "group": spec.get("group", ""),
                    "binary": spec["binary"],
-                   "command": ("脚本：" + spec["binary"]) if spec.get("type") == "script"
-                              else " ".join(spec["argv"]),
+                   "command": _display(spec),
                    "type": spec.get("type", "command"),
                    "script": spec.get("script", ""),
                    "enabled": spec["enabled"],
-                   "runnable": bool(shutil.which(spec["binary"])),
+                   "runnable": _runnable(spec),
                    "overridden": spec.get("overridden", [])}
             for name, spec in all_tools().items()}
 
@@ -533,6 +669,15 @@ def propose_tool(raw, author="web"):
             raise ConfigError(problems[0])
         raise ConfigError("\n".join(f"{i}. {p}" for i, p in enumerate(problems, 1)))
 
+    if raw.get("http") is not None:
+        # 页面申请的接口工具不能带凭据：否则一条申请就能把宿主机上的密钥发到任意地址，
+        # 只差审批时的一次疏忽。需要鉴权的接口，由管理员直接写进配置文件。
+        http = raw.get("http") if isinstance(raw.get("http"), dict) else {}
+        if http.get("headers"):
+            raise ConfigError("页面申请的接口工具不能设置请求头；需要鉴权的接口请让管理员在宿主机配置")
+        if "${" in json.dumps(http, ensure_ascii=False):
+            raise ConfigError("页面申请的接口工具不能引用宿主机环境变量")
+
     spec = _check_tool(raw)  # 其余规则（argv 首项、写动词、占位符）与正式配置一致
     if spec["name"] in all_tools():
         raise ConfigError(f"已存在同名工具：{spec['name']}")
@@ -618,10 +763,139 @@ def build_argv(spec, args):
     return argv
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """接口返回 3xx 时不跟随：主机名是审过的，不能被一次跳转带去别处。"""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _http_get(url, headers):
+    """One GET. Returns (status, body_bytes). Isolated so tests can replace it."""
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with _OPENER.open(request, timeout=HTTP_TIMEOUT) as response:
+            return response.status, response.read(MAX_HTTP_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read(MAX_HTTP_BYTES + 1) if exc.fp else b""
+
+
+def _secret(name):
+    value = os.environ.get(name, "")
+    if not name.startswith(SECRET_PREFIX) or not value:
+        raise ValueError(f"宿主机没有配置 {name}，该工具暂不可用")
+    return value
+
+
+def _fill_secrets(text, used):
+    def replace(match):
+        value = _secret(match.group(1))
+        used.append(value)
+        return value
+    return SECRET_REF.sub(replace, text)
+
+
+def _pick(data, path):
+    parts = path.split(".")
+
+    def walk(node, index):
+        if index == len(parts):
+            return node
+        part = parts[index]
+        if part.endswith("[]"):
+            key = part[:-2]
+            node = node.get(key) if key and isinstance(node, dict) else node
+            if not isinstance(node, list):
+                return None
+            return [walk(item, index + 1) for item in node]
+        if isinstance(node, dict):
+            return walk(node.get(part), index + 1)
+        return None
+
+    return walk(data, 0)
+
+
+def build_request(spec, args):
+    """Resolve an HTTP tool to (url, headers, secrets_used). Raises ValueError on bad input."""
+    args = args or {}
+    values = {key: _value(key, param, args) for key, param in spec["params"].items()}
+    http = spec["http"]
+    secrets_used = []
+
+    url = http["url"]
+    env_base = re.match(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}(.*)$", url)
+    if env_base:
+        base = _secret(env_base.group(1)).rstrip("/")
+        secrets_used.append(base)
+        if not re.match(r"^https?://[^/?#]+(/[^?#]*)?$", base):
+            raise ValueError(f"{env_base.group(1)} 不是合法的 http(s) 地址")
+        rest = env_base.group(2)
+    else:
+        base, rest = "", url
+    # 参数值整体做 URL 编码（连 / 也编码），因此只能停留在它所在的那一段里。
+    rest = URL_PARAM.sub(lambda m: urllib.parse.quote(values[m.group(1)], safe=""), rest)
+    full = base + rest
+
+    query = []
+    for key, raw in http["query"].items():
+        found = PLACEHOLDER.match(raw)
+        query.append((key, values[found.group(1)] if found
+                      else _fill_secrets(raw, secrets_used)))
+    if query:
+        full += "?" + urllib.parse.urlencode(query)
+
+    headers = {"User-Agent": "ops-readonly/1", "Accept": "application/json, */*"}
+    for key, raw in http["headers"].items():
+        headers[key] = _fill_secrets(raw, secrets_used)
+    return full, headers, [s for s in secrets_used if s]
+
+
+def _scrub(text, secrets_used):
+    """Never hand a secret back to the model, even if the API echoes it."""
+    for secret in sorted(set(secrets_used), key=len, reverse=True):
+        if len(secret) >= 6:
+            text = text.replace(secret, "***")
+    return text
+
+
+def _run_http(spec, args):
+    try:
+        url, headers, secrets_used = build_request(spec, args)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    shown = _scrub(url, secrets_used)
+    try:
+        status, body = _http_get(url, headers)
+    except Exception as exc:
+        return {"ok": False, "error": _scrub(f"请求失败：{exc.__class__.__name__}: {exc}",
+                                             secrets_used), "command": "GET " + shown}
+
+    text = body[:MAX_HTTP_BYTES].decode("utf-8", errors="replace")
+    if spec["http"]["pick"]:
+        try:
+            data = json.loads(text)
+            text = json.dumps({path: _pick(data, path) for path in spec["http"]["pick"]},
+                              ensure_ascii=False, indent=1)
+        except ValueError:
+            pass
+    text = _scrub(text.strip(), secrets_used)
+    truncated = len(text) > MAX_OUTPUT
+    if 300 <= status < 400:
+        text = f"接口返回 {status} 跳转，已拒绝跟随（只允许访问配置里写明的主机）"
+    return {"ok": 200 <= status < 300, "command": "GET " + shown, "status": status,
+            "output": text[:MAX_OUTPUT] + ("\n…（输出已截断）" if truncated else "")}
+
+
 def run_tool(name, args):
     spec = all_tools().get(name)
     if spec is None or not spec["enabled"]:
         return {"ok": False, "error": f"未知工具：{name}"}
+
+    if spec.get("type") == "http":
+        return _run_http(spec, args)
 
     # 先校验参数再看本机有没有这个命令：不可信输入是安全边界，要最先挡掉。
     try:
@@ -759,6 +1033,10 @@ def _print_pending():
         print(f"      说明：{tool.get('desc')}")
         if tool.get("script"):
             print(f"      脚本：scripts/{tool['script']}（批准前请逐行读脚本内容）")
+        elif isinstance(tool.get("http"), dict):
+            http = tool["http"]
+            query = "&".join(f"{k}={v}" for k, v in (http.get("query") or {}).items())
+            print(f"      接口：GET {http.get('url', '')}{'?' + query if query else ''}")
         else:
             print(f"      命令：{' '.join(str(p) for p in tool.get('argv') or [])}")
         params = tool.get("params") or {}
@@ -803,10 +1081,8 @@ def _cli(command, ident, config):
     try:
         if command == "approve":
             spec = approve_pending(ident)
-            where = ("脚本 scripts/" + spec["script"]) if spec.get("type") == "script" \
-                else "命令 " + " ".join(spec["argv"])
             print(f"已批准并写入配置：{spec['name']}")
-            print(f"  {where}")
+            print(f"  {_display(spec)}")
             print("下一次提问即可使用，无需重启。")
         elif command == "trust":
             if ident not in {s["name"] for s in list_scripts()}:

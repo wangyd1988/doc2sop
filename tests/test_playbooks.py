@@ -156,7 +156,7 @@ class ExtractionTests(unittest.TestCase):
     def test_no_tools_means_no_extraction(self):
         got, note = extract_mod.extract("a.docx", "正文", {})
         self.assertEqual(got, [])
-        self.assertIn("没有可用的现场工具", note)
+        self.assertIn("没有可用的工具", note)
 
     def test_empty_response_is_retried_then_reported(self):
         """推理型模型偶发把 token 预算用在思考上，正式输出为空——要重试并说明原因。"""
@@ -253,7 +253,7 @@ class ApiTests(unittest.TestCase):
             response = self.client.post("/api/playbooks/extract",
                                         json={"source": "a.txt"}, auth=self.auth)
         self.assertEqual(response.status_code, 400)
-        self.assertIn("没有可用的现场工具", response.json()["detail"])
+        self.assertIn("没有可用的工具", response.json()["detail"])
 
     def test_extracted_playbooks_start_disabled(self):
         """自动抽取的流程不应直接上线，要人确认。"""
