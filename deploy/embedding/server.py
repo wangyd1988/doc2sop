@@ -16,6 +16,9 @@ from fastembed.common.model_description import ModelSource, PoolingType
 MODEL_NAME = os.environ.get("MODEL_NAME", "BAAI/bge-base-zh-v1.5")
 ONNX_REPO = os.environ.get("ONNX_REPO", "Xenova/bge-base-zh-v1.5")
 MODEL_DIM = int(os.environ.get("MODEL_DIM", "768"))
+# fastembed 有自己的缓存目录，不认 HF_HOME。不显式指定的话模型会落在
+# /tmp/fastembed_cache——容器一重建就得重新下载，离线环境直接失败。
+CACHE_DIR = os.environ.get("MODEL_CACHE_DIR", "/models")
 MAX_BODY_BYTES = 65536
 MAX_TEXTS = 16
 
@@ -25,7 +28,8 @@ if ONNX_REPO not in {m["model"] for m in TextEmbedding.list_supported_models()}:
     TextEmbedding.add_custom_model(
         model=ONNX_REPO, pooling=PoolingType.CLS, normalization=True,
         sources=ModelSource(hf=ONNX_REPO), dim=MODEL_DIM, model_file="onnx/model.onnx")
-model = TextEmbedding(model_name=ONNX_REPO, threads=2)
+model = TextEmbedding(model_name=ONNX_REPO, threads=2, cache_dir=CACHE_DIR)
+logging.info("模型就绪：%s（缓存目录 %s）", MODEL_NAME, CACHE_DIR)
 
 
 class Handler(BaseHTTPRequestHandler):

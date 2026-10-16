@@ -1,0 +1,31 @@
+# 离线镜像：把向量模型直接烘焙进镜像，内网无需访问 HuggingFace。
+#
+# 在能访问外网的机器上构建，然后 docker save 带进内网：
+#   docker build -f Dockerfile.offline -t kb-embedding:offline .
+#   docker save kb-embedding:offline | gzip > kb-embedding-offline.tar.gz
+
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    MODEL_CACHE_DIR=/models \
+    OMP_NUM_THREADS=2
+
+WORKDIR /app
+RUN pip install --no-cache-dir "fastembed>=0.7,<1"
+COPY server.py /app/server.py
+
+# 构建时把模型拉下来存进镜像层；之后运行时不再需要外网。
+RUN python -c "\
+from fastembed import TextEmbedding; \
+from fastembed.common.model_description import ModelSource, PoolingType; \
+repo='Xenova/bge-base-zh-v1.5'; \
+TextEmbedding.add_custom_model(model=repo, pooling=PoolingType.CLS, normalization=True, \
+    sources=ModelSource(hf=repo), dim=768, model_file='onnx/model.onnx') \
+    if repo not in {m['model'] for m in TextEmbedding.list_supported_models()} else None; \
+TextEmbedding(model_name=repo, cache_dir='/models'); \
+print('模型已烘焙进镜像')" \
+ && du -sh /models
+
+EXPOSE 8080
+CMD ["python", "/app/server.py"]
