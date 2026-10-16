@@ -286,7 +286,7 @@ def tools_overview():
 
 @app.get("/api/tools/scripts")
 def tools_scripts():
-    return {"scripts": ops_client.list_scripts()}
+    return ops_client.list_scripts()
 
 
 @app.post("/api/tools/override")

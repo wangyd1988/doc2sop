@@ -391,7 +391,7 @@ def describe_tools():
     return {name: {"desc": spec["desc"], "params": spec["params"],
                    "label": spec.get("label", ""),
                    "binary": spec["binary"],
-                   "command": ("脚本：" + spec["script"]) if spec.get("type") == "script"
+                   "command": ("脚本：" + spec["binary"]) if spec.get("type") == "script"
                               else " ".join(spec["argv"]),
                    "type": spec.get("type", "command"),
                    "script": spec.get("script", ""),
@@ -685,7 +685,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/tools/pending":
             return self._send(200, {"pending": list_pending()})
         if self.path == "/tools/scripts":
-            return self._send(200, {"scripts": list_scripts()})
+            return self._send(200, {"scripts": list_scripts(),
+                                    "directory": str(_scripts_dir())})
         self._send(404, {"error": "Not found"})
 
     def do_POST(self):

@@ -697,7 +697,9 @@ class ScriptToolTests(unittest.TestCase):
         spec = ops.approve_pending(item["id"])
         self.assertEqual(spec["type"], "script")
         self.assertIn("health", ops.all_tools())       # 批准后可用
-        self.assertEqual(ops.describe_tools()["health"]["command"], "脚本：check.sh")
+        command = ops.describe_tools()["health"]["command"]
+        self.assertTrue(command.startswith("脚本："))
+        self.assertTrue(command.endswith("/scripts/check.sh"))  # 给完整路径，方便上机找
         result = ops.run_tool("health", {})
         self.assertTrue(result["ok"])
         self.assertIn("healthy", result["output"])

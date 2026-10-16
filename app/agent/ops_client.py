@@ -69,14 +69,15 @@ def list_pending() -> list:
         return []
 
 
-def list_scripts() -> list:
-    """Scripts available on the ops host, with content for the reviewer to read."""
+def list_scripts() -> dict:
+    """Scripts on the ops host plus the directory they live in."""
     if not enabled():
-        return []
+        return {"scripts": [], "directory": ""}
     try:
-        return _request("/tools/scripts", timeout=10).get("scripts", [])
+        data = _request("/tools/scripts", timeout=10)
+        return {"scripts": data.get("scripts", []), "directory": data.get("directory", "")}
     except OpsUnavailable:
-        return []
+        return {"scripts": [], "directory": ""}
 
 
 def override(name: str, enabled_flag=None, desc=None, label=None, reset=False) -> dict:
