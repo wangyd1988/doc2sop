@@ -171,6 +171,40 @@ header .t { flex: 1; font-weight: 600; }
              font-family: ui-monospace, Consolas, monospace; max-height: 240px; overflow-y: auto; }
 .step.running { border-left-color: #f59e0b; }
 .step.running .cmd { color: #f59e0b; }
+
+/* Playbooks */
+.pb-wrap { position: relative; }
+.pb-panel { position: absolute; top: 38px; right: 0; width: 520px; max-height: 72vh; overflow-y: auto;
+            background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px;
+            box-shadow: var(--shadow); z-index: 40; }
+.pb-head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 10px; }
+.pb-head .t { flex: 1; font-weight: 600; font-size: 14px; }
+.pb { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; }
+.pb.off { opacity: .55; }
+.pb.bad { border-color: var(--danger); }
+.pb-top { display: flex; align-items: center; gap: 8px; padding: 9px 11px; }
+.pb-top .nm { flex: 1; font-size: 13.5px; font-weight: 600; min-width: 0;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb-top .src { font-size: 11.5px; color: var(--muted); flex-shrink: 0; }
+.pb-top button { font-size: 12px; color: var(--muted); padding: 3px 7px; border-radius: 6px; flex-shrink: 0; }
+.pb-top button:hover { background: var(--panel-2); color: var(--text); }
+.pb-body { padding: 0 11px 10px; font-size: 12.5px; }
+.pb-trig { color: var(--muted); margin-bottom: 6px; }
+.pb-step { display: flex; gap: 7px; padding: 5px 0; border-top: 1px dashed var(--border); align-items: baseline; }
+.pb-step .i { color: var(--accent); font-weight: 700; flex-shrink: 0; }
+.pb-step .tl { font-family: ui-monospace, Consolas, monospace; color: var(--accent); flex-shrink: 0; }
+.pb-step .ck { color: var(--muted); flex: 1; }
+.pb-warn { color: var(--danger); font-size: 12px; padding: 4px 11px 8px; }
+.pb-edit textarea { width: 100%; box-sizing: border-box; min-height: 190px; font-size: 12.5px;
+                    font-family: ui-monospace, Consolas, monospace; padding: 9px; border-radius: 8px;
+                    border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+                    resize: vertical; }
+.pb-edit .row { display: flex; gap: 6px; margin-top: 7px; }
+.pb-edit .row button { padding: 6px 13px; border-radius: 7px; font-size: 13px; }
+.pb-edit .ok { background: var(--user-bg); color: #fff; }
+.pb-edit .cancel { background: var(--panel-2); color: var(--muted); }
+.pb-err { color: var(--danger); font-size: 12.5px; margin-top: 6px; white-space: pre-wrap; }
+.pb-tools { font-size: 11.5px; color: var(--muted); padding: 6px 4px 2px; border-top: 1px solid var(--border); }
 .tools button { font-size: 12px; color: var(--muted); padding: 3px 8px; border-radius: 6px; }
 .tools button:hover { background: var(--panel-2); color: var(--text); }
 
@@ -217,6 +251,10 @@ header .t { flex: 1; font-weight: 600; }
     <div class="t">知识库问答</div>
     <span class="icon-btn" id="modelInfo" style="cursor:default"></span>
     <button class="icon-btn" id="newBtn" title="开始新对话">＋ 新对话</button>
+    <div class="pb-wrap">
+      <button class="icon-btn" id="pbBtn" title="排查剧本">📋 剧本</button>
+      <div class="pb-panel" id="pbPanel" hidden></div>
+    </div>
     <div class="hist-wrap">
       <button class="icon-btn" id="histBtn" title="历史对话">🕘 历史</button>
       <div class="hist" id="histPanel" hidden></div>
@@ -333,7 +371,10 @@ async function loadDocs() {
   }
   $('catList').innerHTML = (d.categories || []).map(c => `<option value="${esc(c)}">`).join('');
   const tools = d.tools || [];
-  $('modelInfo').textContent = '🤖 ' + d.chat_model + (tools.length ? ` · 🔧 ${tools.length} 个现场工具` : '');
+  const books = d.playbooks || 0;
+  $('modelInfo').textContent = '🤖 ' + d.chat_model
+    + (tools.length ? ` · 🔧 ${tools.length} 工具` : '')
+    + (books ? ` · 📋 ${books} 剧本` : '');
   $('modelInfo').title = tools.length ? '可调用的只读运维工具：' + tools.join('、') : '';
   const chunks = allDocs.reduce((a, x) => a + x.chunks, 0);
   $('summary').textContent = `${allDocs.length} 个文档 · ${chunks} 个片段`;
@@ -537,6 +578,179 @@ $('histPanel').addEventListener('click', async e => {
 $('histBtn').onclick = () => { $('histPanel').hidden = !$('histPanel').hidden; if (!$('histPanel').hidden) loadConvs(); };
 document.addEventListener('click', e => {
   if (!e.target.closest('.hist-wrap')) $('histPanel').hidden = true;
+});
+
+/* ---------- Playbooks ---------- */
+let pbTools = {}, pbEditing = null;
+
+function pbStepsText(steps) {
+  // 一行一步：工具 | 参数JSON | 检查点
+  return steps.map(s => [s.tool, JSON.stringify(s.args || {}), s.checkpoint || ''].join(' | ')).join('\n');
+}
+function pbParseSteps(text) {
+  const steps = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    const parts = line.split('|');
+    const tool = (parts[0] || '').trim();
+    if (!tool) continue;
+    let args = {};
+    const argText = (parts[1] || '').trim();
+    if (argText) {
+      try { args = JSON.parse(argText); }
+      catch { throw new Error(`参数不是合法 JSON：${argText}`); }
+      if (typeof args !== 'object' || Array.isArray(args)) throw new Error('参数必须是 JSON 对象');
+    }
+    steps.push({tool, args, checkpoint: parts.slice(2).join('|').trim()});
+  }
+  if (!steps.length) throw new Error('至少需要一个步骤');
+  return steps;
+}
+
+function pbCard(p) {
+  const bad = (p.missing_tools || []).length;
+  const steps = p.steps.map((s, i) => {
+    const args = Object.entries(s.args || {}).filter(([, v]) => v).map(([k, v]) => `${k}=${v}`).join(' ');
+    return `<div class="pb-step"><span class="i">${i + 1}</span>
+      <span class="tl">${esc(s.tool)}</span>
+      <span class="ck">${esc(args ? args + ' · ' : '')}${esc(s.checkpoint)}</span></div>`;
+  }).join('');
+  return `<div class="pb${p.enabled ? '' : ' off'}${bad ? ' bad' : ''}" data-id="${p.id}">
+    <div class="pb-top">
+      <span class="nm" title="${esc(p.name)}">${esc(p.name)}</span>
+      <span class="src">${esc(p.source)}</span>
+      <button data-toggle="${p.id}">${p.enabled ? '已启用' : '已停用'}</button>
+      <button data-edit="${p.id}">编辑</button>
+      <button data-del="${p.id}">删除</button>
+    </div>
+    ${bad ? `<div class="pb-warn">⚠ 引用了当前不可用的工具：${esc(p.missing_tools.join('、'))}，该剧本不会生效</div>` : ''}
+    <div class="pb-body">
+      ${p.trigger ? `<div class="pb-trig">适用：${esc(p.trigger)}</div>` : ''}
+      ${steps}
+    </div></div>`;
+}
+
+function pbEditor(p) {
+  const tools = Object.entries(pbTools).map(([n, d]) => `${n}：${d}`).join('\n');
+  return `<div class="pb pb-edit" data-id="${p.id || ''}">
+    <div class="pb-top"><span class="nm">${p.id ? '编辑剧本' : '新建剧本'}</span></div>
+    <div class="pb-body">
+      <input id="pbName" placeholder="剧本名称" maxlength="60" value="${esc(p.name || '')}"
+             style="width:100%;box-sizing:border-box;padding:7px 9px;border-radius:7px;
+                    border:1px solid var(--border);background:var(--panel-2);color:var(--text);font:inherit">
+      <input id="pbTrigger" placeholder="什么情况下用它，例如：用户反馈服务反复重启" maxlength="200"
+             value="${esc(p.trigger || '')}"
+             style="width:100%;box-sizing:border-box;margin-top:6px;padding:7px 9px;border-radius:7px;
+                    border:1px solid var(--border);background:var(--panel-2);color:var(--text);font:inherit">
+      <div style="margin:8px 0 4px;color:var(--muted);font-size:12px">
+        步骤，一行一步：<code>工具 | 参数JSON | 检查点</code></div>
+      <textarea id="pbSteps" spellcheck="false">${esc(pbStepsText(p.steps || []))}</textarea>
+      <div class="pb-err" id="pbErr" hidden></div>
+      <div class="row"><button class="ok" id="pbSave">保存</button>
+        <button class="cancel" id="pbCancel">取消</button></div>
+      <div class="pb-tools">可用工具：\n${esc(tools || '（无）')}</div>
+    </div></div>`;
+}
+
+async function loadPlaybooks() {
+  const d = await (await fetch('/api/playbooks')).json();
+  pbTools = d.tools || {};
+  const list = d.playbooks || [];
+  $('pbPanel').innerHTML =
+    `<div class="pb-head"><span class="t">排查剧本 ${list.length}</span>
+       <button class="icon-btn" id="pbNew">＋ 新建</button>
+       <button class="icon-btn" id="pbFromDoc">从文档抽取</button></div>` +
+    (pbEditing !== null ? pbEditor(pbEditing) : '') +
+    (list.length ? list.map(pbCard).join('')
+                 : '<div class="empty">还没有剧本。可以从已上传的文档里自动抽取。</div>');
+}
+
+$('pbBtn').onclick = () => {
+  $('pbPanel').hidden = !$('pbPanel').hidden;
+  if (!$('pbPanel').hidden) { pbEditing = null; loadPlaybooks(); }
+};
+document.addEventListener('click', e => {
+  if (!e.target.closest('.pb-wrap')) $('pbPanel').hidden = true;
+});
+
+$('pbPanel').addEventListener('click', async e => {
+  const id = t => e.target.closest(`[data-${t}]`)?.dataset[t];
+
+  if (e.target.id === 'pbNew') { pbEditing = {steps: []}; return loadPlaybooks(); }
+
+  if (e.target.id === 'pbFromDoc') {
+    const names = allDocs.map(d => d.source);
+    if (!names.length) return alert('还没有文档');
+    const pick = prompt('从哪个文档抽取？\n\n' + names.map((n, i) => `${i + 1}. ${n}`).join('\n'), '1');
+    const doc = names[parseInt(pick, 10) - 1];
+    if (!doc) return;
+    const btn = e.target; btn.disabled = true; btn.textContent = '抽取中…';
+    try {
+      const r = await fetch('/api/playbooks/extract', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({source: doc})});
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || r.status);
+      alert(d.extracted.length
+        ? `抽取出 ${d.extracted.length} 个剧本，已默认停用，确认无误后再启用。`
+        : '这篇文档里没有找到可编排的排查流程。');
+    } catch (err) { alert('抽取失败：' + err.message); }
+    finally { btn.disabled = false; btn.textContent = '从文档抽取'; loadPlaybooks(); }
+    return;
+  }
+
+  if (e.target.id === 'pbCancel') { pbEditing = null; return loadPlaybooks(); }
+
+  if (e.target.id === 'pbSave') {
+    const err = $('pbErr');
+    err.hidden = true;
+    let steps;
+    try { steps = pbParseSteps($('pbSteps').value); }
+    catch (ex) { err.textContent = ex.message; err.hidden = false; return; }
+    const body = {name: $('pbName').value.trim(), trigger: $('pbTrigger').value.trim(),
+                  steps, enabled: true};
+    const editId = e.target.closest('.pb-edit').dataset.id;
+    const r = await fetch('/api/playbooks' + (editId ? '/' + editId : ''),
+      {method: editId ? 'PUT' : 'POST', headers: {'Content-Type': 'application/json'},
+       body: JSON.stringify(body)});
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({detail: '服务器错误 ' + r.status}));
+      err.textContent = Array.isArray(d.detail)
+        ? d.detail.map(x => x.msg).join('；') : d.detail;
+      err.hidden = false;
+      return;
+    }
+    pbEditing = null;
+    loadPlaybooks(); loadDocs();
+    return;
+  }
+
+  const editId = id('edit');
+  if (editId) {
+    const d = await (await fetch('/api/playbooks')).json();
+    pbEditing = d.playbooks.find(p => p.id === editId) || {steps: []};
+    return loadPlaybooks();
+  }
+
+  const delId = id('del');
+  if (delId) {
+    if (!confirm('确定删除这个剧本？')) return;
+    await fetch('/api/playbooks/' + delId, {method: 'DELETE'});
+    return loadPlaybooks().then(loadDocs);
+  }
+
+  const toggleId = id('toggle');
+  if (toggleId) {
+    const d = await (await fetch('/api/playbooks')).json();
+    const p = d.playbooks.find(x => x.id === toggleId);
+    if (!p) return;
+    await fetch('/api/playbooks/' + toggleId, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: p.name, trigger: p.trigger, steps: p.steps,
+                            enabled: !p.enabled})});
+    return loadPlaybooks().then(loadDocs);
+  }
 });
 
 async function ask() {

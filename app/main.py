@@ -10,11 +10,14 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
-from app import conversations
+from app import conversations, playbooks
 from app.agent import loop as agent_loop
 from app.agent import ops_client
+from app.agent.extract import extract as extract_playbooks
+from app.agent.tools import SCHEMAS as TOOL_SCHEMAS
 from app.config import (AGENT_MODE, ALLOWED_SUFFIXES, CATEGORY_MAX, CHAT_MODEL, BOT_NAME,
-                        FILES_DIR, IMAGE_SUFFIXES, MAX_FILE_BYTES, WEB_PASSWORD, WEB_USER)
+                        FILES_DIR, IMAGE_SUFFIXES, MAX_FILE_BYTES, WEB_PASSWORD, WEB_USER,
+                        log)
 from app.ingest.extract import ExtractionError, extract_pages
 from app.ingest.vision import ImageCollector
 from app.rag import store
@@ -60,11 +63,24 @@ def index():
 
 # --- Documents ---------------------------------------------------------------
 
+def usable_tools() -> dict:
+    """宿主机报告的工具里，应用侧也定义了参数结构的那部分。
+
+    两边取交集才是模型真正拿得到的；只看任意一边都会和实际对不上。
+    """
+    if AGENT_MODE == "off":
+        return {}
+    return {name: desc for name, desc in ops_client.available_tools().items()
+            if name in TOOL_SCHEMAS}
+
+
 @app.get("/api/documents")
 def documents():
+    tools = usable_tools()
     return {"documents": store.list_documents(), "categories": store.all_categories(),
             "chat_model": CHAT_MODEL, "bot_name": BOT_NAME,
-            "tools": sorted(ops_client.available_tools()) if AGENT_MODE != "off" else []}
+            "tools": sorted(tools),
+            "playbooks": len(playbooks.list_all(only_enabled=True))}
 
 
 @app.post("/api/documents")
@@ -140,7 +156,99 @@ def delete_document(name: str):
     name = safe_name(name)
     store.delete_document(name)
     (FILES_DIR / name).unlink(missing_ok=True)
-    return {"deleted": name}
+    # 文档没了，从它抽出来的剧本也一并清掉，避免留下孤儿流程。
+    removed = playbooks.delete_by_source(name)
+    return {"deleted": name, "playbooks_removed": removed}
+
+
+# --- Playbooks ---------------------------------------------------------------
+
+class PlaybookStep(BaseModel):
+    tool: str = Field(min_length=1, max_length=60)
+    args: dict = Field(default_factory=dict)
+    checkpoint: str = Field(default="", max_length=300)
+
+
+class PlaybookBody(BaseModel):
+    name: str = Field(min_length=1, max_length=playbooks.NAME_MAX)
+    trigger: str = Field(default="", max_length=playbooks.TRIGGER_MAX)
+    steps: list[PlaybookStep] = Field(min_length=1, max_length=playbooks.STEP_MAX)
+    enabled: bool = True
+
+
+@app.get("/api/playbooks")
+def list_playbooks():
+    tools = usable_tools()
+    items = playbooks.list_all()
+    for item in items:
+        # 工具被下线后，依赖它的剧本要在界面上标出来，而不是静默失效。
+        item["missing_tools"] = sorted({s["tool"] for s in item["steps"]
+                                        if s["tool"] not in tools})
+    return {"playbooks": items, "tools": tools}
+
+
+@app.post("/api/playbooks")
+def create_playbook(body: PlaybookBody):
+    try:
+        playbook_id = playbooks.save(
+            None, body.name, body.trigger,
+            [s.model_dump() for s in body.steps], set(usable_tools()),
+            source="手工创建", enabled=body.enabled)
+    except playbooks.InvalidPlaybook as exc:
+        raise HTTPException(400, str(exc))
+    return playbooks.get(playbook_id)
+
+
+@app.put("/api/playbooks/{playbook_id}")
+def update_playbook(playbook_id: str, body: PlaybookBody):
+    existing = playbooks.get(playbook_id)
+    if not existing:
+        raise HTTPException(404, "剧本不存在")
+    try:
+        playbooks.save(playbook_id, body.name, body.trigger,
+                       [s.model_dump() for s in body.steps], set(usable_tools()),
+                       source=existing["source"], enabled=body.enabled)
+    except playbooks.InvalidPlaybook as exc:
+        raise HTTPException(400, str(exc))
+    return playbooks.get(playbook_id)
+
+
+@app.delete("/api/playbooks/{playbook_id}")
+def remove_playbook(playbook_id: str):
+    playbooks.delete(playbook_id)
+    return {"deleted": playbook_id}
+
+
+class ExtractBody(BaseModel):
+    source: str = Field(min_length=1, max_length=200)
+
+
+@app.post("/api/playbooks/extract")
+def extract_from_document(body: ExtractBody):
+    """从已入库的文档里抽取候选剧本，返回但不直接保存，由用户确认。"""
+    name = safe_name(body.source)
+    tools = usable_tools()
+    if not tools:
+        raise HTTPException(400, "当前没有可用的现场工具，无法编排剧本")
+
+    chunks = store.collection.get(where={"source": name}, include=["documents"])
+    if not chunks["documents"]:
+        raise HTTPException(404, "文档不存在")
+    text = "\n".join(chunks["documents"][:30])
+
+    candidates = extract_playbooks(name, text, tools)
+    saved = []
+    for item in candidates:
+        try:
+            playbook_id = playbooks.save(None, item["name"], item["trigger"],
+                                         item["steps"], set(tools),
+                                         source=name, enabled=False)
+        except playbooks.InvalidPlaybook as exc:
+            log.info("discarded extracted playbook from %s: %s", name, exc)
+            continue
+        saved.append(playbooks.get(playbook_id))
+    # 抽取结果默认停用，确认无误后再启用，避免自动生成的流程直接上线。
+    return {"source": name, "extracted": saved}
 
 
 # --- Conversations -----------------------------------------------------------

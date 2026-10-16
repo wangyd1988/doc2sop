@@ -9,6 +9,7 @@
 """
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
+from app import playbooks
 from app.agent.tools import build_tools
 from app.clients import chat_model
 from app.config import BOT_NAME, HISTORY_CHARS, log, why
@@ -38,11 +39,14 @@ AGENT_PROMPT = f"""你是「{BOT_NAME}」，一位容器网络与云平台排障
 - 先看知识库提示了哪些排查点，再用工具逐一核对，不要凭空猜测现状。
 - 只调用与当前问题相关的工具，不要把所有工具都跑一遍。
 - 拿到结果后如果还缺关键信息，可以继续调用。
+- **如果下面给了匹配的排查剧本，优先按剧本的步骤顺序执行**，剧本是团队沉淀的标准流程。
+  剧本里参数为空的，用用户提到的具体对象补上；用户没说就先问，别乱猜。
 - 工具都是只读的，你无法修改环境。需要变更时，把具体命令写给用户，由用户自己执行。
 
 回答要求：
 - 用了工具时，明确区分【知识库依据】和【现场实测】；没用工具时不要编造现场数据。
 - 用 [编号] 标注引用的知识库片段并注明来源文档。
+- 按剧本排查时，说明用的是哪个剧本，并逐步给出每一步的检查结论。
 - 先给结论，再给依据，最后给建议动作。
 - 现场数据与知识库描述不一致时，要指出来，这往往就是问题所在。
 - 两边都没有足够信息时，直说没有，并指出还需要哪些信息，不要编造。"""
@@ -74,8 +78,14 @@ def run(question: str, context: str, history):
     for role, content in history:
         messages.append(HumanMessage(content=content[:HISTORY_CHARS]) if role == "user"
                         else AIMessage(content=content[:HISTORY_CHARS]))
-    messages.append(HumanMessage(
-        content=f"知识库片段：\n{context}\n\n用户的问题：{question}"))
+
+    # 剧本只在确实有工具可用时注入，否则模型会照着剧本去调不存在的工具。
+    book = playbooks.as_prompt(set(by_name)) if by_name else ""
+    prompt = f"知识库片段：\n{context}\n\n"
+    if book:
+        prompt += f"可用排查剧本（团队沉淀的标准流程，匹配时优先按它执行）：\n{book}\n\n"
+    prompt += f"用户的问题：{question}"
+    messages.append(HumanMessage(content=prompt))
 
     for _ in range(MAX_ROUNDS):
         try:
