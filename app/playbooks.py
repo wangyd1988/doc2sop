@@ -1,12 +1,17 @@
-"""排查剧本：把文档里的排障经验变成可执行的步骤编排。
+"""技能：把文档里"按步骤查看、核对"的经验，变成对已有工具的有序调用。
 
-和工具的分工：
+不限于故障排查——日常巡检、上线前检查、上线后验收都是技能。
 
-    工具（tool）    少量、代码里审过的执行原语，是唯一能动系统的东西
-    剧本（playbook）大量、可自动抽取与页面编辑的编排数据，只能引用已有工具
+三层分工：
 
-剧本本身不带任何执行能力。一个步骤如果引用了不存在的工具，写入时就会被拒绝，
-所以"自动生成剧本"不会凭空多出新的执行权限——这是它和"自动生成工具"的本质区别。
+    知识库（文档）   人写的经验：应该怎么做、正常值是什么
+    技能（skill）    从文档里抽出的做法：按什么顺序调哪些工具、每步看什么
+    工具（tool）     宿主机上审过的执行原语，是唯一能动系统的东西
+
+技能本身不带任何执行能力。一个步骤如果引用了不存在的工具，写入时就会被拒绝，
+所以"自动生成技能"不会凭空多出新的执行权限——这是它和"自动生成工具"的本质区别。
+
+（代码里沿用 playbook 作为标识符，对外统一叫「技能」。）
 """
 import json
 import sqlite3
@@ -50,7 +55,7 @@ lock = threading.Lock()
 
 
 class InvalidPlaybook(ValueError):
-    """剧本内容不合法，附带可直接展示给用户的原因。"""
+    """技能内容不合法，附带可直接展示给用户的原因。"""
 
 
 def now_iso():
@@ -61,7 +66,7 @@ def validate(name, trigger, steps, known_tools):
     """校验并归一化。known_tools 为当前真实可用的工具名集合。"""
     name = (name or "").strip()[:NAME_MAX]
     if not name:
-        raise InvalidPlaybook("剧本名称不能为空")
+        raise InvalidPlaybook("技能名称不能为空")
     trigger = (trigger or "").strip()[:TRIGGER_MAX]
 
     if not isinstance(steps, list) or not steps:
@@ -74,7 +79,7 @@ def validate(name, trigger, steps, known_tools):
         if not isinstance(step, dict):
             raise InvalidPlaybook(f"第 {index} 步格式不正确")
         tool = str(step.get("tool") or "").strip()
-        # 这一行是剧本不会扩权的根本原因：只能引用已存在的工具。
+        # 这一行是技能不会扩权的根本原因：只能引用已存在的工具。
         if tool not in known_tools:
             raise InvalidPlaybook(
                 f"第 {index} 步引用了不存在的工具「{tool}」；"
@@ -88,7 +93,7 @@ def validate(name, trigger, steps, known_tools):
 
 
 def save(playbook_id, name, trigger, steps, known_tools, source="", enabled=True):
-    """新建或整体覆盖一个剧本。"""
+    """新建或整体覆盖一个技能。"""
     name, trigger, cleaned = validate(name, trigger, steps, known_tools)
     timestamp = now_iso()
     with lock:
@@ -159,7 +164,7 @@ def set_enabled(playbook_id, enabled):
 
 
 def delete_by_source(source):
-    """文档被删除时，连带清掉由它抽取出来的剧本。"""
+    """文档被删除时，连带清掉由它抽取出来的技能。"""
     with lock:
         ids = [r["id"] for r in db.execute(
             "SELECT id FROM playbooks WHERE source = ?", (source,)).fetchall()]
@@ -171,9 +176,9 @@ def delete_by_source(source):
 
 
 def as_prompt(known_tools):
-    """把启用的剧本压成一段紧凑文本，供模型判断是否套用。
+    """把启用的技能压成一段紧凑文本，供模型判断是否套用。
 
-    只列出步骤引用的工具当前仍然可用的剧本——工具没了的剧本照着做必然失败。
+    只列出步骤引用的工具当前仍然可用的技能——工具没了的技能照着做必然失败。
     """
     usable = []
     for playbook in list_all(only_enabled=True):
@@ -184,7 +189,7 @@ def as_prompt(known_tools):
 
     lines = []
     for playbook in usable:
-        lines.append(f"剧本《{playbook['name']}》")
+        lines.append(f"技能《{playbook['name']}》")
         if playbook["trigger"]:
             lines.append(f"  适用：{playbook['trigger']}")
         for index, step in enumerate(playbook["steps"], 1):

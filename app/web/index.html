@@ -289,7 +289,7 @@ header .t { flex: 1; font-weight: 600; }
       <div class="pb-panel" id="tlPanel" hidden></div>
     </div>
     <div class="pb-wrap">
-      <button class="icon-btn" id="pbBtn" title="排查剧本">📋 剧本</button>
+      <button class="icon-btn" id="pbBtn" title="技能：从文档里学会的做法，按步骤调用已有工具">🧩 技能</button>
       <div class="pb-panel" id="pbPanel" hidden></div>
     </div>
     <div class="hist-wrap">
@@ -411,7 +411,7 @@ async function loadDocs() {
   const books = d.playbooks || 0;
   $('modelInfo').textContent = '🤖 ' + d.chat_model
     + (tools.length ? ` · 🔧 ${tools.length} 工具` : '')
-    + (books ? ` · 📋 ${books} 剧本` : '');
+    + (books ? ` · 🧩 ${books} 技能` : '');
   $('modelInfo').title = tools.length ? '可调用的只读运维工具：' + tools.join('、') : '';
   const chunks = allDocs.reduce((a, x) => a + x.chunks, 0);
   $('summary').textContent = `${allDocs.length} 个文档 · ${chunks} 个片段`;
@@ -661,7 +661,7 @@ function pbCard(p) {
       <button data-edit="${p.id}">编辑</button>
       <button data-del="${p.id}">删除</button>
     </div>
-    ${bad ? `<div class="pb-warn">⚠ 引用了当前不可用的工具：${esc(p.missing_tools.join('、'))}，该剧本不会生效</div>` : ''}
+    ${bad ? `<div class="pb-warn">⚠ 引用了当前不可用的工具：${esc(p.missing_tools.join('、'))}，该技能不会生效</div>` : ''}
     <div class="pb-body">
       ${p.trigger ? `<div class="pb-trig">适用：${esc(p.trigger)}</div>` : ''}
       ${steps}
@@ -671,9 +671,9 @@ function pbCard(p) {
 function pbEditor(p) {
   const tools = Object.entries(pbTools).map(([n, d]) => `${n}：${d}`).join('\n');
   return `<div class="pb pb-edit" data-id="${p.id || ''}">
-    <div class="pb-top"><span class="nm">${p.id ? '编辑剧本' : '新建剧本'}</span></div>
+    <div class="pb-top"><span class="nm">${p.id ? '编辑技能' : '新建技能'}</span></div>
     <div class="pb-body">
-      <input id="pbName" placeholder="剧本名称" maxlength="60" value="${esc(p.name || '')}"
+      <input id="pbName" placeholder="技能名称" maxlength="60" value="${esc(p.name || '')}"
              style="width:100%;box-sizing:border-box;padding:7px 9px;border-radius:7px;
                     border:1px solid var(--border);background:var(--panel-2);color:var(--text);font:inherit">
       <input id="pbTrigger" placeholder="什么情况下用它，例如：用户反馈服务反复重启" maxlength="200"
@@ -697,7 +697,7 @@ function pbPicker() {
   const options = matched.map(d =>
     `<option value="${esc(d.source)}">${esc(d.source)}　[${esc(d.category || '未分类')}]</option>`).join('');
   return `<div class="pb-pick">
-    <div class="hd">从哪个文档抽取剧本？</div>
+    <div class="hd">从哪个文档抽取技能？</div>
     <input id="pbDocFilter" placeholder="输入关键字筛选文档名或分类…" value="${esc(pbDocFilter)}">
     <select id="pbDocSelect" size="8">${options || '<option disabled>没有匹配的文档</option>'}</select>
     <div class="row">
@@ -714,13 +714,15 @@ async function loadPlaybooks() {
   pbTools = d.tools || {};
   const list = d.playbooks || [];
   $('pbPanel').innerHTML =
-    `<div class="pb-head"><span class="t">排查剧本 ${list.length}</span>
+    `<div class="pb-head"><span class="t">技能 ${list.length}</span>
        <button class="icon-btn" id="pbNew">＋ 新建</button>
-       <button class="icon-btn" id="pbFromDoc">从文档抽取</button></div>` +
+       <button class="icon-btn" id="pbFromDoc">从文档抽取</button></div>
+     <div class="tl-note">📄 文档写了怎么做 → 🧩 技能定好按什么顺序做 → 🔧 工具去执行。<br>
+       适用于故障排查、日常巡检、上线前检查、上线后验收。技能只能调用已有工具，不能新增执行能力。</div>` +
     (pbPicking ? pbPicker() : '') +
     (pbEditing !== null ? pbEditor(pbEditing) : '') +
     (list.length ? list.map(pbCard).join('')
-                 : '<div class="empty">还没有剧本。可以从已上传的文档里自动抽取。</div>');
+                 : '<div class="empty">还没有技能。点「从文档抽取」，让 Agent 从你的排查手册、巡检规范里学会做法。</div>');
   if (pbPicking) {
     const input = $('pbDocFilter');
     input.focus();
@@ -768,9 +770,9 @@ $('pbPanel').addEventListener('click', async e => {
       await loadPlaybooks();
       loadDocs();
       alert(d.extracted.length
-        ? `从《${doc}》抽取出 ${d.extracted.length} 个剧本，已默认停用。\n请核对步骤无误后再启用。`
+        ? `从《${doc}》抽取出 ${d.extracted.length} 个技能，已默认停用。\n请核对步骤无误后再启用。`
           + (d.note ? `\n\n${d.note}` : '')
-        : `《${doc}》没有抽出剧本。\n\n原因：${d.note || '未知'}`);
+        : `《${doc}》没有抽出技能。\n\n原因：${d.note || '未知'}`);
     } catch (ex) {
       btn.disabled = false;
       btn.textContent = '开始抽取';
@@ -816,7 +818,7 @@ $('pbPanel').addEventListener('click', async e => {
 
   const delId = id('del');
   if (delId) {
-    if (!confirm('确定删除这个剧本？')) return;
+    if (!confirm('确定删除这个技能？')) return;
     await fetch('/api/playbooks/' + delId, {method: 'DELETE'});
     return loadPlaybooks().then(loadDocs);
   }

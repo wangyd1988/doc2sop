@@ -1,6 +1,6 @@
-"""排查剧本：存储、校验与抽取。
+"""技能：存储、校验与抽取。
 
-核心安全属性：剧本只能引用已存在的工具，不能通过它新增执行能力。
+核心安全属性：技能只能引用已存在的工具，不能通过它新增执行能力。
 """
 import unittest
 from unittest.mock import patch
@@ -41,10 +41,10 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(got["steps"][0]["args"], {"name": "kb-app", "lines": 100})
 
     def test_unknown_tool_is_rejected(self):
-        """这条是剧本不会扩权的根本保证。"""
+        """这条是技能不会扩权的根本保证。"""
         for bad in ["docker_exec", "rm", "", "container_logs; rm -rf /"]:
             with self.subTest(bad=bad), self.assertRaises(playbooks.InvalidPlaybook) as cm:
-                playbooks.save(None, "坏剧本", "", [step(bad)], TOOLS)
+                playbooks.save(None, "坏技能", "", [step(bad)], TOOLS)
             self.assertIn("不存在的工具", str(cm.exception))
 
     def test_empty_name_or_steps_rejected(self):
@@ -60,7 +60,7 @@ class StoreTests(unittest.TestCase):
         self.assertIn("步骤最多", str(cm.exception))
 
     def test_update_replaces_steps_without_duplicating(self):
-        pid = playbooks.save(None, "原剧本", "", [step("container_stats"),
+        pid = playbooks.save(None, "原技能", "", [step("container_stats"),
                                                   step("host_resources")], TOOLS)
         playbooks.save(pid, "改过的", "新触发", [step("container_logs", name="x")], TOOLS)
         got = playbooks.get(pid)
@@ -81,7 +81,7 @@ class StoreTests(unittest.TestCase):
     def test_prompt_only_includes_usable_playbooks(self):
         playbooks.save(None, "可用的", "触发甲", [step("container_stats")], TOOLS)
         playbooks.save(None, "停用的", "", [step("host_resources")], TOOLS, enabled=False)
-        # 这个剧本引用的工具稍后会从可用集合里消失
+        # 这个技能引用的工具稍后会从可用集合里消失
         playbooks.save(None, "工具没了", "", [step("container_logs", name="x")], TOOLS)
 
         text = playbooks.as_prompt({"container_stats", "host_resources"})
@@ -91,7 +91,7 @@ class StoreTests(unittest.TestCase):
         self.assertIn("触发甲", text)
 
     def test_prompt_is_empty_without_tools(self):
-        playbooks.save(None, "某剧本", "", [step("container_stats")], TOOLS)
+        playbooks.save(None, "某技能", "", [step("container_stats")], TOOLS)
         self.assertEqual(playbooks.as_prompt(set()), "")
 
 
@@ -134,7 +134,7 @@ class ExtractionTests(unittest.TestCase):
     def test_bad_output_returns_empty(self):
         """无法解析和模型明确说没有，要给出不同的原因。"""
         for text, hint in [("不是 JSON", "无法解析"), ("", "没有返回内容"),
-                           ("{}", "无法解析"), ('["字符串"]', "没有描述")]:
+                           ("{}", "无法解析"), ('["字符串"]', "没有能用现有工具")]:
             with self.subTest(text=text):
                 got, note = self.extract_with(text)
                 self.assertEqual(got, [])
@@ -143,7 +143,7 @@ class ExtractionTests(unittest.TestCase):
     def test_empty_array_means_no_procedure_not_an_error(self):
         got, note = self.extract_with("[]")
         self.assertEqual(got, [])
-        self.assertIn("没有描述", note)
+        self.assertIn("没有能用现有工具", note)
         self.assertNotIn("重试", note)
 
     def test_model_failure_returns_empty(self):
@@ -203,7 +203,7 @@ class ApiTests(unittest.TestCase):
         self.addCleanup(self.tools.stop)
 
     def body(self, **over):
-        base = {"name": "测试剧本", "trigger": "某种情况",
+        base = {"name": "测试技能", "trigger": "某种情况",
                 "steps": [{"tool": "container_stats", "args": {}, "checkpoint": "看内存"}],
                 "enabled": True}
         base.update(over)
