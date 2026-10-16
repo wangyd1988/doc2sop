@@ -36,11 +36,15 @@ def percentile(values, pct):
     return ordered[index]
 
 
-def ask(base_url, auth_header, question, timeout):
-    """Call /api/ask and collect sources, answer and timings."""
+def ask(base_url, auth_header, question, timeout, web=False):
+    """Call /api/ask and collect sources, answer and timings.
+
+    Web search is off by default: search results change over time, which would
+    make the numbers impossible to reproduce. Pass --web to measure it anyway.
+    """
     request = urllib.request.Request(
         base_url.rstrip("/") + "/api/ask",
-        json.dumps({"question": question}).encode("utf-8"),
+        json.dumps({"question": question, "web": web}).encode("utf-8"),
         {"Authorization": auth_header, "Content-Type": "application/json"})
 
     started = time.time()
@@ -120,6 +124,8 @@ def main():
     parser.add_argument("--password", required=True)
     parser.add_argument("--dataset", default=str(Path(__file__).parent / "dataset.jsonl"))
     parser.add_argument("--timeout", type=float, default=300)
+    parser.add_argument("--web", action="store_true",
+                        help="Allow web search (results are not reproducible over time).")
     parser.add_argument("--judge-model", default="",
                         help="Model alias for LLM-as-judge scoring; falls back to keywords.")
     parser.add_argument("--judge-base-url", default="")
@@ -148,7 +154,7 @@ def main():
     for i, case in enumerate(cases, 1):
         print(f"[{i}/{len(cases)}] {case['id']}  {case['question'][:38]}", flush=True)
         try:
-            outcome = ask(args.url, auth_header, case["question"], args.timeout)
+            outcome = ask(args.url, auth_header, case["question"], args.timeout, web=args.web)
         except Exception as exc:
             print(f"    请求失败：{exc.__class__.__name__}")
             results.append({**case, "failed": True})

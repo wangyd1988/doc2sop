@@ -64,6 +64,16 @@ OPS_URL = os.environ.get("OPS_URL", "").strip()
 OPS_TOKEN = os.environ.get("OPS_TOKEN", "").strip()
 AGENT_MODE = os.environ.get("AGENT_MODE", "auto").strip().lower()
 
+# --- Web search (through the gateway) ----------------------------------------
+# Name of a LiteLLM search tool (config.yaml `search_tools`). Empty disables web
+# search. Going through the gateway means it also works on intranets that can
+# only reach the gateway, and the search provider's keys never leave it.
+WEB_SEARCH_TOOL = os.environ.get("WEB_SEARCH_TOOL", "").strip()
+WEB_SEARCH_MAX_RESULTS = int(os.environ.get("WEB_SEARCH_MAX_RESULTS", "5"))
+# Internal names that must never be sent to a public search engine, comma separated.
+WEB_SEARCH_BLOCKLIST = [w.strip() for w in
+                        os.environ.get("WEB_SEARCH_BLOCKLIST", "").split(",") if w.strip()]
+
 log = logging.getLogger("kb")
 
 

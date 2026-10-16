@@ -31,7 +31,12 @@ def retrieve(question: str):
 
 
 def as_context(hits) -> str:
-    """Format snippets so the model can cite them by [number]."""
+    """Format snippets so the model can cite them by [number].
+
+    The similarity is included so the model can weigh it — but only as a hint:
+    with bge-style embeddings an unrelated chunk can still score 0.6.
+    """
     if not hits:
         return "（这次没有检索到相关片段）"
-    return "\n\n".join(f"[{h['index']}] 来源：{h['location']}\n{h['text']}" for h in hits)
+    return "\n\n".join(f"[{h['index']}] 来源：{h['location']}（相似度 {h['score']:.2f}）\n{h['text']}"
+                       for h in hits)

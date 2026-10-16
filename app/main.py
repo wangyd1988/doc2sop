@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from app import conversations, playbooks
 from app.agent import loop as agent_loop
-from app.agent import ops_client
+from app.agent import ops_client, web_search
 from app.agent.extract import extract as extract_playbooks
 from app.config import (AGENT_MODE, ALLOWED_SUFFIXES, CATEGORY_MAX, CHAT_MODEL, BOT_NAME,
                         FILES_DIR, IMAGE_SUFFIXES, MAX_FILE_BYTES, WEB_PASSWORD, WEB_USER,
@@ -80,6 +80,7 @@ def documents():
     return {"documents": store.list_documents(), "categories": store.all_categories(),
             "chat_model": CHAT_MODEL, "bot_name": BOT_NAME,
             "tools": sorted(tools),
+            "web_search": AGENT_MODE != "off" and web_search.enabled(),
             "playbooks": len(playbooks.list_all(only_enabled=True))}
 
 
@@ -351,6 +352,8 @@ def delete_conversation(conversation_id: str):
 class Question(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     conversation_id: str | None = Field(default=None, max_length=64)
+    # 页面上的「🌐 联网」开关；服务端没配置搜索时这个值不起作用。
+    web: bool = True
 
 
 @app.post("/api/ask")
@@ -378,14 +381,15 @@ def ask(payload: Question):
             conversations.delete(conversation_id)
         raise HTTPException(502, f"检索失败：{exc.__class__.__name__}")
 
-    # Tools are opt-in and degrade gracefully: no ops endpoint means plain RAG.
-    use_agent = AGENT_MODE != "off" and ops_client.enabled()
+    # Tools are opt-in and degrade gracefully: no ops endpoint and no web search means plain RAG.
+    allow_web = AGENT_MODE != "off" and payload.web and web_search.enabled()
+    use_agent = AGENT_MODE != "off" and (ops_client.enabled() or allow_web)
 
     conversations.add_message(conversation_id, "user", question)
 
     def stream():
         """NDJSON: conversation, sources, tool activity, then answer fragments."""
-        answer, failure, tool_calls = "", None, []
+        answer, failure, tool_calls, web_hits = "", None, [], []
         try:
             yield json.dumps({"conversation": conversation}, ensure_ascii=False) + "\n"
             yield json.dumps({"sources": hits}, ensure_ascii=False) + "\n"
@@ -396,13 +400,16 @@ def ask(payload: Question):
                 # needed; events stream out as they happen so the UI can show it.
                 try:
                     with traced_under(root):
-                        for kind, payload in agent_loop.run(question, context, history):
+                        for kind, payload in agent_loop.run(question, context, history,
+                                                            allow_web=allow_web):
                             if kind == "delta":
                                 answer += payload
                             elif kind == "error":
                                 failure = payload
                             elif kind == "tool_call":
                                 tool_calls.append(payload)
+                            elif kind == "web_sources":
+                                web_hits.extend(payload)
                             yield json.dumps({kind: payload}, ensure_ascii=False) + "\n"
                 except Exception as exc:
                     failure = f"工具调用流程失败：{exc.__class__.__name__}"
@@ -420,10 +427,10 @@ def ask(payload: Question):
                     yield json.dumps({"error": failure}, ensure_ascii=False) + "\n"
 
             if answer.strip():
-                conversations.add_message(conversation_id, "assistant", answer, hits)
+                conversations.add_message(conversation_id, "assistant", answer, hits + web_hits)
         finally:
             finish_root_run(root, outputs={"answer": answer, "search_query": search_query,
-                                           "sources": len(hits),
+                                           "sources": len(hits), "web_sources": len(web_hits),
                                            "tools_used": [c["tool"] for c in tool_calls]},
                             error=failure)
 
