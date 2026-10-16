@@ -9,10 +9,13 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
 from tests.support import FakeReply  # noqa: F401  (sets env before app imports)
+
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent import loop as agent_loop
 from app.agent import ops_client, tools as agent_tools
@@ -361,16 +364,16 @@ class FakeTool:
 
 
 class AgentLoopTests(unittest.TestCase):
-    def make_model(self, script):
-        """script 是每轮返回的 (tool_calls, content)。"""
+    def make_model(self, script, seen=None):
+        """script 是每轮返回的 (tool_calls, content)；seen 收集每次发给模型的消息。"""
         rounds = iter(script)
 
         class Bound:
             def invoke(_self, messages):
+                if seen is not None:
+                    seen.append(list(messages))
                 calls, content = next(rounds)
-                reply = FakeReply(content)
-                reply.tool_calls = calls
-                return reply
+                return AIMessage(content=content, tool_calls=calls)
 
         class Model:
             def bind_tools(_self, tools):
@@ -443,6 +446,111 @@ class AgentLoopTests(unittest.TestCase):
         preview = [p for k, p in events if k == "tool_result"][0]
         self.assertLessEqual(len(preview["preview"]), 401)
         self.assertGreater(preview["lines"], 100)
+
+
+class MemoryTests(unittest.TestCase):
+    """LangGraph 检查点：整轮过程被记住，追问时能用上当时的原始数据。"""
+
+    make_model = AgentLoopTests.make_model
+
+    def turn(self, thread, question, script, tools=(), history=()):
+        seen = []
+        with patch.object(agent_loop, "build_tools", return_value=list(tools)), \
+             patch.object(agent_loop, "chat_model", return_value=self.make_model(script, seen)):
+            events = list(agent_loop.run(question, "【知识库片段】", list(history), thread_id=thread))
+        return events, seen
+
+    def remembered(self, thread):
+        graph = agent_loop._build_graph(None, "", "", {}, False)
+        return graph.get_state({"configurable": {"thread_id": thread}}).values.get("messages", [])
+
+    def thread(self):
+        name = uuid.uuid4().hex
+        self.addCleanup(agent_loop.forget, name)
+        return name
+
+    def test_follow_up_sees_the_raw_tool_output_from_the_previous_turn(self):
+        thread = self.thread()
+        weather = FakeTool("weather", output="济南 10-16：多云，17~28℃，夜间小到中雨")
+        self.turn(thread, "济南天气？",
+                  [([{"name": "weather", "args": {}, "id": "w1"}], ""), ([], "今天会下雨")], [weather])
+        # 第一轮的回答里没写温度；第二轮追问时，模型应能看到当时工具返回的原始数据。
+        _, seen = self.turn(thread, "几度？", [([], "17~28℃")], [weather])
+        replayed = "\n".join(str(m.content) for m in seen[0])
+        self.assertIn("17~28℃", replayed)
+        self.assertIn("今天会下雨", replayed)
+
+    def test_knowledge_base_context_is_not_written_to_memory(self):
+        thread = self.thread()
+        self.turn(thread, "年假几天？", [([], "5 天")])
+        humans = [m.content for m in self.remembered(thread) if isinstance(m, HumanMessage)]
+        self.assertEqual(humans, ["年假几天？"])
+        self.assertFalse(any("知识库片段" in str(m.content) for m in self.remembered(thread)))
+
+    def test_context_is_attached_to_the_current_question_only(self):
+        thread = self.thread()
+        self.turn(thread, "第一问", [([], "答一")])
+        _, seen = self.turn(thread, "第二问", [([], "答二")])
+        humans = [m.content for m in seen[0] if isinstance(m, HumanMessage)]
+        self.assertEqual(humans[0], "第一问")
+        self.assertIn("【知识库片段】", humans[-1])
+        self.assertIn("第二问", humans[-1])
+
+    def test_old_conversations_are_seeded_once_from_text_history(self):
+        thread = self.thread()
+        history = [("user", "以前的问题"), ("assistant", "以前的回答")]
+        _, seen = self.turn(thread, "新问题", [([], "好")], history=history)
+        self.assertIn("以前的回答", [m.content for m in seen[0]])
+        _, seen = self.turn(thread, "再问", [([], "好")], history=history)
+        self.assertEqual([m.content for m in seen[0]].count("以前的回答"), 1)
+
+    def test_only_recent_turns_are_replayed(self):
+        thread = self.thread()
+        for i in range(agent_loop.KEEP_TURNS + 3):
+            self.turn(thread, f"问{i}", [([], f"答{i}")])
+        _, seen = self.turn(thread, "最后", [([], "完")])
+        humans = [m for m in seen[0] if isinstance(m, HumanMessage)]
+        self.assertEqual(len(humans), agent_loop.KEEP_TURNS + 1)
+
+    def test_old_tool_output_is_trimmed_when_replayed(self):
+        thread = self.thread()
+        big = FakeTool("logs", output="x" * 6000)
+        self.turn(thread, "看日志", [([{"name": "logs", "args": {}, "id": "l"}], ""), ([], "好")], [big])
+        _, seen = self.turn(thread, "然后呢", [([], "嗯")], [big])
+        tool_msgs = [m for m in seen[0] if isinstance(m, ToolMessage)]
+        self.assertLessEqual(len(tool_msgs[0].content), agent_loop.OLD_TOOL_CHARS + 20)
+        stored = [m for m in self.remembered(thread) if isinstance(m, ToolMessage)]
+        self.assertEqual(len(stored[0].content), 6000)   # 记忆里保留完整结果
+
+    def test_unanswered_tool_calls_are_dropped_before_replay(self):
+        """上一轮在「模型要调工具、工具还没回」时中断，历史里不能留下悬空的调用。"""
+        messages = [HumanMessage(content="q"),
+                    AIMessage(content="我查一下", tool_calls=[{"name": "t", "args": {}, "id": "a"}]),
+                    HumanMessage(content="q2")]
+        view = agent_loop._model_view(messages, "现在的问题")
+        self.assertFalse(any(isinstance(m, AIMessage) and m.tool_calls for m in view))
+        self.assertIn("我查一下", [m.content for m in view])
+
+    def test_forget_deletes_the_thread(self):
+        thread = self.thread()
+        self.turn(thread, "问", [([], "答")])
+        self.assertTrue(self.remembered(thread))
+        agent_loop.forget(thread)
+        self.assertEqual(self.remembered(thread), [])
+
+    def test_checkpoints_are_pruned_to_the_latest(self):
+        thread = self.thread()
+        tool = FakeTool("t")
+        self.turn(thread, "问", [([{"name": "t", "args": {}, "id": "1"}], ""), ([], "答")], [tool])
+        self.turn(thread, "再问", [([], "再答")], [tool])
+        saved = list(agent_loop.memory().list({"configurable": {"thread_id": thread}}))
+        self.assertEqual(len(saved), 1)
+        # 只剩最新一个检查点时，完整历史仍然在里面，不依赖被删掉的旧检查点。
+        state = agent_loop._build_graph(None, "", "", {}, False).get_state(
+            {"configurable": {"thread_id": thread}}).values
+        kinds = [type(m).__name__ for m in state["messages"]]
+        self.assertEqual(kinds, ["HumanMessage", "AIMessage", "ToolMessage", "AIMessage",
+                                 "HumanMessage", "AIMessage"])
 
 
 class ManagementTests(unittest.TestCase):

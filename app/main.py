@@ -398,6 +398,7 @@ def conversation_messages(conversation_id: str):
 @app.delete("/api/conversations/{conversation_id}")
 def delete_conversation(conversation_id: str):
     conversations.delete(conversation_id)
+    agent_loop.forget(conversation_id)  # Agent 的完整记忆也一起删掉
     return {"deleted": conversation_id}
 
 
@@ -455,7 +456,8 @@ def ask(payload: Question):
                 try:
                     with traced_under(root):
                         for kind, payload in agent_loop.run(question, context, history,
-                                                            allow_web=allow_web):
+                                                            allow_web=allow_web,
+                                                            thread_id=conversation_id):
                             if kind == "delta":
                                 answer += payload
                             elif kind == "error":

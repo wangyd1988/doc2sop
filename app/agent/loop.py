@@ -5,26 +5,46 @@
     检索知识库 → 模型判断还缺什么真实数据 → 调只读工具取数 → 对照后给结论
 
 不限于运维：工具可以是容器命令，也可以是网关接口、节假日日历。
+
+用 LangGraph 编排成「模型 ⇄ 工具」的循环，并用 SqliteSaver 做检查点：每个会话是一个
+thread，**整轮过程**（工具调用、工具结果、搜索结果、最终回答）都会被保存，追问时能接着
+用当时查到的原始数据，而不只是上一轮回答里恰好写到的那几句话。
+
 `run` 是一个生成器，边执行边把事件吐出来，前端可以实时看到它查了什么、
 看到了什么，而不是等一个黑盒答案。
 """
+import sqlite3
+import threading
+import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Annotated, TypedDict
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.config import get_stream_writer
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 from app import playbooks
 from app.agent import web_search
 from app.agent.tools import build_tools
 from app.clients import chat_model
-from app.config import BOT_NAME, HISTORY_CHARS, log, why
+from app.config import BOT_NAME, DATA_DIR, HISTORY_CHARS, log, why
 
 MAX_ROUNDS = 4  # 最多几轮工具调用，防止模型来回绕
 MAX_WEB_SEARCHES = 2
 WEB_TOOL = "web_search"
 CHINA = timezone(timedelta(hours=8))
 WEEKDAYS = "一二三四五六日"
+
+# 记忆的保存与回放
+MEMORY_PATH = DATA_DIR / "agent_memory.db"
+KEEP_TURNS = 4            # 除本轮外，再带给模型的历史轮数
+STORE_TOOL_CHARS = 8000   # 每条工具结果写进记忆的上限
+OLD_TOOL_CHARS = 1500     # 历史轮次的工具结果回放给模型时再截断，控制上下文长度
+OLD_ANSWER_CHARS = 2000   # 历史轮次的回答回放上限
 
 AGENT_PROMPT = f"""你是「{BOT_NAME}」，一位能查资料、也能查实际数据的工作助手，用“您”称呼用户。
 
@@ -65,8 +85,9 @@ AGENT_PROMPT = f"""你是「{BOT_NAME}」，一位能查资料、也能查实际
 - 实际数据与知识库描述不一致时，要指出来，这往往就是问题所在。
 - 两边都没有足够信息时，直说没有，并指出还需要哪些信息，不要编造。
 
-**对话历史**：前面几轮里你已经给出的答案（包括当时联网搜到或用工具查到的结果）是可以引用的，
-用户追问或换个说法再问时，直接基于它回答，不要说"我没查到过"。引用时说明是"前面查到的"；
+**对话历史**：前面几轮里你已经给出的答案、以及当时工具和搜索返回的原始结果都在上下文里，可以直接引用。
+用户追问或换个说法再问时，直接基于它们回答，不要说"我没查到过"。引用时说明是"前面查到的"，
+不要沿用前几轮的 [W] 编号（那是当时那条回答的来源编号）；
 天气、价格、新闻、系统状态这类会变的信息，要提醒可能已经变化。
 
 **简洁**：知识库片段不相关时，一句话带过（如"知识库里没有相关内容"），不要逐条列举每个片段讲了什么；
@@ -132,73 +153,153 @@ def _preview(output: str):
             "lines": len(text.splitlines())}
 
 
-def run(question: str, context: str, history, allow_web: bool = False):
-    """跑一轮对话，边跑边产出事件。
+# --- Memory ------------------------------------------------------------------
 
-    产出 (kind, payload)：
-      ("tool_call",   {"tool": ..., "args": {...}})
-      ("tool_result", {"tool": ..., "preview": ..., "lines": n})
-      ("web_sources", [{"index": "W1", "location": 标题, "url": ..., "text": 摘要, "web": True}])
-      ("delta",       "答案文本片段")
-      ("error",       "错误说明")
+class TurnState(TypedDict):
+    messages: Annotated[list, add_messages]
+    rounds: int        # 本轮已经调用工具的次数
+    web_count: int     # 本轮已发出的网络来源编号
+    web_searches: int  # 本轮已搜索次数
+
+
+_memory_lock = threading.Lock()
+_memory = None
+
+
+def memory() -> SqliteSaver:
+    """Process-wide checkpointer. One SQLite file, one thread per conversation."""
+    global _memory
+    with _memory_lock:
+        if _memory is None:
+            _memory = SqliteSaver(sqlite3.connect(MEMORY_PATH, check_same_thread=False))
+        return _memory
+
+
+def forget(thread_id: str):
+    """Drop everything the agent remembers about a conversation."""
+    try:
+        memory().delete_thread(thread_id)
+    except Exception:
+        log.warning("failed to delete agent memory for %s", thread_id, exc_info=True)
+
+
+def _prune(thread_id: str):
+    """Keep only the newest checkpoint of a thread.
+
+    LangGraph writes a checkpoint after every step; a chat only ever resumes from
+    the latest one. SqliteSaver does not implement prune(), so do it directly.
     """
-    tools = build_tools()
-    by_name = {tool.name: tool for tool in tools}
-    allow_web = allow_web and web_search.enabled()
-    bindable = tools + ([_web_tool()] if allow_web else [])
-    if not bindable:
-        log.info("no tools available, agent answers from knowledge base only")
-    model = chat_model(timeout=120, max_retries=1)
-    bound = model.bind_tools(bindable) if bindable else model
+    saver = memory()
+    with saver.lock:
+        cur = saver.conn.cursor()
+        row = cur.execute("SELECT checkpoint_id FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = ''"
+                          " ORDER BY checkpoint_id DESC LIMIT 1", (thread_id,)).fetchone()
+        if row:
+            for table in ("writes", "checkpoints"):
+                cur.execute(f"DELETE FROM {table} WHERE thread_id = ? AND checkpoint_id != ?",
+                            (thread_id, row[0]))
+            saver.conn.commit()
 
-    system = AGENT_PROMPT + (WEB_RULES if allow_web else NO_WEB_RULES)
-    messages = [SystemMessage(content=system)]
-    for role, content in history:
-        messages.append(HumanMessage(content=content[:HISTORY_CHARS]) if role == "user"
-                        else AIMessage(content=content[:HISTORY_CHARS]))
 
-    # 技能只在确实有工具可用时注入，否则模型会照着技能去调不存在的工具。
-    book = playbooks.as_prompt(set(by_name)) if by_name else ""
-    prompt = f"今天是 {_today()}（北京时间）。\n\n知识库片段：\n{context}\n\n"
-    if book:
-        prompt += f"可用技能（从团队文档沉淀的标准做法，匹配时优先按它执行）：\n{book}\n\n"
-    prompt += f"用户的问题：{question}"
-    messages.append(HumanMessage(content=prompt))
+def _clip(text, limit):
+    text = str(text or "")
+    return text if len(text) <= limit else text[:limit] + "\n…（已截断）"
 
-    web_count, web_searches = 0, 0
-    for _ in range(MAX_ROUNDS):
-        try:
-            reply = bound.invoke(messages)
-        except Exception as exc:
-            log.warning("agent invoke failed", exc_info=True)
-            yield "error", f"模型调用失败：{why(exc)}"
-            return
 
-        calls = getattr(reply, "tool_calls", None) or []
-        if not calls:
-            # 没有工具调用，这一轮就是最终答案。
-            if reply.content:
-                yield "delta", reply.content
-            return
+def _paired(messages):
+    """Drop tool calls without results (and results without calls).
 
-        messages.append(reply)
-        for call in calls:
+    A turn interrupted between "model asked for a tool" and "tool answered" would
+    otherwise leave the history in a shape every chat API rejects.
+    """
+    answered = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
+    asked, out = set(), []
+    for m in messages:
+        if isinstance(m, AIMessage) and m.tool_calls:
+            ids = {c["id"] for c in m.tool_calls}
+            if ids <= answered:
+                asked |= ids
+                out.append(m)
+            elif m.content:
+                out.append(AIMessage(content=m.content))
+        elif isinstance(m, ToolMessage):
+            if m.tool_call_id in asked:
+                out.append(m)
+        else:
+            out.append(m)
+    return out
+
+
+def _model_view(messages, current_prompt):
+    """What the model actually sees: recent turns, older tool output trimmed.
+
+    The knowledge-base context belongs to this turn only. It is spliced into the
+    current question here and never written to memory, so history stays small.
+    """
+    starts = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+    if not starts:
+        return [HumanMessage(content=current_prompt)]
+    first = starts[max(0, len(starts) - 1 - KEEP_TURNS)]
+    current = starts[-1]
+    view = []
+    for i, m in enumerate(messages[first:], start=first):
+        if i == current:
+            view.append(HumanMessage(content=current_prompt))
+        elif i < current and isinstance(m, ToolMessage):
+            view.append(ToolMessage(content=_clip(m.content, OLD_TOOL_CHARS),
+                                    tool_call_id=m.tool_call_id, name=m.name))
+        elif i < current and isinstance(m, AIMessage) and not m.tool_calls:
+            view.append(AIMessage(content=_clip(m.content, OLD_ANSWER_CHARS)))
+        else:
+            view.append(m)
+    return _paired(view)
+
+
+# --- Graph -------------------------------------------------------------------
+
+def _build_graph(bound, system, current_prompt, by_name, allow_web):
+    """Compile a model ⇄ tools loop for this turn.
+
+    The graph is rebuilt per request because the tool set and the knowledge-base
+    context change every turn; the checkpointer is shared, so memory persists.
+    """
+
+    def agent(state: TurnState):
+        emit = get_stream_writer()
+        view = [SystemMessage(content=system)] + _model_view(state["messages"], current_prompt)
+        if state["rounds"] >= MAX_ROUNDS:
+            view.append(HumanMessage(content="已达到工具调用次数上限，请基于目前拿到的信息给出结论和建议。"))
+            reply = bound.invoke(view)
+            # 收口这一轮不再执行工具；去掉工具调用，免得记忆里留下没有结果的调用。
+            reply = AIMessage(content=reply.content or "")
+        else:
+            reply = bound.invoke(view)
+        if not reply.tool_calls and reply.content:
+            emit(("delta", reply.content))
+        return {"messages": [reply]}
+
+    def tools(state: TurnState):
+        emit = get_stream_writer()
+        call_msg = state["messages"][-1]
+        web_count, web_searches = state["web_count"], state["web_searches"]
+        results = []
+        for call in call_msg.tool_calls:
             name, args = call["name"], call.get("args") or {}
-            yield "tool_call", {"tool": name, "args": args}
+            emit(("tool_call", {"tool": name, "args": args}))
             if name == WEB_TOOL and allow_web:
                 if web_searches >= MAX_WEB_SEARCHES:
                     output = f"[未搜索] 本轮已搜索 {MAX_WEB_SEARCHES} 次，请基于已有结果作答"
                 else:
                     web_searches += 1
                     try:
-                        _, results = web_search.search(args.get("query", ""))
-                        output = web_search.as_tool_output(results, web_count + 1)
+                        _, found = web_search.search(args.get("query", ""))
+                        output = web_search.as_tool_output(found, web_count + 1)
                         sources = [{"index": f"W{web_count + i + 1}", "location": r["title"],
                                     "url": r["url"], "text": r["snippet"], "web": True}
-                                   for i, r in enumerate(results)]
-                        web_count += len(results)
+                                   for i, r in enumerate(found)]
+                        web_count += len(found)
                         if sources:
-                            yield "web_sources", sources
+                            emit(("web_sources", sources))
                     except Exception as exc:
                         output = web_search.describe_failure(exc)
             else:
@@ -210,16 +311,79 @@ def run(question: str, context: str, history, allow_web: bool = False):
                         output = tool.invoke(args)
                     except Exception as exc:
                         output = f"[执行失败] {why(exc)}"
-            yield "tool_result", {"tool": name, **_preview(str(output))}
-            messages.append(ToolMessage(content=str(output), tool_call_id=call["id"]))
+            emit(("tool_result", {"tool": name, **_preview(str(output))}))
+            results.append(ToolMessage(content=_clip(output, STORE_TOOL_CHARS),
+                                       tool_call_id=call["id"], name=name))
+        return {"messages": results, "rounds": state["rounds"] + 1,
+                "web_count": web_count, "web_searches": web_searches}
 
-    # 达到轮次上限，让模型基于已有结果收口。
-    messages.append(HumanMessage(
-        content="已达到工具调用次数上限，请基于目前拿到的信息给出结论和建议。"))
+    def route(state: TurnState):
+        last = state["messages"][-1]
+        return "tools" if isinstance(last, AIMessage) and last.tool_calls else END
+
+    graph = StateGraph(TurnState)
+    graph.add_node("agent", agent)
+    graph.add_node("tools", tools)
+    graph.add_edge(START, "agent")
+    graph.add_conditional_edges("agent", route, {"tools": "tools", END: END})
+    graph.add_edge("tools", "agent")
+    return graph.compile(checkpointer=memory())
+
+
+def run(question: str, context: str, history, allow_web: bool = False, thread_id: str | None = None):
+    """跑一轮对话，边跑边产出事件。
+
+    产出 (kind, payload)：
+      ("tool_call",   {"tool": ..., "args": {...}})
+      ("tool_result", {"tool": ..., "preview": ..., "lines": n})
+      ("web_sources", [{"index": "W1", "location": 标题, "url": ..., "text": 摘要, "web": True}])
+      ("delta",       "答案文本片段")
+      ("error",       "错误说明")
+
+    thread_id 一般就是会话 ID；记忆里还没有这个会话时（例如升级前的老会话），
+    用 history 里的文字历史补种，之后就以完整记忆为准。
+    """
+    tools = build_tools()
+    by_name = {tool.name: tool for tool in tools}
+    allow_web = allow_web and web_search.enabled()
+    bindable = tools + ([_web_tool()] if allow_web else [])
+    if not bindable:
+        log.info("no tools available, agent answers from knowledge base only")
+    model = chat_model(timeout=120, max_retries=1)
+    bound = model.bind_tools(bindable) if bindable else model
+
+    system = AGENT_PROMPT + (WEB_RULES if allow_web else NO_WEB_RULES)
+    # 技能只在确实有工具可用时注入，否则模型会照着技能去调不存在的工具。
+    book = playbooks.as_prompt(set(by_name)) if by_name else ""
+    prompt = f"今天是 {_today()}（北京时间）。\n\n知识库片段：\n{context}\n\n"
+    if book:
+        prompt += f"可用技能（从团队文档沉淀的标准做法，匹配时优先按它执行）：\n{book}\n\n"
+    prompt += f"用户的问题：{question}"
+
+    thread_id = thread_id or uuid.uuid4().hex
+    config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 2 * MAX_ROUNDS + 4}
+    graph = _build_graph(bound, system, prompt, by_name, allow_web)
+
+    seed = []
     try:
-        final = bound.invoke(messages)
+        remembered = graph.get_state(config).values.get("messages")
+    except Exception:
+        remembered = None
+    if not remembered:
+        seed = [HumanMessage(content=c[:HISTORY_CHARS]) if role == "user"
+                else AIMessage(content=c[:HISTORY_CHARS]) for role, c in history]
+
+    turn = {"messages": seed + [HumanMessage(content=question)],
+            "rounds": 0, "web_count": 0, "web_searches": 0}
+    try:
+        for event in graph.stream(turn, config, stream_mode="custom"):
+            yield event
     except Exception as exc:
+        log.warning("agent turn failed", exc_info=True)
         yield "error", f"模型调用失败：{why(exc)}"
-        return
-    if final.content:
-        yield "delta", final.content
+    finally:
+        # 每个 super-step 都会写一个检查点；对话只需要最新状态，旧的清掉防止库无限增长。
+        try:
+            _prune(thread_id)
+        except Exception:
+            log.warning("failed to prune agent memory", exc_info=True)

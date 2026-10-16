@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from tests.support import FakeReply  # noqa: F401  (sets env before app imports)
 
+from langchain_core.messages import AIMessage
+
 from app.agent import loop as agent_loop
 from app.agent import web_search
 from app.rag import retrieval
@@ -104,9 +106,7 @@ class AgentWebTests(unittest.TestCase):
         class Bound:
             def invoke(_self, messages):
                 calls, content = next(rounds)
-                reply = FakeReply(content)
-                reply.tool_calls = calls
-                return reply
+                return AIMessage(content=content, tool_calls=calls)
 
         class Model:
             def bind_tools(_self, tools):
