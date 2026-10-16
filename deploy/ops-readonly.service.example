@@ -1,0 +1,21 @@
+[Unit]
+Description=Read-only ops endpoint for the troubleshooting agent
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+# 令牌写在单独的文件里，权限设为 600，不要写进这个单元文件
+EnvironmentFile=/etc/ops-readonly.env
+ExecStart=/usr/bin/python3 /opt/ops/ops_readonly.py --port 8799 --host 127.0.0.1
+Restart=always
+RestartSec=5
+
+# 它要读 docker.sock，但自身不需要写文件系统
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

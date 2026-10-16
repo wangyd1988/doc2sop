@@ -21,6 +21,7 @@
 | 多格式入库 | PDF / Word / PPT / Markdown / 纯文本 / 图片 |
 | 图片识别 | 文档内嵌的截图、架构图经多模态模型识别后**插回原文位置**，一并可检索 |
 | 多轮对话 | 追问时自动补全指代（「那它的上限呢」→ 补成完整问题再检索） |
+| **现场排障** | **可选开启只读运维工具，Agent 自行决定是否查看环境实况，并与知识库对照** |
 | 来源可核对 | 回答中的 `[1]` 可点开，显示原文片段、来源文件、PDF 页码和相似度 |
 | 自动分类 | 上传时模型建议分类，可手工覆盖，侧栏按分类分组 |
 | 原文下载 | 随时取回当初上传的原始文件 |
@@ -51,6 +52,46 @@ flowchart LR
 
 向量模型自托管在独立主机（常驻约 800 MB，应用机放不下）；所有模型调用统一走 LiteLLM 网关，
 换模型只改网关配置。详见 [`docs/architecture.md`](docs/architecture.md)。
+
+## 现场排障（可选）
+
+开启后，Agent 会把知识库和环境实况对照起来，而不只是复述文档：
+
+```
+用户：demo-svc 一直在重启，帮我看看
+
+  ① 检索知识库    → 得知要看重启次数、内存上限、日志
+  ② 调用只读工具  → list_containers / container_inspect / container_logs
+  ③ 对照后判断    → 退出码 137 + 上限仅 12MB → OOM
+  ④ 指出矛盾      → 「知识库说应为 900MB，实际 12MB，差 75 倍」
+```
+
+**Agent 拿不到 shell。** 它只能提交工具名和结构化参数，由宿主机上的只读接口映射到
+固定命令模板执行（`shell=False`）：
+
+```
+Agent（容器内，无宿主机权限）
+  │  HTTP + 令牌，只传工具名与参数
+  ▼
+只读接口（宿主机，仅监听 127.0.0.1）
+  │  正则白名单校验 → 固定 argv 模板 → 写动词黑名单
+  ▼
+docker / kubectl（只读动词）
+```
+
+启用方式：
+
+```bash
+# 宿主机
+OPS_TOKEN=$(openssl rand -hex 16) python3 deploy/ops_readonly.py --port 8799
+
+# .env 里填上，然后重建容器
+OPS_URL=http://127.0.0.1:8799
+OPS_TOKEN=<同一个令牌>
+```
+
+不配置 `OPS_URL` 时工具自动关闭，退化为纯知识库问答。注入防护与轮次上限均有测试覆盖
+（`tests/test_agent.py`）。
 
 ## 快速开始
 
@@ -84,6 +125,10 @@ app/
 ├── clients.py         模型客户端（经网关）
 ├── conversations.py   多轮记忆（SQLite）
 ├── tracing.py         LangSmith 追踪
+├── agent/
+│   ├── loop.py        排障循环：检索 → 调工具 → 对照 → 结论
+│   ├── tools.py       工具 schema，按宿主机实际能力动态生成
+│   └── ops_client.py  只读接口客户端
 ├── rag/
 │   ├── chunking.py    切分
 │   ├── embedding.py   向量化
@@ -93,6 +138,9 @@ app/
 └── ingest/
     ├── extract.py     文档解析
     └── vision.py      多模态 OCR
+
+deploy/
+└── ops_readonly.py    宿主机上的只读运维接口（白名单 + 令牌）
 ```
 
 ## 设计决策

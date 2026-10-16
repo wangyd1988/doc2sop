@@ -11,8 +11,10 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
 from app import conversations
-from app.config import (ALLOWED_SUFFIXES, CATEGORY_MAX, CHAT_MODEL, BOT_NAME, FILES_DIR,
-                        IMAGE_SUFFIXES, MAX_FILE_BYTES, WEB_PASSWORD, WEB_USER)
+from app.agent import loop as agent_loop
+from app.agent import ops_client
+from app.config import (AGENT_MODE, ALLOWED_SUFFIXES, CATEGORY_MAX, CHAT_MODEL, BOT_NAME,
+                        FILES_DIR, IMAGE_SUFFIXES, MAX_FILE_BYTES, WEB_PASSWORD, WEB_USER)
 from app.ingest.extract import ExtractionError, extract_pages
 from app.ingest.vision import ImageCollector
 from app.rag import store
@@ -61,7 +63,8 @@ def index():
 @app.get("/api/documents")
 def documents():
     return {"documents": store.list_documents(), "categories": store.all_categories(),
-            "chat_model": CHAT_MODEL, "bot_name": BOT_NAME}
+            "chat_model": CHAT_MODEL, "bot_name": BOT_NAME,
+            "tools": sorted(ops_client.available_tools()) if AGENT_MODE != "off" else []}
 
 
 @app.post("/api/documents")
@@ -192,28 +195,53 @@ def ask(payload: Question):
             conversations.delete(conversation_id)
         raise HTTPException(502, f"检索失败：{exc.__class__.__name__}")
 
+    # Tools are opt-in and degrade gracefully: no ops endpoint means plain RAG.
+    use_agent = AGENT_MODE != "off" and ops_client.enabled()
+
     conversations.add_message(conversation_id, "user", question)
 
     def stream():
-        """NDJSON: conversation, then sources, then answer fragments."""
-        answer, failure = "", None
+        """NDJSON: conversation, sources, tool activity, then answer fragments."""
+        answer, failure, tool_calls = "", None, []
         try:
             yield json.dumps({"conversation": conversation}, ensure_ascii=False) + "\n"
             yield json.dumps({"sources": hits}, ensure_ascii=False) + "\n"
-            messages = build_messages(question, as_context(hits), history)
-            try:
-                # Re-attach to the root run: this body runs after the response returned.
-                with traced_under(root):
-                    for fragment in stream_answer(messages):
-                        answer += fragment
-                        yield json.dumps({"delta": fragment}, ensure_ascii=False) + "\n"
-            except Exception as exc:
-                failure = f"大模型调用失败：{exc.__class__.__name__}"
-                yield json.dumps({"error": failure}, ensure_ascii=False) + "\n"
+            context = as_context(hits)
+
+            if use_agent:
+                # The agent decides for itself whether the live environment is
+                # needed; events stream out as they happen so the UI can show it.
+                try:
+                    with traced_under(root):
+                        for kind, payload in agent_loop.run(question, context, history):
+                            if kind == "delta":
+                                answer += payload
+                            elif kind == "error":
+                                failure = payload
+                            elif kind == "tool_call":
+                                tool_calls.append(payload)
+                            yield json.dumps({kind: payload}, ensure_ascii=False) + "\n"
+                except Exception as exc:
+                    failure = f"排障流程失败：{exc.__class__.__name__}"
+                    yield json.dumps({"error": failure}, ensure_ascii=False) + "\n"
+            else:
+                messages = build_messages(question, context, history)
+                try:
+                    # Re-attach to the root run: this body runs after the response returned.
+                    with traced_under(root):
+                        for fragment in stream_answer(messages):
+                            answer += fragment
+                            yield json.dumps({"delta": fragment}, ensure_ascii=False) + "\n"
+                except Exception as exc:
+                    failure = f"大模型调用失败：{exc.__class__.__name__}"
+                    yield json.dumps({"error": failure}, ensure_ascii=False) + "\n"
+
             if answer.strip():
                 conversations.add_message(conversation_id, "assistant", answer, hits)
         finally:
             finish_root_run(root, outputs={"answer": answer, "search_query": search_query,
-                                           "sources": len(hits)}, error=failure)
+                                           "sources": len(hits),
+                                           "tools_used": [c["tool"] for c in tool_calls]},
+                            error=failure)
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")

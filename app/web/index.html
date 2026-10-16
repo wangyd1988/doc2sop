@@ -158,6 +158,19 @@ header .t { flex: 1; font-weight: 600; }
 .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
 .src .body { white-space: pre-wrap; padding: 0 12px 10px; color: var(--muted); max-height: 260px; overflow-y: auto; }
 .tools { margin-top: 6px; display: flex; gap: 4px; }
+.steps { margin: 8px 0 2px; display: flex; flex-direction: column; gap: 6px; }
+.step { background: var(--panel-2); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+        border-radius: 8px; font-size: 13px; overflow: hidden; animation: in .2s ease; }
+.step summary { list-style: none; cursor: pointer; padding: 7px 11px; display: flex; gap: 8px; align-items: center; }
+.step summary::-webkit-details-marker { display: none; }
+.step .ico { font-size: 13px; }
+.step .cmd { font-family: ui-monospace, Consolas, monospace; color: var(--accent); flex-shrink: 0; }
+.step .arg { color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step .n { color: var(--muted); font-size: 12px; flex-shrink: 0; }
+.step .out { white-space: pre-wrap; padding: 0 11px 9px; color: var(--muted); font-size: 12.5px;
+             font-family: ui-monospace, Consolas, monospace; max-height: 240px; overflow-y: auto; }
+.step.running { border-left-color: #f59e0b; }
+.step.running .cmd { color: #f59e0b; }
 .tools button { font-size: 12px; color: var(--muted); padding: 3px 8px; border-radius: 6px; }
 .tools button:hover { background: var(--panel-2); color: var(--text); }
 
@@ -319,7 +332,9 @@ async function loadDocs() {
     if ($('thread').querySelector('.welcome')) welcome();
   }
   $('catList').innerHTML = (d.categories || []).map(c => `<option value="${esc(c)}">`).join('');
-  $('modelInfo').textContent = '🤖 ' + d.chat_model;
+  const tools = d.tools || [];
+  $('modelInfo').textContent = '🤖 ' + d.chat_model + (tools.length ? ` · 🔧 ${tools.length} 个现场工具` : '');
+  $('modelInfo').title = tools.length ? '可调用的只读运维工具：' + tools.join('、') : '';
   const chunks = allDocs.reduce((a, x) => a + x.chunks, 0);
   $('summary').textContent = `${allDocs.length} 个文档 · ${chunks} 个片段`;
   $('docCount').textContent = allDocs.length;
@@ -455,7 +470,7 @@ function addBot(inner) {
   const id = ++seq;
   $('thread').insertAdjacentHTML('beforeend',
     `<div class="msg"><div class="avatar">📚</div><div class="bot" id="bot${id}">
-       <div class="card">${inner}</div><div class="sources"></div></div></div>`);
+       <div class="steps"></div><div class="card">${inner}</div><div class="sources"></div></div></div>`);
   return $('bot' + id);
 }
 function addTools(bot, text, question) {
@@ -551,6 +566,27 @@ async function ask() {
         } else if (msg.sources) {
           card.querySelector('.status').innerHTML = msg.sources.length ? `<span class="spin"></span>找到 ${msg.sources.length} 个相关片段，正在生成回答…` : '';
           bot.querySelector('.sources').innerHTML = sourcesHtml(msg.sources);
+        } else if (msg.tool_call) {
+          const args = Object.entries(msg.tool_call.args || {})
+            .map(([k, v]) => `${k}=${v}`).join(' ');
+          card.querySelector('.status').innerHTML =
+            `<span class="spin"></span>正在查看现场：${esc(msg.tool_call.tool)}…`;
+          bot.querySelector('.steps').insertAdjacentHTML('beforeend',
+            `<details class="step running"><summary><span class="ico">🔧</span>
+               <span class="cmd">${esc(msg.tool_call.tool)}</span>
+               <span class="arg">${esc(args)}</span>
+               <span class="n">执行中…</span></summary>
+             <div class="out"></div></details>`);
+          if (nearBottom()) toBottom();
+        } else if (msg.tool_result) {
+          const steps = bot.querySelectorAll('.step.running');
+          const step = steps[steps.length - 1];
+          if (step) {
+            step.classList.remove('running');
+            step.querySelector('.n').textContent = `${msg.tool_result.lines} 行`;
+            step.querySelector('.out').textContent = msg.tool_result.preview;
+          }
+          if (nearBottom()) toBottom();
         } else if (msg.delta) {
           card.querySelector('.status')?.remove();
           text += msg.delta;

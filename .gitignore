@@ -18,6 +18,9 @@ my_kb/
 eval/*.local.jsonl
 eval/result*.json
 
+# 公司内部活动的投递材料，不随开源仓库发布
+docs/1024-*
+
 # Python
 __pycache__/
 *.py[cod]

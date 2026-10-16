@@ -57,6 +57,13 @@ HISTORY_CHARS = 1200
 # Only build LangSmith runs when tracing is on; RunTree would otherwise still call out.
 TRACING = os.environ.get("LANGSMITH_TRACING", "").strip().lower() in ("true", "1", "yes")
 
+# --- Read-only ops tools -----------------------------------------------------
+# The agent reaches the host only through this endpoint, which enforces an
+# allowlist of read-only commands. Leave OPS_URL empty to disable tools entirely.
+OPS_URL = os.environ.get("OPS_URL", "").strip()
+OPS_TOKEN = os.environ.get("OPS_TOKEN", "").strip()
+AGENT_MODE = os.environ.get("AGENT_MODE", "auto").strip().lower()
+
 log = logging.getLogger("kb")
 
 
