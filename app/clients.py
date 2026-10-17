@@ -38,8 +38,9 @@ def reload():
     vision_llms = [ChatOpenAI(model=name, base_url=cur["llm_base_url"], api_key=cur["llm_api_key"],
                               temperature=0, timeout=90, max_retries=0, max_tokens=1500)
                    for name in vision_names]
+    e_url, e_key = settings.embed_endpoint(cur)
     embeddings = OpenAIEmbeddings(
-        model=cur["embed_model"], base_url=cur["llm_base_url"], api_key=cur["llm_api_key"],
+        model=cur["embed_model"], base_url=e_url, api_key=e_key,
         # The self-hosted embedding server accepts raw strings only, not token-id arrays.
         check_embedding_ctx_length=False,
         # It also caps each request at 16 inputs.

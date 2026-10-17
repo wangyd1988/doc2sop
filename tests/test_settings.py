@@ -61,6 +61,26 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.public()["source"]["chat_model"], "env")
         self.assertEqual(settings.public()["source"]["llm_base_url"], "env")
 
+    def test_embedding_can_live_on_its_own_endpoint(self):
+        settings.save({"embed_base_url": "https://embed.example.com/v1", "embed_api_key": "sk-embed-0000abcd"})
+        self.assertEqual(clients.embeddings.openai_api_base, "https://embed.example.com/v1")
+        self.assertEqual(clients.llm.openai_api_base, config.LLM_BASE_URL)          # chat untouched
+        pub = settings.public()
+        self.assertTrue(pub["embed_api_key_masked"].endswith("abcd"))
+        self.assertNotIn("embed_api_key", pub)
+        # 清空地址 → 回到和对话同一处
+        settings.save({"embed_base_url": ""})
+        self.assertEqual(settings.embed_endpoint()[0], config.LLM_BASE_URL)
+        self.assertEqual(settings.embed_endpoint()[1], config.LLM_API_KEY)   # 自己的 key 只在有自己的地址时才用
+
+    def test_missing_models_endpoint_is_a_note_not_a_failure(self):
+        with patch("langchain_openai.ChatOpenAI.invoke", return_value=FakeReply("OK")), \
+             patch("langchain_openai.OpenAIEmbeddings.embed_query", return_value=[0.0] * 1024):
+            r = settings.test("http://127.0.0.1:9/v1", "k", "chat", "embed")
+        self.assertTrue(r["ok"])
+        self.assertIn("列不出模型", r["models_note"])
+        self.assertEqual(r["embed_dim"], 1024)
+
     def test_empty_key_keeps_the_old_one(self):
         settings.save({"llm_api_key": "sk-keep"})
         settings.save({"llm_api_key": "", "chat_model": "m2"})

@@ -2066,14 +2066,16 @@ async function renderSettings() {
   const job = s.reindex_job ? await fetch('/api/jobs/' + s.reindex_job).then(r => r.ok ? r.json() : null).catch(() => null) : null;
   $('msettings').innerHTML = `<div class="sf">
     <h2>模型设置</h2>
-    <p class="lead">所有模型调用都经过一个 OpenAI 兼容网关。这里改的是<b>数据发给谁</b>；工具凭据不在这里，始终只在宿主机。保存后立刻生效，不用重启。</p>
-    <div class="card"><h3>网关 <small>LiteLLM / OneAPI / 任何 OpenAI 兼容地址</small></h3>
+    <p class="lead">所有模型调用走 OpenAI 兼容接口。可以是一个网关统一转发，也可以<b>没有网关</b>：对话模型和向量模型各填各的地址。这里改的是<b>数据发给谁</b>；工具凭据不在这里，始终只在宿主机。保存后立刻生效，不用重启。${s.web_search ? '' : '<br>联网搜索依赖 LiteLLM 网关的 /v1/search，直连厂商时不可用。'}</p>
+    <div class="card"><h3>网关 / 对话模型地址 <small>LiteLLM、OneAPI，或任何 OpenAI 兼容地址（DeepSeek、硅基流动、百炼 compatible-mode…）</small></h3>
       <label><span>地址<i>以 /v1 结尾</i></span><div class="inline"><input id="stUrl" value="${esc(s.llm_base_url)}" placeholder="http://127.0.0.1:4000/v1">${src('llm_base_url')}</div></label>
       <label><span>API Key<i>只写不读</i></span><div class="inline"><input id="stKey" type="password" autocomplete="new-password" placeholder="${s.llm_api_key_masked ? '已设置 ' + esc(s.llm_api_key_masked) + '，留空不改' : '必填'}">${src('llm_api_key')}</div></label>
     </div>
-    <div class="card"><h3>模型 <small>填网关上的模型名；「测试连接」会列出这把 key 能用的</small></h3>
+    <div class="card"><h3>模型 <small>填各自平台上的模型名；有网关时「测试连接」会列出这把 key 能用的</small></h3>
       <label><span>对话模型</span><div class="inline"><input id="stChat" list="stModels" value="${esc(s.chat_model)}">${src('chat_model')}</div></label>
       <label><span>向量模型<i>换了必须重建索引</i></span><div class="inline"><input id="stEmbed" list="stModels" value="${esc(s.embed_model)}">${src('embed_model')}</div></label>
+      <label><span>向量模型地址<i>可选：没有网关、向量和对话来自不同厂商时填；留空同上</i></span><div class="inline"><input id="stEmbedUrl" value="${esc(s.embed_base_url || '')}" placeholder="留空 = 和对话模型同一地址，例如 https://api.siliconflow.cn/v1">${src('embed_base_url')}</div></label>
+      <label><span>向量模型 Key<i>可选，只写不读</i></span><div class="inline"><input id="stEmbedKey" type="password" autocomplete="new-password" placeholder="${s.embed_api_key_masked ? '已设置 ' + esc(s.embed_api_key_masked) + '，留空不改' : '留空 = 用上面的 key'}">${src('embed_api_key')}</div></label>
       <label><span>图片识别<i>多个用逗号，按顺序尝试</i></span><div class="inline"><input id="stVision" value="${esc(s.vision_models.join(', '))}" placeholder="可留空，不识别文档内图片">${src('vision_models')}</div></label>
       <datalist id="stModels"></datalist>
       <div id="stWarn" class="warn" hidden></div>
@@ -2100,7 +2102,8 @@ function pollReindex(id) {
 }
 function stBody(reindex) {
   return {llm_base_url: $('stUrl').value.trim(), llm_api_key: $('stKey').value, chat_model: $('stChat').value.trim(),
-          embed_model: $('stEmbed').value.trim(), vision_models: $('stVision').value.split(',').map(s => s.trim()).filter(Boolean), reindex};
+          embed_model: $('stEmbed').value.trim(), vision_models: $('stVision').value.split(',').map(s => s.trim()).filter(Boolean),
+          embed_base_url: $('stEmbedUrl').value.trim(), embed_api_key: $('stEmbedKey').value, reindex};
 }
 $('msettings').addEventListener('click', async e => {
   const id = e.target.id;
@@ -2113,7 +2116,7 @@ $('msettings').addEventListener('click', async e => {
       stTest = d;
       $('stModels').innerHTML = (d.models || []).map(m => `<option value="${esc(m)}">`).join('');
       box.className = 'result ' + (d.ok ? 'ok' : 'err');
-      box.innerHTML = `网关可达，这把 key 能用 ${d.models.length} 个模型。<br>对话模型：${d.chat ? '✓ ' + (d.chat === '可调用' ? '可调用' : '回复「' + esc(d.chat) + '」') : '✕'}　向量模型：${d.embed ? '✓ ' + d.embed_dim + ' 维' : '✕'}`
+      box.innerHTML = `${d.models.length ? `对话地址可达，这把 key 能用 ${d.models.length} 个模型。` : esc(d.models_note || '')}<br>对话模型：${d.chat ? '✓ ' + (d.chat === '可调用' ? '可调用' : '回复「' + esc(d.chat) + '」') : '✕'}　向量模型${d.separate_embed ? '（独立地址）' : ''}：${d.embed ? '✓ ' + d.embed_dim + ' 维' : '✕'}`
         + (d.dim_mismatch ? `<br>⚠ ${esc(d.dim_mismatch)}` : '') + (d.errors.length ? `<ul>${d.errors.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '');
     } catch (err) { box.className = 'result err'; box.textContent = '测试失败：' + err.message; }
     e.target.disabled = false; e.target.textContent = '测试连接'; return;

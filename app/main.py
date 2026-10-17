@@ -474,6 +474,9 @@ class SettingsBody(BaseModel):
     chat_model: str = Field(min_length=1, max_length=120)
     embed_model: str = Field(min_length=1, max_length=120)
     vision_models: list[str] = Field(default_factory=list, max_length=5)
+    # 向量模型单独的地址 / key（没有网关时用）；留空 = 与对话模型相同
+    embed_base_url: str = Field(default="", max_length=300, pattern=r"^(https?://.*)?$")
+    embed_api_key: str = Field(default="", max_length=500)
     # 换向量模型必须同时重建索引；页面要显式确认
     reindex: bool = False
 
@@ -481,12 +484,13 @@ class SettingsBody(BaseModel):
 @app.get("/api/settings")
 def get_settings():
     return {**settings.public(), "docs": len(store.list_documents()), "index_dim": store.dimension(),
-            "reindex_job": _reindex_job}
+            "reindex_job": _reindex_job, "web_search": web_search.enabled()}
 
 
 @app.post("/api/settings/test")
 def test_settings(body: SettingsBody):
-    result = settings.test(body.llm_base_url, body.llm_api_key, body.chat_model, body.embed_model)
+    result = settings.test(body.llm_base_url, body.llm_api_key, body.chat_model, body.embed_model,
+                           body.embed_base_url, body.embed_api_key)
     dim = store.dimension()
     if result.get("embed_dim") and dim and result["embed_dim"] != dim:
         result["dim_mismatch"] = f"当前索引是 {dim} 维，新向量模型是 {result['embed_dim']} 维，保存后必须重建索引"
@@ -522,6 +526,9 @@ def put_settings(body: SettingsBody):
     before = settings.current()
     embed_changed = body.embed_model.strip() != before["embed_model"]
     url_changed = body.llm_base_url.strip().rstrip("/") != before["llm_base_url"].rstrip("/")
+    # 清空向量地址 = 回到和对话同一处，也算换了地址
+    if body.embed_base_url.strip().rstrip("/") != (before["embed_base_url"] or "").rstrip("/"):
+        url_changed = True
     docs = len(store.list_documents())
     if embed_changed and docs and not body.reindex:
         raise HTTPException(409, f"换向量模型会让现有 {docs} 个文档的索引失效，请勾选「同时重建索引」再保存")

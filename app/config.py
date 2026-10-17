@@ -10,6 +10,9 @@ LLM_BASE_URL = os.environ["LLM_BASE_URL"]
 LLM_API_KEY = os.environ["LLM_API_KEY"]
 CHAT_MODEL = os.environ.get("CHAT_MODEL", "kb-chat")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "kb-embedding")
+# 没有网关、向量模型在另一个厂商时填这两个；留空则和对话模型同一地址同一 key。
+EMBED_BASE_URL = os.environ.get("EMBED_BASE_URL", "").strip()
+EMBED_API_KEY = os.environ.get("EMBED_API_KEY", "").strip()
 VISION_MODELS = [m.strip() for m in
                  os.environ.get("VISION_MODELS", "kb-vision").split(",") if m.strip()]
 # Some providers do not really stop thinking for reasoning_effort="none" — they just merge the
