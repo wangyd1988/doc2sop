@@ -81,6 +81,30 @@ class SettingsTests(unittest.TestCase):
         self.assertIn("列不出模型", r["models_note"])
         self.assertEqual(r["embed_dim"], 1024)
 
+    def test_unconfigured_mode_is_explicit_not_a_crash(self):
+        """空 .env 启动：页面能开、接口说清楚缺什么，不去连一个不存在的地址。"""
+        with patch.object(config, "LLM_BASE_URL", ""), patch.object(config, "LLM_API_KEY", ""):
+            settings.reset()   # 触发 clients.reload()
+            self.assertFalse(settings.configured())
+            self.assertIsNone(clients.llm)
+            self.assertIsNone(clients.embeddings)
+            docs = self.client.get("/api/documents", auth=self.auth).json()
+            self.assertFalse(docs["configured"])
+            r = self.client.post("/api/ask", json={"question": "你好"}, auth=self.auth)
+            self.assertEqual(r.status_code, 503)
+            self.assertIn("模型设置", r.json()["detail"])
+            up = self.client.post("/api/documents", files={"file": ("a.txt", io.BytesIO(b"abc"), "text/plain")}, auth=self.auth)
+            self.assertEqual(up.status_code, 502)
+            self.assertIn("还没有配置模型", up.json()["detail"])
+            # 首次保存必须带 key
+            r = self.client.put("/api/settings", json=self.body(llm_base_url="https://api.deepseek.com/v1"), auth=self.auth)
+            self.assertEqual(r.status_code, 400)
+            r = self.client.put("/api/settings", json=self.body(llm_base_url="https://api.deepseek.com/v1", llm_api_key="sk-1"), auth=self.auth)
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertTrue(settings.configured())
+            self.assertIsNotNone(clients.llm)
+        settings.reset()
+
     def test_empty_key_keeps_the_old_one(self):
         settings.save({"llm_api_key": "sk-keep"})
         settings.save({"llm_api_key": "", "chat_model": "m2"})

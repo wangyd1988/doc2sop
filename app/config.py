@@ -3,11 +3,12 @@ import logging
 import os
 from pathlib import Path
 
-# --- Model gateway (LiteLLM) -------------------------------------------------
-# Every model call goes through one OpenAI-compatible gateway, so switching
-# providers never touches application code.
-LLM_BASE_URL = os.environ["LLM_BASE_URL"]
-LLM_API_KEY = os.environ["LLM_API_KEY"]
+# --- Model endpoints ---------------------------------------------------------
+# All model calls go through OpenAI-compatible endpoints: one gateway for everything,
+# or separate vendors for chat and embeddings. These may be left empty: the app then
+# starts in "unconfigured" mode and the management page walks the user through setup.
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").strip()
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "").strip()
 CHAT_MODEL = os.environ.get("CHAT_MODEL", "kb-chat")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "kb-embedding")
 # 没有网关、向量模型在另一个厂商时填这两个；留空则和对话模型同一地址同一 key。

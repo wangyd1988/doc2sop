@@ -86,6 +86,7 @@ def documents():
     tools = usable_tools()
     return {"documents": store.list_documents(), "categories": store.all_categories(),
             "chat_model": settings.get("chat_model"), "bot_name": BOT_NAME,
+            "configured": settings.configured(),
             "tools": sorted(tools),
             "web_search": AGENT_MODE != "off" and web_search.enabled(),
             "playbooks": len(playbooks.list_all(only_enabled=True))}
@@ -340,6 +341,8 @@ class ExtractBody(BaseModel):
 @app.post("/api/playbooks/extract")
 def extract_from_document(body: ExtractBody):
     """从已入库的文档里抽取候选 SOP，返回但不直接保存，由用户确认。"""
+    if not settings.configured():
+        raise HTTPException(503, settings.NOT_CONFIGURED)
     name = safe_name(body.source)
     tools = usable_tools()
     if not tools:
@@ -484,7 +487,8 @@ class SettingsBody(BaseModel):
 @app.get("/api/settings")
 def get_settings():
     return {**settings.public(), "docs": len(store.list_documents()), "index_dim": store.dimension(),
-            "reindex_job": _reindex_job, "web_search": web_search.enabled()}
+            "reindex_job": _reindex_job, "web_search": web_search.enabled(),
+            "configured": settings.configured()}
 
 
 @app.post("/api/settings/test")
@@ -524,6 +528,8 @@ def reindex_all(report):
 def put_settings(body: SettingsBody):
     global _reindex_job
     before = settings.current()
+    if not body.llm_api_key and not before["llm_api_key"]:
+        raise HTTPException(400, "首次配置必须填写 API Key")
     embed_changed = body.embed_model.strip() != before["embed_model"]
     url_changed = body.llm_base_url.strip().rstrip("/") != before["llm_base_url"].rstrip("/")
     # 清空向量地址 = 回到和对话同一处，也算换了地址
@@ -582,6 +588,8 @@ def retrieve_only(body: Question):
 
 @app.post("/api/ask")
 def ask(payload: Question):
+    if not settings.configured():
+        raise HTTPException(503, settings.NOT_CONFIGURED)
     question = payload.question.strip()
     conversation_id = payload.conversation_id
     if conversation_id and not conversations.exists(conversation_id):

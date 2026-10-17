@@ -29,6 +29,11 @@ vision_names: list = []
 def reload():
     global llm, rewriter, embeddings, vision_llms, vision_names
     cur = settings.current()
+    if not settings.configured():
+        # 还没配置：客户端留空，调用方按「未配置」处理，而不是去连一个不存在的地址
+        llm = rewriter = embeddings = None
+        vision_llms, vision_names = [], []
+        return
     # Answer generation: long timeout, one retry.
     llm = chat_model(timeout=120, max_retries=1)
     # Query rewriting and auto-categorising: short, cheap, fail fast.

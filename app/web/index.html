@@ -634,7 +634,7 @@ if (MANAGE) document.body.classList.add('manage');
 let mTab = 'tools', mGroup = null, mItem = null, mSearch = '', mReady = false;
 const mCache = {};  // 列表里出现过的条目：id -> 数据，点开详情直接用
 // 首屏引导要用的三个数字：文档数、可用工具数、生效 SOP 数
-let onboard = {docs: 0, tools: 0, sops: 0};
+let onboard = {docs: 0, tools: 0, sops: 0, configured: true};
 
 /* 页内提示，替代 alert：不阻塞，几秒后自己消失。kind: '' | 'err' | 'ok' */
 function toast(text, kind = '', ms = 4000) {
@@ -741,7 +741,7 @@ async function loadDocs() {
   const d = await (await fetch('/api/documents')).json();
   allDocs = d.documents;
   const before = JSON.stringify(onboard);
-  onboard = {docs: allDocs.length, tools: (d.tools || []).length, sops: d.playbooks || 0};
+  onboard = {docs: allDocs.length, tools: (d.tools || []).length, sops: d.playbooks || 0, configured: d.configured !== false};
   if (d.bot_name && d.bot_name !== botName) botName = d.bot_name;
   if ($('thread').querySelector('.welcome') && (before !== JSON.stringify(onboard) || d.bot_name !== botName)) welcome();
   $('catList').innerHTML = (d.categories || []).map(c => `<option value="${esc(c)}">`).join('');
@@ -897,7 +897,12 @@ const EXAMPLES = ['总结一下知识库里有哪些主要内容', '帮我做一
 let convId = null, botName = '小知';
 function welcome() {
   const o = onboard;
-  const guide = (!o.docs || !o.sops) ? `<div class="onboard">
+  // 还没配置模型：首屏只放一张「去配置」卡，别的都做不了
+  const guide = !o.configured ? `<div class="onboard" style="grid-template-columns:1fr">
+    <div class="st"><div class="k"><i>!</i>先配置模型</div>
+      <p>还没有填对话模型和向量模型的地址与 key。可以用一个网关（LiteLLM / OneAPI），也可以直接填两个厂商的 OpenAI 兼容地址——不需要网关。</p>
+      <a href="/manage#settings"><button>去「管理 → 模型设置」</button></a></div></div>`
+  : (!o.docs || !o.sops) ? `<div class="onboard">
     <div class="st ${o.docs ? 'done' : ''}"><div class="k"><i>${o.docs ? '✓' : '1'}</i>上传文档</div>
       <p>${o.docs ? `已有 ${o.docs} 个文档。` : '把制度、手册、巡检规范拖到左侧。没有现成的？仓库 <code>sample_kb/</code> 里有三篇示例。'}</p>
       ${o.docs ? '' : '<button data-go="upload">选择文件</button>'}</div>
@@ -1761,6 +1766,7 @@ async function ask() {
     const r = await fetch('/api/ask', {method: 'POST', headers: {'Content-Type': 'application/json'},
                                        body: JSON.stringify({question: q, conversation_id: convId, web: webOn,
                                                              model: modelPick || undefined})});
+    if (r.status === 503) { const d = await r.json().catch(() => ({})); throw new Error((d.detail || '服务未就绪') + '（点右上角「管理」）'); }
     if (!r.ok) { const d = await r.json().catch(() => ({detail: r.status})); throw new Error(d.detail); }
     const reader = r.body.getReader(), dec = new TextDecoder(); let buf = '';
     while (true) {
@@ -2066,6 +2072,8 @@ async function renderSettings() {
   const job = s.reindex_job ? await fetch('/api/jobs/' + s.reindex_job).then(r => r.ok ? r.json() : null).catch(() => null) : null;
   $('msettings').innerHTML = `<div class="sf">
     <h2>模型设置</h2>
+    ${s.configured ? '' : `<div class="warn" style="margin:0 0 14px"><b>首次配置。</b>选一个方式，点「填入示例」后改成自己的地址、key 和模型名，再「测试连接」→「保存」。
+      <div class="row" style="margin-top:8px"><button data-preset="gateway">有网关：LiteLLM / OneAPI</button><button data-preset="direct">没有网关：对话 + 向量各一家</button></div></div>`}
     <p class="lead">所有模型调用走 OpenAI 兼容接口。可以是一个网关统一转发，也可以<b>没有网关</b>：对话模型和向量模型各填各的地址。这里改的是<b>数据发给谁</b>；工具凭据不在这里，始终只在宿主机。保存后立刻生效，不用重启。${s.web_search ? '' : '<br>联网搜索依赖 LiteLLM 网关的 /v1/search，直连厂商时不可用。'}</p>
     <div class="card"><h3>网关 / 对话模型地址 <small>LiteLLM、OneAPI，或任何 OpenAI 兼容地址（DeepSeek、硅基流动、百炼 compatible-mode…）</small></h3>
       <label><span>地址<i>以 /v1 结尾</i></span><div class="inline"><input id="stUrl" value="${esc(s.llm_base_url)}" placeholder="http://127.0.0.1:4000/v1">${src('llm_base_url')}</div></label>
@@ -2107,6 +2115,17 @@ function stBody(reindex) {
 }
 $('msettings').addEventListener('click', async e => {
   const id = e.target.id;
+  const preset = e.target.dataset.preset;
+  if (preset === 'gateway') {
+    $('stUrl').value = 'http://127.0.0.1:4000/v1'; $('stChat').value = 'kb-chat'; $('stEmbed').value = 'kb-embedding';
+    $('stEmbedUrl').value = ''; $('stVision').value = 'kb-vision'; $('stKey').focus(); return;
+  }
+  if (preset === 'direct') {
+    $('stUrl').value = 'https://api.deepseek.com/v1'; $('stChat').value = 'deepseek-chat';
+    $('stEmbedUrl').value = 'https://api.siliconflow.cn/v1'; $('stEmbed').value = 'BAAI/bge-m3'; $('stVision').value = '';
+    toast('示例填好了：对话用 DeepSeek，向量用硅基流动的 bge-m3。换成您自己的两把 key 即可；图片识别留空表示不识别文档内图片。', '', 9000);
+    $('stKey').focus(); return;
+  }
   if (id === 'stTest') {
     e.target.disabled = true; e.target.textContent = '测试中…';
     const box = $('stResult'); box.hidden = false; box.className = 'result'; box.textContent = '正在连接网关、调用对话模型和向量模型…';
@@ -2234,7 +2253,7 @@ document.querySelectorAll('.msplit').forEach(bar => {
 });
 if (MANAGE) {
   mReady = true; applySplit();
-  mTab = localStorage.getItem('kb-mtab') || 'tools';
+  mTab = location.hash === '#settings' ? 'settings' : (localStorage.getItem('kb-mtab') || 'tools');
   loadDocs().then(() => { $('mlist').insertBefore($('queue'), $('mrows')); renderManage(); });
 } else {
   applySplit();

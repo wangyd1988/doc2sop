@@ -64,6 +64,15 @@ def get(name: str):
     return current()[name]
 
 
+def configured() -> bool:
+    """Can we talk to a model at all? False until an address and a key exist (env or page)."""
+    cur = current()
+    return bool(cur["llm_base_url"] and cur["llm_api_key"])
+
+
+NOT_CONFIGURED = "还没有配置模型：请到 管理 → 模型设置 填写对话模型和向量模型的地址与 key"
+
+
 def embed_endpoint(cur: dict | None = None) -> tuple[str, str]:
     """(base_url, api_key) for embeddings: the dedicated endpoint if one is set, else the chat one.
 
@@ -149,6 +158,9 @@ def test(base_url: str, api_key: str, chat_model: str, embed_model: str,
            "separate_embed": bool(embed_base_url)}
     cur = current()
     api_key = api_key or cur["llm_api_key"]
+    if not api_key:
+        out["errors"].append("请填写 API Key")
+        return out
     e_url = embed_base_url or base_url
     e_key = embed_api_key or (cur["embed_api_key"] if embed_base_url else "") or api_key
     try:

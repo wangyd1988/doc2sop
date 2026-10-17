@@ -410,17 +410,20 @@ WEB_SEARCH_BLOCKLIST=内部项目名,内部系统名      # 这些词永远不�
 
 ## 快速开始
 
-需要一个 OpenAI 兼容的模型网关（LiteLLM 配置样例见 [`litellm/config.yaml`](litellm/config.yaml)）。
-
 ```bash
 cp .env.example .env
-# 填入 LLM_BASE_URL、LLM_API_KEY、WEB_PASSWORD
+# 只需要改 WEB_PASSWORD；模型可以现在填，也可以启动后在页面上填
 docker compose up -d --build
 ```
 
-打开 http://127.0.0.1:8765 ，用 `.env` 里的账号密码登录。
-`sample_kb/` 下有九篇示例文档可以直接上传试用（其中《日常巡检规范》《大模型网关使用说明》《休假管理制度》能抽出 SOP）。
+打开 http://127.0.0.1:8765 ，用 `.env` 里的账号密码登录。首次打开会提示「先配置模型」，点进 **管理 → 模型设置**：
 
+- **有网关**（LiteLLM / OneAPI）：填网关地址和 key，模型名用网关上的别名（样例见 [`litellm/config.yaml`](litellm/config.yaml)）
+- **没有网关**：对话模型填一家（如 DeepSeek `https://api.deepseek.com/v1` + `deepseek-chat`），向量模型填另一家（如硅基流动 `https://api.siliconflow.cn/v1` + `BAAI/bge-m3`）；页面有「填入示例」按钮
+
+点「测试连接」确认两边都通，保存即生效。然后上传 `sample_kb/` 下的示例文档（九篇，其中《日常巡检规范》《大模型网关使用说明》《休假管理制度》能抽出 SOP）。
+
+> 工具（查真实数据）和联网搜索是可选能力：前者要在宿主机部署 `deploy/ops_readonly.py`，后者依赖 LiteLLM 的 `/v1/search`。都不配，就是一个带 SOP 抽取的知识库问答。
 > `.env` 必须是 LF 换行且无 BOM；多余的 `\r` 会让容器里的每个值都悄悄出错。
 > 另外改完 `.env` 要重建容器，`docker restart` 不会重新读取 `--env-file`。
 
