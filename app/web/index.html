@@ -223,6 +223,13 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
             box-shadow: var(--shadow); z-index: 40; }
 .pb-head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 10px; }
 .pb-head .t { flex: 1; font-weight: 600; font-size: 14px; }
+.pb-search { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
+.pb-search input { flex: 1; font: inherit; font-size: 12.5px; padding: 6px 9px; border-radius: 7px;
+                   border: 1px solid var(--border); background: var(--panel-2); color: var(--text); outline: none; }
+.pb-search input:focus { border-color: var(--accent); }
+.pb-search .n { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.pb-nomatch { font-size: 12.5px; color: var(--muted); text-align: center; padding: 14px 0; }
+.tl-group[hidden], .pb[hidden] { display: none; }
 .pb { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; }
 .pb.off { opacity: .55; }
 .pb.bad { border-color: var(--danger); }
@@ -789,7 +796,40 @@ document.addEventListener('click', e => {
 });
 
 /* ---------- Playbooks ---------- */
-let pbTools = {}, pbEditing = null, pbPicking = false, pbDocFilter = '';
+let pbTools = {}, pbEditing = null, pbPicking = false, pbDocFilter = '', pbSearch = '';
+
+// 面板内搜索：只在已渲染的卡片上显隐，不重新请求，输入框焦点不丢。
+// 卡片把可搜索文字放在 data-search 里；分组标题下面没有可见卡片时一起藏起来。
+function searchBox(id, value, placeholder) {
+  return `<div class="pb-search"><input type="search" id="${id}" data-search-box
+            placeholder="${placeholder}" value="${esc(value)}" autocomplete="off">
+          <span class="n" id="${id}N"></span></div>`;
+}
+function applySearch(panel, id, query) {
+  const q = query.trim().toLowerCase();
+  const cards = [...panel.querySelectorAll('.pb[data-search]')];
+  let hits = 0;
+  for (const card of cards) {
+    const hit = !q || card.dataset.search.includes(q);
+    card.hidden = !hit;
+    hits += hit;
+  }
+  for (const group of panel.querySelectorAll('.tl-group')) {
+    let el = group.nextElementSibling, any = false;
+    while (el && el.classList.contains('pb')) { any ||= !el.hidden; el = el.nextElementSibling; }
+    group.hidden = !any;
+  }
+  const n = $(id + 'N');
+  if (n) n.textContent = q ? `匹配 ${hits} / ${cards.length}` : '';
+  let none = panel.querySelector('.pb-nomatch');
+  if (q && cards.length && !hits) {
+    if (!none) { none = document.createElement('div'); none.className = 'pb-nomatch'; panel.appendChild(none); }
+    none.textContent = `没有包含「${query.trim()}」的条目`;
+  } else if (none) none.remove();
+}
+function searchable(...parts) {
+  return esc(parts.flat().filter(Boolean).join(' ').toLowerCase());
+}
 
 function pbStepsText(steps) {
   // 一行一步：工具 | 参数JSON | 检查点
@@ -824,7 +864,8 @@ function pbCard(p) {
       <span class="tl">${esc(s.tool)}</span>
       <span class="ck">${esc(args ? args + ' · ' : '')}${esc(s.checkpoint)}</span></div>`;
   }).join('');
-  return `<div class="pb${p.enabled ? '' : ' off'}${bad ? ' bad' : ''}" data-id="${p.id}">
+  return `<div class="pb${p.enabled ? '' : ' off'}${bad ? ' bad' : ''}" data-id="${p.id}"
+       data-search="${searchable(p.name, p.source, p.trigger, p.steps.map(s => [s.tool, s.checkpoint]))}">
     <div class="pb-top">
       <span class="nm" title="${esc(p.name)}">${esc(p.name)}</span>
       <span class="src">${esc(p.source)}</span>
@@ -906,10 +947,12 @@ async function loadPlaybooks() {
        <button class="icon-btn" id="pbFromDoc">从文档抽取</button></div>
      <div class="tl-note">📄 文档写了怎么做 → 📋 SOP 定好按什么顺序做 → 🔧 工具去执行。<br>
        适用于故障排查、日常巡检、上线前检查、上线后验收。SOP 只能调用已有工具，不能新增执行能力。</div>` +
+    (list.length > 3 ? searchBox('pbSearch', pbSearch, '搜索 SOP：名称、来源文档、触发条件、工具、检查点…') : '') +
     (pbPicking ? pbPicker() : '') +
     (pbEditing !== null ? pbEditor(pbEditing) : '') +
     (list.length ? list.map(pbCard).join('')
                  : '<div class="empty">还没有 SOP。点「从文档抽取」，让 Agent 从你的排查手册、巡检规范里整理出操作步骤。</div>');
+  applySearch($('pbPanel'), 'pbSearch', pbSearch);
   if (pbPicking) {
     const input = $('pbDocFilter');
     input.focus();
@@ -919,8 +962,11 @@ async function loadPlaybooks() {
 
 $('pbBtn').onclick = () => {
   $('pbPanel').hidden = !$('pbPanel').hidden;
-  if (!$('pbPanel').hidden) { pbEditing = null; pbPicking = false; pbDocFilter = ''; loadPlaybooks(); }
+  if (!$('pbPanel').hidden) { pbEditing = null; pbPicking = false; pbDocFilter = ''; pbSearch = ''; loadPlaybooks(); }
 };
+$('pbPanel').addEventListener('input', e => {
+  if (e.target.id === 'pbSearch') { pbSearch = e.target.value; applySearch($('pbPanel'), 'pbSearch', pbSearch); }
+});
 document.addEventListener('click', e => {
   if (!e.target.closest('.pb-wrap')) $('pbPanel').hidden = true;
 });
@@ -1056,7 +1102,7 @@ $('pbPanel').addEventListener('dblclick', e => {
      启停、改描述 -> 直接生效，因为它们都不改变实际执行的命令；
      新增工具     -> 只能提交申请，必须有人在宿主机上批准。
    命令模板只在宿主机那份手写配置里定义，这个界面碰不到。            */
-let tlEditing = null, tlProposing = false, tlProposeKind = 'command';
+let tlEditing = null, tlProposing = false, tlProposeKind = 'command', tlSearch = '';
 let tlScripts = [], tlScriptSel = '', tlScriptDir = '';
 
 function tlCard(name, t) {
@@ -1064,7 +1110,9 @@ function tlCard(name, t) {
   const editing = tlEditing === name;
   const field = 'width:100%;box-sizing:border-box;font:inherit;font-size:12.5px;padding:7px;'
               + 'border-radius:7px;border:1px solid var(--border);background:var(--panel-2);color:var(--text)';
-  return `<div class="pb ${t.enabled ? '' : 'off'} ${t.runnable ? '' : 'bad'}">
+  return `<div class="pb ${t.enabled ? '' : 'off'} ${t.runnable ? '' : 'bad'}"
+       data-search="${searchable(name, t.label, t.desc, t.command, t.group,
+                                 params.map(([k, p]) => [k, p.desc]))}">
     <div class="pb-top">
       <span class="nm">${esc(t.label || name)}</span>
       ${t.label ? `<span class="src">${esc(name)}</span>` : ''}
@@ -1188,9 +1236,11 @@ async function loadTools() {
        <button class="icon-btn" id="tlNew">＋ 申请新工具</button></div>` +
     (d.error ? `<div class="pb-warn">工具接口不可用：${esc(d.error)}</div>` : '') +
     (tlProposing ? tlProposeForm() : tlWaiting(waiting)) +
+    (names.length > 3 ? searchBox('tlSearch', tlSearch, '搜索工具：名称、显示名、说明、命令、分组、参数…') : '') +
     (names.length ? tlGrouped(names, tools)
                   : '<div class="empty">还没有可用工具。配置 OPS_URL 后，Agent 就能查询真实数据。</div>') +
     `    <div class="tl-note">停用、改名和改说明立刻生效，不重启服务；新增工具需要宿主机批准。</div>`;
+  applySearch($('tlPanel'), 'tlSearch', tlSearch);
   if (tlProposing) $('tlNewName').focus();
   if (tlEditing) {
     const box = $('tlLabel') || $('tlDesc');
@@ -1200,8 +1250,11 @@ async function loadTools() {
 
 $('tlBtn').onclick = () => {
   $('tlPanel').hidden = !$('tlPanel').hidden;
-  if (!$('tlPanel').hidden) { tlEditing = null; tlProposing = false; loadTools(); }
+  if (!$('tlPanel').hidden) { tlEditing = null; tlProposing = false; tlSearch = ''; loadTools(); }
 };
+$('tlPanel').addEventListener('input', e => {
+  if (e.target.id === 'tlSearch') { tlSearch = e.target.value; applySearch($('tlPanel'), 'tlSearch', tlSearch); }
+});
 document.addEventListener('click', e => {
   if (!e.target.closest('.tl-wrap')) $('tlPanel').hidden = true;
 });
