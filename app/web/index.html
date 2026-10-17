@@ -56,26 +56,25 @@ aside { width: 300px; flex-shrink: 0; background: var(--panel); border-right: 1p
                 background: var(--panel-2); color: var(--text); font: inherit; font-size: 13px; outline: none; }
 .search input:focus { border-color: var(--accent); }
 .docs { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
-.cat { display: flex; align-items: center; gap: 6px; padding: 8px 10px 4px; font-size: 12px;
-       color: var(--muted); font-weight: 600; letter-spacing: .02em; }
-.cat .line { flex: 1; height: 1px; background: var(--border); }
-.doc { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; }
+/* 侧栏文档列表与管理页同一套：分类折叠分组 + 紧凑行 + 悬停操作 */
+.docs .grp > summary { padding: 7px 8px; font-size: 12.5px; }
+.docs .grp > .body { padding: 0 0 4px; }
+.doc { display: grid; grid-template-columns: 1fr auto; column-gap: 8px; padding: 7px 10px; border-radius: 8px; position: relative; }
 .doc:hover { background: var(--panel-2); }
-.doc .ico { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; font-size: 11px;
-            font-weight: 700; color: #fff; flex-shrink: 0; }
-.doc .meta { flex: 1; min-width: 0; }
-.doc .title { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.doc .sub { font-size: 12px; color: var(--muted); }
-.doc .del { opacity: 0; color: var(--muted); padding: 4px 6px; border-radius: 6px; }
-.doc .tag { opacity: 0; color: var(--accent); font-size: 12px; padding: 4px 6px; border-radius: 6px; flex-shrink: 0; }
-.doc:hover .tag, .doc:focus-within .tag { opacity: 1; }
-.doc .tag:hover { background: var(--accent-soft); }
-.doc:hover .del { opacity: 1; }
-.doc .del:hover { color: var(--danger); background: var(--panel); }
-.doc .download { color: var(--accent); font-size: 12px; padding: 4px 6px; border-radius: 6px; flex-shrink: 0; }
-.doc .download:hover, .doc .download:focus-visible { background: var(--accent-soft); }
-.doc:focus-within .del { opacity: 1; }
-@media (hover: none) { .doc .del { opacity: 1; } }
+.doc .title { grid-column: 1; grid-row: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc .sub { grid-column: 1; grid-row: 2; font-size: 11.5px; color: var(--muted); }
+.doc .ico { grid-column: 2; grid-row: 1 / 3; align-self: center; font-size: 10.5px; font-weight: 700; padding: 1px 6px;
+            border-radius: 6px; color: #fff; }
+.doc .acts { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; gap: 2px; opacity: 0;
+             background: var(--panel-2); padding: 2px; border-radius: 7px; }
+.doc:hover .acts, .doc:focus-within .acts { opacity: 1; }
+.doc:hover .ico { opacity: 0; }
+.doc .acts button { font-size: 12px; padding: 3px 7px; border-radius: 5px; color: var(--accent); }
+.doc .acts button:hover { background: var(--accent-soft); }
+.doc .acts .del { color: var(--muted); }
+.doc .acts .del:hover { color: var(--danger); background: var(--panel); }
+@media (hover: none) { .doc .acts { opacity: 1; position: static; transform: none; grid-column: 1 / 3; } .doc .ico { display: none; } }
+.docs .more { margin: 4px 8px 6px; width: auto; padding: 6px; font-size: 12px; }
 .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 24px 10px; }
 .foot { border-top: 1px solid var(--border); padding: 10px 18px; font-size: 12px; color: var(--muted); }
 
@@ -675,16 +674,24 @@ function renderDocs() {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(d);
   }
-  $('docs').innerHTML = [...groups.entries()].map(([cat, docs]) =>
-    `<div class="cat"><span>${esc(cat)}</span><span class="line"></span><span>${docs.length}</span></div>` +
-    docs.map(d => {
-      const ext = d.source.split('.').pop().toLowerCase(); const [label, color] = TYPE[ext] || ['FILE', '#64748b'];
-      return `<div class="doc"><div class="ico" style="background:${color}">${label}</div>
-        <div class="meta"><div class="title" title="${esc(d.source)}">${esc(d.source)}</div><div class="sub">${d.chunks} 个片段</div></div>
-        <button class="tag" data-cat="${esc(d.source)}" data-now="${esc(d.category || '未分类')}" title="修改分类">分类</button>
-        <button class="download" data-name="${esc(d.source)}" title="下载原文件" aria-label="下载 ${esc(d.source)}">下载</button>
-        <button class="del" data-name="${esc(d.source)}" title="删除">✕</button></div>`;
-    }).join('')).join('');
+  const row = d => {
+    const ext = d.source.split('.').pop().toLowerCase(); const [label, color] = TYPE[ext] || ['FILE', '#64748b'];
+    return `<div class="doc"><div class="title" title="${esc(d.source)}">${esc(d.source)}</div><div class="sub">${d.chunks} 个片段</div>
+      <span class="ico" style="background:${color}">${label}</span>
+      <div class="acts"><button class="tag" data-cat="${esc(d.source)}" data-now="${esc(d.category || '未分类')}" title="修改分类">分类</button>
+        <button class="download" data-name="${esc(d.source)}" title="下载原文件">下载</button>
+        <button class="del" data-name="${esc(d.source)}" title="删除">✕</button></div></div>`;
+  };
+  // 和管理页同一套分组：默认折叠、展开状态记住；有筛选词时命中的组全部展开
+  $('docs').innerHTML = [...groups.entries()].sort((a, b) => b[1].length - a[1].length).map(([cat, docs]) => {
+    const key = 'doc:' + cat, open = f || opened.has(key);
+    const shown = docs.slice(0, PAGE).map(row).join('')
+      + (docs.length > PAGE ? `<button class="more" data-docmore2="${esc(cat)}" data-from="${PAGE}">加载更多（还有 ${docs.length - PAGE} 条）</button>` : '');
+    return `<details class="grp" data-panel="doc" data-grp="${esc(key)}" data-name="${esc(cat)}" ${open ? 'open' : ''}>
+      <summary><span class="chev">▶</span><span class="gl">${esc(cat)}</span><span class="gc">${docs.length}</span></summary>
+      <div class="body" data-loaded="1">${shown}</div></details>`;
+  }).join('');
+  $('docs')._groups = groups;
 }
 async function loadDocs() {
   const d = await (await fetch('/api/documents')).json();
@@ -709,6 +716,19 @@ async function loadDocs() {
 $('filter').oninput = renderDocs;
 /* 文档的 改分类 / 下载 / 删除：侧栏列表和管理页详情共用同一个处理器 */
 async function docActions(e) {
+  const more = e.target.closest('[data-docmore2]');
+  if (more) {
+    const docs = $('docs')._groups?.get(more.dataset.docmore2) || [], from = +more.dataset.from;
+    const ext = d => { const x = d.source.split('.').pop().toLowerCase(); return TYPE[x] || ['FILE', '#64748b']; };
+    more.insertAdjacentHTML('beforebegin', docs.slice(from, from + PAGE).map(d =>
+      `<div class="doc"><div class="title" title="${esc(d.source)}">${esc(d.source)}</div><div class="sub">${d.chunks} 个片段</div>
+       <span class="ico" style="background:${ext(d)[1]}">${ext(d)[0]}</span>
+       <div class="acts"><button class="tag" data-cat="${esc(d.source)}" data-now="${esc(d.category || '未分类')}">分类</button>
+         <button class="download" data-name="${esc(d.source)}">下载</button><button class="del" data-name="${esc(d.source)}">✕</button></div></div>`).join(''));
+    const left = docs.length - from - PAGE;
+    more.outerHTML = left > 0 ? `<button class="more" data-docmore2="${esc(more.dataset.docmore2)}" data-from="${from + PAGE}">加载更多（还有 ${left} 条）</button>` : '';
+    return;
+  }
   const tag = e.target.closest('.tag');
   if (tag) {
     const next = prompt(`「${tag.dataset.cat}」的分类：`, tag.dataset.now);
@@ -1106,7 +1126,7 @@ async function loadSearch(panel, q) {
 }
 document.addEventListener('toggle', e => {
   const g = e.target.closest?.('.grp'); if (!g) return;
-  if (g.open) { opened.add(g.dataset.grp); loadGroup(g); } else opened.delete(g.dataset.grp);
+  if (g.open) { opened.add(g.dataset.grp); if (LAZY[g.dataset.panel]) loadGroup(g); } else opened.delete(g.dataset.grp);
   localStorage.setItem('kb-open', JSON.stringify([...opened]));
 }, true);
 document.addEventListener('click', async e => {
