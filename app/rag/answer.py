@@ -1,7 +1,8 @@
 """Prompts, query rewriting and answer generation."""
 from langsmith import traceable
 
-from app.clients import chat_model, llm, rewriter
+from app import clients
+from app.clients import chat_model
 from app.config import BOT_NAME, CATEGORY_MAX, DEFAULT_CATEGORY, HISTORY_CHARS, log, why
 
 SYSTEM_PROMPT = f"""你是「{BOT_NAME}」，一位耐心、友好的知识库客服助手，用“您”称呼用户。
@@ -40,7 +41,7 @@ def rewrite_question(question: str, history) -> str:
     lines = "\n".join(f"{'用户' if role == 'user' else '助手'}：{content[:300]}"
                       for role, content in history[-4:])
     try:
-        reply = rewriter.invoke([("system", REWRITE_PROMPT),
+        reply = clients.rewriter.invoke([("system", REWRITE_PROMPT),
                                  ("human", f"对话历史：\n{lines}\n\n最新问题：{question}")])
         rewritten = _first_line(reply.content)
     except Exception as exc:
@@ -53,7 +54,7 @@ def rewrite_question(question: str, history) -> str:
 def suggest_category(name: str, sample: str, existing) -> str:
     """Ask the model for a short category, reusing an existing one when it fits."""
     try:
-        reply = rewriter.invoke([
+        reply = clients.rewriter.invoke([
             ("system", CATEGORY_PROMPT),
             ("human", f"已有分类：{'、'.join(existing) or '（暂无）'}\n\n"
                       f"文件名：{name}\n\n内容节选：\n{sample}")])
@@ -75,6 +76,7 @@ def build_messages(question: str, context: str, history):
 
 def stream_answer(messages, model: str | None = None):
     """Yield answer fragments as they arrive. `model` overrides the default chat model."""
+    llm = clients.llm
     client = llm if not model or model == llm.model_name else chat_model(
         model=model, timeout=120, max_retries=1)
     for chunk in client.stream(messages):

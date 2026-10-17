@@ -9,7 +9,8 @@ from contextlib import contextmanager
 from langsmith.run_helpers import tracing_context
 from langsmith.run_trees import RunTree
 
-from app.config import CHAT_MODEL, TOP_K, TRACING, log
+from app import settings
+from app.config import TOP_K, TRACING, log
 
 
 def start_root_run(question: str, conversation_id):
@@ -21,7 +22,7 @@ def start_root_run(question: str, conversation_id):
                        inputs={"question": question},
                        # RunTree silently drops a bare metadata= kwarg; it must go inside extra.
                        extra={"metadata": {"conversation_id": conversation_id,
-                                           "chat_model": CHAT_MODEL, "top_k": TOP_K}})
+                                           "chat_model": settings.get("chat_model"), "top_k": TOP_K}})
         root.post()
         return root
     except Exception as exc:

@@ -4,7 +4,7 @@ The embedding model is self-hosted on a separate host and reached through the
 same LiteLLM gateway as the chat models, so this module only has to care about
 batching and error wrapping.
 """
-from app.clients import embeddings
+from app import clients
 from app.config import log, why
 
 
@@ -15,7 +15,7 @@ class EmbeddingError(RuntimeError):
 def embed_documents(texts):
     """Vectorise chunks for storage."""
     try:
-        return embeddings.embed_documents(texts)
+        return clients.embeddings.embed_documents(texts)
     except Exception as exc:
         log.warning("embedding %d chunks failed", len(texts), exc_info=True)
         raise EmbeddingError(why(exc)) from exc
@@ -24,7 +24,7 @@ def embed_documents(texts):
 def embed_query(text: str):
     """Vectorise one question for similarity search."""
     try:
-        return embeddings.embed_query(text)
+        return clients.embeddings.embed_query(text)
     except Exception as exc:
         log.warning("embedding query failed", exc_info=True)
         raise EmbeddingError(why(exc)) from exc

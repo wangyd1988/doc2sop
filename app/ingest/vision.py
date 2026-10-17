@@ -15,9 +15,9 @@ from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
 from langchain_core.messages import HumanMessage
 
-from app.clients import vision_llms
+from app import clients
 from app.config import (MAX_IMAGES_PER_FILE, MAX_IMAGE_SIDE, MIN_IMAGE_AREA, MIN_IMAGE_SIDE,
-                        VISION_CACHE_PATH, VISION_MODELS, VISION_WORKERS, log, why)
+                        VISION_CACHE_PATH, VISION_WORKERS, log, why)
 
 VISION_PROMPT = """这是知识库文档中的一张图片。请：
 1. 按原有阅读顺序完整提取图中的所有文字（表格按行输出，单元格用 | 分隔）；
@@ -37,7 +37,7 @@ def describe_image(jpeg: bytes) -> str:
     message = HumanMessage(content=[{"type": "text", "text": VISION_PROMPT},
                                     {"type": "image_url", "image_url": {"url": url}}])
     last_error = None
-    for name, model in zip(VISION_MODELS, vision_llms):
+    for name, model in zip(clients.vision_names, clients.vision_llms):
         try:
             text = (model.invoke([message]).content or "").strip()
         except Exception as exc:

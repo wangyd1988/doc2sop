@@ -10,7 +10,8 @@ import threading
 import time
 import urllib.request
 
-from app.config import CHAT_MODEL, EMBED_MODEL, LLM_API_KEY, LLM_BASE_URL, log, why
+from app import settings
+from app.config import log, why
 
 CACHE_SECONDS = 60
 _cache = {"at": 0.0, "models": []}
@@ -19,9 +20,10 @@ _lock = threading.Lock()
 
 def _fetch() -> list:
     """Raw model ids from the gateway. Network only; filtering happens in `available`."""
-    base = LLM_BASE_URL.rstrip("/")
+    cur = settings.current()
+    base = cur["llm_base_url"].rstrip("/")
     url = base + "/models" if base.endswith("/v1") else base + "/v1/models"
-    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {LLM_API_KEY}"})
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {cur['llm_api_key']}"})
     with urllib.request.urlopen(request, timeout=8) as response:
         data = json.load(response)
     return [str(item.get("id", "")) for item in data.get("data", []) if item.get("id")]
@@ -29,7 +31,8 @@ def _fetch() -> list:
 
 def _chat_only(names) -> list:
     # 只藏向量模型：它不能聊天。多模态模型（OCR 用的那几个）同时也是聊天模型，保留。
-    hidden = {EMBED_MODEL} - {CHAT_MODEL}
+    cur = settings.current()
+    hidden = {cur["embed_model"]} - {cur["chat_model"]}
     return sorted({n for n in names if n and n not in hidden})
 
 
@@ -45,16 +48,18 @@ def available(force: bool = False) -> list:
                 _cache["models"] = _cache["models"] or []
             _cache["at"] = time.time()
         models = list(_cache["models"])
-    if CHAT_MODEL in models:
-        models.remove(CHAT_MODEL)
-    return [CHAT_MODEL] + models
+    default = settings.get("chat_model")
+    if default in models:
+        models.remove(default)
+    return [default] + models
 
 
 def resolve(requested: str | None) -> str:
     """Turn a page request into a model name we are allowed to call, or raise ValueError."""
     requested = (requested or "").strip()
-    if not requested or requested == CHAT_MODEL:
-        return CHAT_MODEL
+    default = settings.get("chat_model")
+    if not requested or requested == default:
+        return default
     if requested in available():
         return requested
     # 列表可能过期（网关刚加了模型），刷新一次再判断。

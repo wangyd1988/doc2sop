@@ -58,7 +58,7 @@ class SearchTests(unittest.TestCase):
             return {"results": []}
 
         with patch.object(web_search, "WEB_SEARCH_TOOL", "web-search"), \
-             patch.object(web_search, "LLM_BASE_URL", "http://gw:4000/v1"), \
+             patch.object(web_search.settings, "get", lambda k: "http://gw:4000/v1" if k == "llm_base_url" else "k"), \
              patch.object(web_search, "_post", fake_post):
             web_search.search("hello")
         self.assertEqual(captured["url"], "http://gw:4000/v1/search/web-search")

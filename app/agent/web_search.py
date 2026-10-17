@@ -15,7 +15,8 @@ import re
 import urllib.error
 import urllib.request
 
-from app.config import (LLM_API_KEY, LLM_BASE_URL, WEB_SEARCH_BLOCKLIST,
+from app import settings
+from app.config import (WEB_SEARCH_BLOCKLIST,
                         WEB_SEARCH_MAX_RESULTS, WEB_SEARCH_TOOL, log, why)
 
 MAX_QUERY = 200
@@ -56,7 +57,7 @@ def screen(query: str) -> str:
 
 
 def _endpoint() -> str:
-    base = LLM_BASE_URL.rstrip("/")
+    base = settings.get("llm_base_url").rstrip("/")
     base = base[:-3] if base.endswith("/v1") else base
     return f"{base}/v1/search/{WEB_SEARCH_TOOL}"
 
@@ -65,7 +66,7 @@ def _post(url, payload):
     """Isolated so tests can replace the network."""
     request = urllib.request.Request(
         url, json.dumps(payload).encode("utf-8"),
-        {"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"})
+        {"Authorization": f"Bearer {settings.get('llm_api_key')}", "Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
         return json.load(response)
 

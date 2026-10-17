@@ -11,11 +11,11 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
-from app import catalog, conversations, jobs, models, playbooks
+from app import catalog, conversations, jobs, models, playbooks, settings
 from app.agent import loop as agent_loop
 from app.agent import ops_client, web_search
 from app.agent.extract import extract as extract_playbooks
-from app.config import (AGENT_MODE, ALLOWED_SUFFIXES, CATEGORY_MAX, CHAT_MODEL, BOT_NAME,
+from app.config import (AGENT_MODE, ALLOWED_SUFFIXES, CATEGORY_MAX, BOT_NAME,
                         FILES_DIR, IMAGE_SUFFIXES, MAX_FILE_BYTES, WEB_PASSWORD, WEB_USER,
                         log)
 from app.ingest.extract import ExtractionError, extract_pages
@@ -85,7 +85,7 @@ def usable_tools() -> dict:
 def documents():
     tools = usable_tools()
     return {"documents": store.list_documents(), "categories": store.all_categories(),
-            "chat_model": CHAT_MODEL, "bot_name": BOT_NAME,
+            "chat_model": settings.get("chat_model"), "bot_name": BOT_NAME,
             "tools": sorted(tools),
             "web_search": AGENT_MODE != "off" and web_search.enabled(),
             "playbooks": len(playbooks.list_all(only_enabled=True))}
@@ -463,12 +463,99 @@ def delete_conversation(conversation_id: str):
     return {"deleted": conversation_id}
 
 
+# --- Model settings ----------------------------------------------------------
+#
+# 网关地址、key 和模型名可以在管理页改。这是数据面设置：决定数据发给谁，不决定执行什么。
+# 工具凭据（OPS_SECRET_* / OPS_TOKEN）不在这里，永远只在宿主机。
+
+class SettingsBody(BaseModel):
+    llm_base_url: str = Field(min_length=1, max_length=300, pattern=r"^https?://")
+    llm_api_key: str = Field(default="", max_length=500)   # 留空 = 不改
+    chat_model: str = Field(min_length=1, max_length=120)
+    embed_model: str = Field(min_length=1, max_length=120)
+    vision_models: list[str] = Field(default_factory=list, max_length=5)
+    # 换向量模型必须同时重建索引；页面要显式确认
+    reindex: bool = False
+
+
+@app.get("/api/settings")
+def get_settings():
+    return {**settings.public(), "docs": len(store.list_documents()), "index_dim": store.dimension(),
+            "reindex_job": _reindex_job}
+
+
+@app.post("/api/settings/test")
+def test_settings(body: SettingsBody):
+    result = settings.test(body.llm_base_url, body.llm_api_key, body.chat_model, body.embed_model)
+    dim = store.dimension()
+    if result.get("embed_dim") and dim and result["embed_dim"] != dim:
+        result["dim_mismatch"] = f"当前索引是 {dim} 维，新向量模型是 {result['embed_dim']} 维，保存后必须重建索引"
+    return result
+
+
+_reindex_job: str | None = None
+
+
+def reindex_all(report):
+    """Re-embed every stored file with the current embedding model."""
+    docs = store.list_documents()
+    categories = {d["source"]: d["category"] for d in docs}
+    files = sorted(p for p in FILES_DIR.iterdir() if p.is_file() and not p.name.startswith("."))
+    report(f"清空旧索引（{len(docs)} 个文档）")
+    store.reset_collection()
+    done, failed = 0, []
+    for i, path in enumerate(files, 1):
+        report(f"重建索引 {i}/{len(files)}：{path.name}")
+        try:
+            ingest(path.name, path.read_bytes(), categories.get(path.name, ""))
+            done += 1
+        except HTTPException as exc:
+            failed.append(f"{path.name}（{exc.detail}）")
+        except Exception as exc:
+            failed.append(f"{path.name}（{exc.__class__.__name__}）")
+    return {"rebuilt": done, "failed": failed, "total": len(files)}
+
+
+@app.put("/api/settings")
+def put_settings(body: SettingsBody):
+    global _reindex_job
+    before = settings.current()
+    embed_changed = body.embed_model.strip() != before["embed_model"]
+    url_changed = body.llm_base_url.strip().rstrip("/") != before["llm_base_url"].rstrip("/")
+    docs = len(store.list_documents())
+    if embed_changed and docs and not body.reindex:
+        raise HTTPException(409, f"换向量模型会让现有 {docs} 个文档的索引失效，请勾选「同时重建索引」再保存")
+    settings.save(body.model_dump(exclude={"reindex"}))
+    models._cache.update(at=0.0, models=[])
+    result = {"saved": True, **settings.public()}
+    if (embed_changed or (url_changed and body.reindex)) and docs:
+        _reindex_job = jobs.submit("重建索引", lambda report: reindex_all(report))
+        result["reindex_job"] = _reindex_job
+    return result
+
+
+@app.post("/api/settings/reindex")
+def start_reindex():
+    global _reindex_job
+    if _reindex_job and (job := jobs.get(_reindex_job)) and job["status"] in ("queued", "running"):
+        return {"reindex_job": _reindex_job}
+    _reindex_job = jobs.submit("重建索引", lambda report: reindex_all(report))
+    return {"reindex_job": _reindex_job}
+
+
+@app.delete("/api/settings")
+def reset_settings():
+    settings.reset()
+    models._cache.update(at=0.0, models=[])
+    return settings.public()
+
+
 # --- Ask ---------------------------------------------------------------------
 
 @app.get("/api/models")
 def list_models():
     """Chat models this deployment's key may call, default first."""
-    return {"models": models.available(), "default": CHAT_MODEL}
+    return {"models": models.available(), "default": settings.get("chat_model")}
 
 
 class Question(BaseModel):

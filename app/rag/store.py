@@ -45,6 +45,31 @@ def delete_document(source: str):
         _bump()
 
 
+def reset_collection():
+    """Drop every vector and start an empty collection.
+
+    Needed when the embedding model changes: Chroma refuses vectors of a different
+    dimension in the same collection, and vectors from two models cannot be compared anyway.
+    """
+    global collection
+    with write_lock:
+        try:
+            chroma.delete_collection("knowledge")
+        except Exception:
+            pass
+        collection = chroma.get_or_create_collection("knowledge", metadata={"hnsw:space": "cosine"})
+        _bump()
+
+
+def dimension() -> int | None:
+    """Vector size of the current index, or None when empty."""
+    if collection.count() == 0:
+        return None
+    got = collection.get(limit=1, include=["embeddings"])
+    vectors = got.get("embeddings")
+    return len(vectors[0]) if vectors is not None and len(vectors) else None
+
+
 def set_category(source: str, category: str) -> bool:
     """Re-tag every chunk of one document. False when the document is unknown."""
     with write_lock:
