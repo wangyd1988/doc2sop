@@ -29,8 +29,8 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 from app import playbooks
-from app.agent import web_search
-from app.agent.tools import build_tools
+from app.agent import ops_client, web_search
+from app.agent.tools import TOOL_LIMIT, build_tools, select_tools
 from app.clients import chat_model
 from app.config import BOT_NAME, DATA_DIR, HISTORY_CHARS, log, why
 
@@ -385,7 +385,10 @@ def run(question: str, context: str, history, allow_web: bool = False,
     thread_id 一般就是会话 ID；记忆里还没有这个会话时（例如升级前的老会话），
     用 history 里的文字历史补种，之后就以完整记忆为准。
     """
-    tools = build_tools()
+    available = ops_client.available_tools()
+    if len(available) > TOOL_LIMIT:
+        available = select_tools(available, question, playbooks.referenced_tools())
+    tools = build_tools(available)
     by_name = {tool.name: tool for tool in tools}
     allow_web = allow_web and web_search.enabled()
     bindable = tools + ([_web_tool()] if allow_web else [])

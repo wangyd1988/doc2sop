@@ -214,7 +214,7 @@ class ExtractionTests(unittest.TestCase):
         pid = playbooks.save(None, "甲", "", [{**step("container_stats"), "evidence": "原句"}], TOOLS)
         self.assertEqual(playbooks.get(pid)["steps"][0]["evidence"], "原句")
         client = TestClient(app)
-        got = client.get("/api/playbooks", auth=(WEB_USER, WEB_PASSWORD)).json()["playbooks"]
+        got = client.get("/api/playbooks?everything=1", auth=(WEB_USER, WEB_PASSWORD)).json()["playbooks"]
         self.assertEqual(got[0]["steps"][0]["evidence"], "原句")
 
 
@@ -243,9 +243,17 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(created.status_code, 200, created.text)
         pid = created.json()["id"]
 
+        # 默认只回分组；手工建的归在「手工创建」组里
         listed = self.client.get("/api/playbooks", auth=self.auth).json()
-        self.assertEqual(len(listed["playbooks"]), 1)
-        self.assertEqual(listed["playbooks"][0]["missing_tools"], [])
+        self.assertEqual(listed["playbooks"], [])
+        self.assertEqual(listed["groups"], [{"name": "手工创建", "live": 1, "total": 1}])
+        self.assertEqual((listed["count"], listed["live"]), (1, 1))
+        page = self.client.get("/api/playbooks?source=手工创建", auth=self.auth).json()
+        self.assertEqual(len(page["playbooks"]), 1)
+        self.assertEqual(page["playbooks"][0]["missing_tools"], [])
+        self.assertEqual(page["total"], 1)
+        one = self.client.get(f"/api/playbooks/{pid}", auth=self.auth).json()
+        self.assertEqual(one["name"], "测试 SOP")
 
         updated = self.client.put(f"/api/playbooks/{pid}",
                                   json=self.body(name="改名了", enabled=False),
@@ -254,8 +262,29 @@ class ApiTests(unittest.TestCase):
         self.assertFalse(updated.json()["enabled"])
 
         self.client.delete(f"/api/playbooks/{pid}", auth=self.auth)
-        self.assertEqual(self.client.get("/api/playbooks",
+        self.assertEqual(self.client.get("/api/playbooks?everything=1",
                                          auth=self.auth).json()["playbooks"], [])
+        self.assertEqual(self.client.get(f"/api/playbooks/{pid}", auth=self.auth).status_code, 404)
+
+    def test_search_and_paging(self):
+        for i in range(35):
+            playbooks.save(None, f"巡检{i:02d}", "每天", [step("container_stats")], TOOLS, source="巡检规范.md")
+        playbooks.save(None, "请假核对", "请假前", [{**step("host_resources"), "checkpoint": "节假日不计入"}],
+                       TOOLS, source="休假制度.md")
+        groups = self.client.get("/api/playbooks", auth=self.auth).json()["groups"]
+        self.assertEqual([(g["name"], g["total"]) for g in groups], [("休假制度.md", 1), ("巡检规范.md", 35)])
+
+        first = self.client.get("/api/playbooks?source=巡检规范.md", auth=self.auth).json()
+        self.assertEqual((len(first["playbooks"]), first["total"]), (30, 35))
+        second = self.client.get("/api/playbooks?source=巡检规范.md&offset=30", auth=self.auth).json()
+        self.assertEqual(len(second["playbooks"]), 5)
+
+        # 搜索覆盖名称 / 来源 / 检查点，多个词都要命中
+        hit = self.client.get("/api/playbooks?q=节假日", auth=self.auth).json()
+        self.assertEqual([p["name"] for p in hit["playbooks"]], ["请假核对"])
+        hit = self.client.get("/api/playbooks?q=巡检 05", auth=self.auth).json()
+        self.assertEqual([p["name"] for p in hit["playbooks"]], ["巡检05"])
+        self.assertEqual(self.client.get("/api/playbooks?q=zzz", auth=self.auth).json()["total"], 0)
 
     def test_api_rejects_unknown_tool(self):
         bad = self.body(steps=[{"tool": "run_shell", "args": {}, "checkpoint": ""}])
@@ -266,8 +295,10 @@ class ApiTests(unittest.TestCase):
     def test_missing_tools_are_flagged(self):
         self.client.post("/api/playbooks", json=self.body(), auth=self.auth)
         with patch("app.main.usable_tools", return_value={"host_resources": "说明"}):
-            listed = self.client.get("/api/playbooks", auth=self.auth).json()
+            listed = self.client.get("/api/playbooks?everything=1", auth=self.auth).json()
         self.assertEqual(listed["playbooks"][0]["missing_tools"], ["container_stats"])
+        # 分组计数里的「生效」也要扣掉它
+        self.assertEqual(listed["groups"][0]["live"], 0)
 
     def test_update_unknown_playbook_is_404(self):
         self.assertEqual(self.client.put("/api/playbooks/nope", json=self.body(),

@@ -158,6 +158,54 @@ def list_all(only_enabled=False):
     return [_rows_to_playbook(row, grouped.get(row["id"], [])) for row in rows]
 
 
+def sources():
+    """来源文档 -> (启用数, 总数)，供面板画折叠分组；不加载步骤。"""
+    with lock:
+        rows = db.execute("SELECT source, SUM(enabled) AS live, COUNT(*) AS total"
+                          " FROM playbooks GROUP BY source").fetchall()
+    out = [{"name": r["source"] or "手工创建", "live": int(r["live"] or 0), "total": r["total"]} for r in rows]
+    return sorted(out, key=lambda g: (g["name"] == "手工创建", g["name"]))
+
+
+def search(q="", source="", offset=0, limit=30):
+    """一页 SOP。q 为空且 source 为空时返回空页——面板默认只画分组。"""
+    q = (q or "").strip()
+    if not q and not source:
+        return [], 0
+    with lock:
+        if q:
+            # 名称/触发/来源 在主表匹配；工具名/检查点/原句 在步骤表匹配。每个词都要命中。
+            where, args = [], []
+            for term in q.lower().split():
+                like = f"%{term}%"
+                where.append("(lower(p.name) LIKE ? OR lower(p.trigger) LIKE ? OR lower(p.source) LIKE ?"
+                             " OR EXISTS (SELECT 1 FROM steps s WHERE s.playbook_id = p.id AND"
+                             " (lower(s.tool) LIKE ? OR lower(s.checkpoint) LIKE ? OR lower(s.evidence) LIKE ?)))")
+                args += [like] * 6
+            clause = " AND ".join(where)
+        else:
+            clause, args = "(p.source = ? OR (? = '手工创建' AND p.source = ''))", [source, source]
+        total = db.execute(f"SELECT COUNT(*) FROM playbooks p WHERE {clause}", args).fetchone()[0]
+        rows = db.execute(f"SELECT * FROM playbooks p WHERE {clause} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                          args + [limit, offset]).fetchall()
+        ids = [r["id"] for r in rows]
+        steps = db.execute(f"SELECT * FROM steps WHERE playbook_id IN ({','.join('?' * len(ids)) or 'NULL'})"
+                           " ORDER BY playbook_id, position", ids).fetchall() if ids else []
+    grouped = {}
+    for step in steps:
+        grouped.setdefault(step["playbook_id"], []).append(step)
+    return [_rows_to_playbook(row, grouped.get(row["id"], [])) for row in rows], total
+
+
+def referenced_tools(only_enabled=True):
+    """启用的 SOP 引用到的工具名集合——这些工具不论问题是什么都要绑给模型。"""
+    with lock:
+        query = "SELECT DISTINCT s.tool FROM steps s JOIN playbooks p ON p.id = s.playbook_id"
+        if only_enabled:
+            query += " WHERE p.enabled = 1"
+        return {r["tool"] for r in db.execute(query).fetchall()}
+
+
 def delete(playbook_id):
     with lock:
         db.execute("DELETE FROM steps WHERE playbook_id = ?", (playbook_id,))

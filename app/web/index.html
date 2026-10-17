@@ -246,6 +246,10 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .grp > summary .gc { font-weight: 400; font-size: 11.5px; color: var(--muted); }
 .grp > summary .gc b { color: #059669; font-weight: 600; }
 .grp > .body { padding: 2px 0 4px 8px; }
+.more { display: block; width: 100%; margin: 2px 0 10px; padding: 8px; border-radius: 8px; font-size: 12.5px;
+        border: 1px dashed var(--border); background: var(--panel-2); color: var(--accent); }
+.more:hover { border-style: solid; }
+.more:disabled { color: var(--muted); }
 .pb { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; }
 .pb.off { opacity: .55; }
 .pb.bad { border-color: var(--danger); }
@@ -914,49 +918,86 @@ document.addEventListener('click', e => {
 /* ---------- Playbooks ---------- */
 let pbTools = {}, pbEditing = null, pbPicking = false, pbDocFilter = '', pbSearch = '';
 
-// 面板内搜索：只在已渲染的卡片上显隐，不重新请求，输入框焦点不丢。
-// 卡片把可搜索文字放在 data-search 里；分组（.grp）下面没有可见卡片时整组藏起来，有搜索词时命中的组强制展开。
+/* ---------- 大列表：分组懒加载 + 服务端分页 ----------
+   工具和 SOP 会涨到几千条。面板默认只画分组（名字 + 数量，全部折叠），
+   点开一组才向服务端要这一组的第一页（30 条），再点「加载更多」翻页；
+   搜索也在服务端做，结果同样分页。哪些组是展开的记在浏览器里。 */
+const PAGE = 30;
+const LAZY = {
+  tl: {url: '/api/tools', key: 'group', items: d => Object.entries(d.tools || {}).map(([n, t]) => tlCard(n, t)).join(''),
+       count: d => Object.keys(d.tools || {}).length, label: '工具'},
+  pb: {url: '/api/playbooks', key: 'source', items: d => (d.playbooks || []).map(pbCard).join(''),
+       count: d => (d.playbooks || []).length, label: 'SOP'},
+};
+const opened = new Set(JSON.parse(localStorage.getItem('kb-open') || '[]'));
 function searchBox(id, value, placeholder) {
   return `<div class="pb-search"><input type="search" id="${id}" data-search-box
             placeholder="${placeholder}" value="${esc(value)}" autocomplete="off">
           <span class="n" id="${id}N"></span></div>`;
 }
-/* 可折叠分组：折叠状态按「面板:分组名」记在浏览器里，下次打开还是那样 */
-const collapsed = new Set(JSON.parse(localStorage.getItem('kb-collapsed') || '[]'));
-function groupHtml(panel, label, live, total, inner) {
-  const key = panel + ':' + label;
-  return `<details class="grp" data-grp="${esc(key)}" ${collapsed.has(key) ? '' : 'open'}>
-    <summary><span class="chev">▶</span><span class="gl">${esc(label)}</span>
-      <span class="gc"><b>${live}</b> / ${total}</span></summary>
-    <div class="body">${inner}</div></details>`;
+function groupHtml(panel, g) {
+  const key = panel + ':' + g.name;
+  return `<details class="grp" data-panel="${panel}" data-grp="${esc(key)}" data-name="${esc(g.name)}" ${opened.has(key) ? 'open' : ''}>
+    <summary><span class="chev">▶</span><span class="gl">${esc(g.name)}</span>
+      <span class="gc"><b>${g.live}</b> / ${g.total}</span></summary>
+    <div class="body" data-loaded="0"></div></details>`;
+}
+function groupsHtml(panel, groups) {
+  return `<div class="groups">${groups.map(g => groupHtml(panel, g)).join('')}</div><div class="results" hidden></div>`;
+}
+async function fetchPage(panel, params, offset) {
+  const cfg = LAZY[panel];
+  const qs = new URLSearchParams({...params, offset, limit: PAGE});
+  return (await fetch(`${cfg.url}?${qs}`)).json();
+}
+function moreHtml(panel, params, next, total) {
+  const left = total - next;
+  return left > 0 ? `<button class="more" data-more="${panel}" data-params='${esc(JSON.stringify(params))}' data-next="${next}">加载更多（还有 ${left} 条）</button>` : '';
+}
+async function loadGroup(el) {
+  const panel = el.dataset.panel, body = el.querySelector('.body');
+  if (body.dataset.loaded === '1') return;
+  body.dataset.loaded = '1';
+  body.innerHTML = '<div class="pb-nomatch">加载中…</div>';
+  const params = {[LAZY[panel].key]: el.dataset.name};
+  const d = await fetchPage(panel, params, 0);
+  body.innerHTML = LAZY[panel].items(d) + moreHtml(panel, params, LAZY[panel].count(d), d.total);
+}
+async function loadSearch(panel, q) {
+  const root = $(panel + 'Panel'), results = root.querySelector('.results'), groups = root.querySelector('.groups');
+  const n = $(panel + 'SearchN');
+  if (!q.trim()) { results.hidden = true; groups.hidden = false; if (n) n.textContent = ''; return; }
+  groups.hidden = true; results.hidden = false;
+  results.innerHTML = '<div class="pb-nomatch">搜索中…</div>';
+  const d = await fetchPage(panel, {q}, 0);
+  if (root.querySelector('[data-search-box]')?.value !== q) return;  // 输入已经变了，丢掉这次结果
+  if (n) n.textContent = `匹配 ${d.total} 条`;
+  results.innerHTML = (d.total ? LAZY[panel].items(d) : `<div class="pb-nomatch">没有包含「${esc(q.trim())}」的${LAZY[panel].label}</div>`)
+                    + moreHtml(panel, {q}, LAZY[panel].count(d), d.total);
 }
 document.addEventListener('toggle', e => {
-  const g = e.target.closest?.('.grp'); if (!g || g.dataset.searching) return;
-  if (g.open) collapsed.delete(g.dataset.grp); else collapsed.add(g.dataset.grp);
-  localStorage.setItem('kb-collapsed', JSON.stringify([...collapsed]));
+  const g = e.target.closest?.('.grp'); if (!g) return;
+  if (g.open) { opened.add(g.dataset.grp); loadGroup(g); } else opened.delete(g.dataset.grp);
+  localStorage.setItem('kb-open', JSON.stringify([...opened]));
 }, true);
-function applySearch(panel, id, query) {
-  const q = query.trim().toLowerCase();
-  const cards = [...panel.querySelectorAll('.pb[data-search]')];
-  let hits = 0;
-  for (const card of cards) {
-    const hit = !q || card.dataset.search.includes(q);
-    card.hidden = !hit;
-    hits += hit;
-  }
-  for (const group of panel.querySelectorAll('.grp')) {
-    const any = [...group.querySelectorAll('.pb[data-search]')].some(c => !c.hidden);
-    group.hidden = !any;
-    if (q) { group.dataset.searching = '1'; group.open = true; }
-    else { group.open = !collapsed.has(group.dataset.grp); delete group.dataset.searching; }
-  }
-  const n = $(id + 'N');
-  if (n) n.textContent = q ? `匹配 ${hits} / ${cards.length}` : '';
-  let none = panel.querySelector('.pb-nomatch');
-  if (q && cards.length && !hits) {
-    if (!none) { none = document.createElement('div'); none.className = 'pb-nomatch'; panel.appendChild(none); }
-    none.textContent = `没有包含「${query.trim()}」的条目`;
-  } else if (none) none.remove();
+document.addEventListener('click', async e => {
+  const btn = e.target.closest('[data-more]'); if (!btn) return;
+  const panel = btn.dataset.more, params = JSON.parse(btn.dataset.params), next = +btn.dataset.next;
+  btn.disabled = true; btn.textContent = '加载中…';
+  const d = await fetchPage(panel, params, next);
+  btn.insertAdjacentHTML('beforebegin', LAZY[panel].items(d));
+  btn.outerHTML = moreHtml(panel, params, next + LAZY[panel].count(d), d.total);
+});
+/* 面板重绘后把之前展开的组重新装回第一页；搜索框有字就重跑搜索 */
+function restorePanel(panel, q) {
+  const root = $(panel + 'Panel');
+  root.querySelectorAll('.grp[open]').forEach(loadGroup);
+  if (q && q.trim()) loadSearch(panel, q);
+}
+let searchTimer;
+function onSearchInput(panel, value) {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => loadSearch(panel, value), 250);
 }
 function searchable(...parts) {
   return esc(parts.flat().filter(Boolean).join(' ').toLowerCase());
@@ -1069,21 +1110,15 @@ function pbPicker() {
 }
 
 /* SOP 按来源文档分组：同一份手册抽出的几个 SOP 挨在一起，手工建的单独一组 */
-function pbGrouped(list) {
-  const groups = {};
-  for (const p of list) (groups[p.source || '手工创建'] ||= []).push(p);
-  const order = Object.keys(groups).sort((a, b) => (a === '手工创建') - (b === '手工创建') || a.localeCompare(b, 'zh'));
-  return order.map(g => {
-    const live = groups[g].filter(p => p.enabled && !(p.missing_tools || []).length).length;
-    return groupHtml('pb', g, live, groups[g].length, groups[g].map(pbCard).join(''));
-  }).join('');
+async function pbGet(id) {
+  const r = await fetch('/api/playbooks/' + id);
+  return r.ok ? r.json() : null;
 }
 
 async function loadPlaybooks() {
   const d = await (await fetch('/api/playbooks')).json();
   pbTools = d.tools || {};
-  const list = d.playbooks || [];
-  const sc = countSkills(list);
+  const sc = {live: d.live || 0, total: d.count || 0};
   setBadge('pbBadge', sc, '生效');
   $('pbPanel').innerHTML =
     `<div class="pb-head"><span class="t">SOP · 标准作业流程<small>${sc.live} 个生效 · 共 ${sc.total} 个</small></span>
@@ -1092,12 +1127,12 @@ async function loadPlaybooks() {
        <button class="x" data-close title="关闭">✕</button></div>
      <div class="tl-note">📄 文档写了怎么做 → 📋 SOP 定好按什么顺序做 → 🔧 工具去执行。<br>
        适用于故障排查、日常巡检、上线前检查、上线后验收。SOP 只能调用已有工具，不能新增执行能力。</div>` +
-    (list.length > 3 ? searchBox('pbSearch', pbSearch, '搜索 SOP：名称、来源文档、触发条件、工具、检查点…') : '') +
+    (sc.total > 3 ? searchBox('pbSearch', pbSearch, '搜索 SOP：名称、来源文档、触发条件、工具、检查点、原句…') : '') +
     (pbPicking ? pbPicker() : '') +
     (pbEditing !== null ? pbEditor(pbEditing) : '') +
-    (list.length ? pbGrouped(list)
-                 : '<div class="empty">还没有 SOP。点「从文档抽取」，让 Agent 从你的排查手册、巡检规范里整理出操作步骤。</div>');
-  applySearch($('pbPanel'), 'pbSearch', pbSearch);
+    (sc.total ? groupsHtml('pb', d.groups || [])
+              : '<div class="empty">还没有 SOP。点「从文档抽取」，让 Agent 从你的排查手册、巡检规范里整理出操作步骤。</div>');
+  restorePanel('pb', pbSearch);
   if (pbPicking) {
     const input = $('pbDocFilter');
     input.focus();
@@ -1110,7 +1145,7 @@ $('pbBtn').onclick = () => {
   if (!$('pbPanel').hidden) { pbEditing = null; pbPicking = false; pbDocFilter = ''; pbSearch = ''; loadPlaybooks(); }
 };
 $('pbPanel').addEventListener('input', e => {
-  if (e.target.id === 'pbSearch') { pbSearch = e.target.value; applySearch($('pbPanel'), 'pbSearch', pbSearch); }
+  if (e.target.id === 'pbSearch') { pbSearch = e.target.value; onSearchInput('pb', pbSearch); }
 });
 document.addEventListener('click', e => {
   if (e.target.closest('[data-close]')) { e.target.closest('.pb-panel').hidden = true; return; }
@@ -1189,9 +1224,8 @@ $('pbPanel').addEventListener('click', async e => {
 
   const editId = id('edit');
   if (editId) {
-    const d = await (await fetch('/api/playbooks')).json();
     pbPicking = false;
-    pbEditing = d.playbooks.find(p => p.id === editId) || {steps: []};
+    pbEditing = (await pbGet(editId)) || {steps: []};
     return loadPlaybooks();
   }
 
@@ -1205,8 +1239,7 @@ $('pbPanel').addEventListener('click', async e => {
   // ▶ 执行：把「按 SOP 执行」的问题填进输入框并发送。本质还是一次提问，Agent 照 SOP 调工具。
   const runId = id('run');
   if (runId) {
-    const d = await (await fetch('/api/playbooks')).json();
-    const p = d.playbooks.find(x => x.id === runId);
+    const p = await pbGet(runId);
     if (!p) return;
     const blanks = [...new Set(p.steps.flatMap(s => Object.entries(s.args || {}).filter(([, v]) => !v).map(([k]) => k)))];
     $('pbPanel').hidden = true;
@@ -1225,8 +1258,7 @@ $('pbPanel').addEventListener('click', async e => {
 
   const toggleId = id('toggle');
   if (toggleId) {
-    const d = await (await fetch('/api/playbooks')).json();
-    const p = d.playbooks.find(x => x.id === toggleId);
+    const p = await pbGet(toggleId);
     if (!p) return;
     await fetch('/api/playbooks/' + toggleId, {
       method: 'PUT', headers: {'Content-Type': 'application/json'},
@@ -1308,16 +1340,6 @@ function tlCard(name, t) {
   </div>`;
 }
 
-function tlGrouped(names, tools) {
-  const groups = {};
-  for (const n of names) (groups[tools[n].group || '其他'] ||= []).push(n);
-  const order = Object.keys(groups).sort((a, b) => (a === '其他') - (b === '其他') || a.localeCompare(b, 'zh'));
-  return order.map(g => {
-    const live = groups[g].filter(n => tools[n].enabled && tools[n].runnable).length;
-    return groupHtml('tl', g, live, groups[g].length, groups[g].map(n => tlCard(n, tools[n])).join(''));
-  }).join('');
-}
-
 function tlProposeForm() {
   const common =
     `<input id="tlNewName" placeholder="工具名，如 host_time（小写字母、数字、下划线）" maxlength="40">
@@ -1384,12 +1406,10 @@ function tlWaiting(items) {
 
 async function loadTools() {
   const d = await (await fetch('/api/tools')).json();
-  const tools = d.tools || {};
-  const names = Object.keys(tools).sort();
-  const tc = countTools(tools);
+  const tc = {live: d.live || 0, total: d.count || 0};
   setBadge('tlBadge', tc, '可用');
   // 工具停用/启用会改变 SOP 是否生效，顺带刷新 SOP 徽标。
-  fetch('/api/playbooks').then(r => r.json()).then(p => setBadge('pbBadge', countSkills(p.playbooks), '生效')).catch(() => {});
+  fetch('/api/playbooks').then(r => r.json()).then(p => setBadge('pbBadge', {live: p.live || 0, total: p.count || 0}, '生效')).catch(() => {});
   const waiting = tlProposing ? [] : await (await fetch('/api/tools/pending')).json()
     .then(r => r.pending || []).catch(() => []);
   if (tlProposing && tlProposeKind === 'script') {
@@ -1403,11 +1423,11 @@ async function loadTools() {
        <button class="x" data-close title="关闭">✕</button></div>` +
     (d.error ? `<div class="pb-warn">工具接口不可用：${esc(d.error)}</div>` : '') +
     (tlProposing ? tlProposeForm() : tlWaiting(waiting)) +
-    (names.length > 3 ? searchBox('tlSearch', tlSearch, '搜索工具：名称、显示名、说明、命令、分组、参数…') : '') +
-    (names.length ? tlGrouped(names, tools)
-                  : '<div class="empty">还没有可用工具。配置 OPS_URL 后，Agent 就能查询真实数据。</div>') +
+    (tc.total > 3 ? searchBox('tlSearch', tlSearch, '搜索工具：名称、显示名、说明、命令、分组、参数…') : '') +
+    (tc.total ? groupsHtml('tl', d.groups || [])
+              : '<div class="empty">还没有可用工具。配置 OPS_URL 后，Agent 就能查询真实数据。</div>') +
     `    <div class="tl-note">停用、改名和改说明立刻生效，不重启服务；新增工具需要宿主机批准。</div>`;
-  applySearch($('tlPanel'), 'tlSearch', tlSearch);
+  restorePanel('tl', tlSearch);
   if (tlProposing) $('tlNewName').focus();
   if (tlEditing) {
     const box = $('tlLabel') || $('tlDesc');
@@ -1420,7 +1440,7 @@ $('tlBtn').onclick = () => {
   if (!$('tlPanel').hidden) { tlEditing = null; tlProposing = false; tlSearch = ''; loadTools(); }
 };
 $('tlPanel').addEventListener('input', e => {
-  if (e.target.id === 'tlSearch') { tlSearch = e.target.value; applySearch($('tlPanel'), 'tlSearch', tlSearch); }
+  if (e.target.id === 'tlSearch') { tlSearch = e.target.value; onSearchInput('tl', tlSearch); }
 });
 document.addEventListener('click', e => {
   if (!e.target.closest('.tl-wrap')) $('tlPanel').hidden = true;
@@ -1633,16 +1653,8 @@ $('modelPick').addEventListener('change', e => {
   paintModels([...e.target.options].map(o => o.value).filter(x => x !== CUSTOM));
 });
 
-/* 顶栏徽标与面板标题共用同一套口径，避免两处数字对不上：
+/* 顶栏徽标与面板标题共用服务端算好的同一套口径（live / count）：
    工具「可用」= 已启用且本机能运行；SOP「生效」= 已启用且引用的工具都可用。 */
-const countTools = tools => {
-  const all = Object.values(tools || {});
-  return {live: all.filter(t => t.enabled && t.runnable).length, total: all.length};
-};
-const countSkills = list => ({
-  live: (list || []).filter(p => p.enabled && !(p.missing_tools || []).length).length,
-  total: (list || []).length,
-});
 function setBadge(id, c, what) {
   const b = $(id);
   b.textContent = c.total ? `${c.live}/${c.total}` : '';
@@ -1653,8 +1665,8 @@ async function refreshBadges() {
   try {
     const [t, p] = await Promise.all([fetch('/api/tools').then(r => r.json()),
                                       fetch('/api/playbooks').then(r => r.json())]);
-    setBadge('tlBadge', countTools(t.tools), '可用');
-    setBadge('pbBadge', countSkills(p.playbooks), '生效');
+    setBadge('tlBadge', {live: t.live || 0, total: t.count || 0}, '可用');
+    setBadge('pbBadge', {live: p.live || 0, total: p.count || 0}, '生效');
   } catch (_) { /* 徽标只是提示，失败不影响使用 */ }
 }
 /* 面板开着时，对应按钮高亮。 */

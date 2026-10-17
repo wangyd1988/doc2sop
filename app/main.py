@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
-from app import conversations, jobs, models, playbooks
+from app import catalog, conversations, jobs, models, playbooks
 from app.agent import loop as agent_loop
 from app.agent import ops_client, web_search
 from app.agent.extract import extract as extract_playbooks
@@ -254,14 +254,45 @@ class PlaybookBody(BaseModel):
 
 
 @app.get("/api/playbooks")
-def list_playbooks():
+def list_playbooks(q: str = "", source: str = "", offset: int = 0, limit: int = catalog.PAGE,
+                   everything: bool = False):
+    """SOP 面板数据：分组（来源文档）+ 一页条目。
+
+    默认只回分组；带 source 回该来源的一页；带 q 回搜索结果的一页。`everything=1` 回全部（编辑器等少量场景）。
+    """
     tools = usable_tools()
-    items = playbooks.list_all()
+    offset, limit = catalog.clamp(offset, limit)
+    if everything:
+        items, total = playbooks.list_all(), None
+    else:
+        items, total = playbooks.search(q, source, offset, limit)
     for item in items:
         # 工具被下线后，依赖它的 SOP 要在界面上标出来，而不是静默失效。
         item["missing_tools"] = sorted({s["tool"] for s in item["steps"]
                                         if s["tool"] not in tools})
-    return {"playbooks": items, "tools": tools}
+    groups = playbooks.sources()
+    # 分组计数里的「生效」要扣掉引用了不可用工具的；这需要看步骤，只对启用的算一次
+    live_by_source = {}
+    for p in playbooks.list_all(only_enabled=True):
+        if all(s["tool"] in tools for s in p["steps"]):
+            key = p["source"] or "手工创建"
+            live_by_source[key] = live_by_source.get(key, 0) + 1
+    for g in groups:
+        g["live"] = live_by_source.get(g["name"], 0)
+    count = sum(g["total"] for g in groups)
+    return {"playbooks": items, "tools": tools, "groups": groups,
+            "total": count if total is None else total, "offset": offset, "limit": limit,
+            "count": count, "live": sum(live_by_source.values())}
+
+
+@app.get("/api/playbooks/{playbook_id}")
+def get_playbook(playbook_id: str):
+    item = playbooks.get(playbook_id)
+    if not item:
+        raise HTTPException(404, "SOP 不存在")
+    tools = usable_tools()
+    item["missing_tools"] = sorted({s["tool"] for s in item["steps"] if s["tool"] not in tools})
+    return item
 
 
 @app.post("/api/playbooks")
@@ -356,9 +387,11 @@ class ToolProposal(BaseModel):
 
 
 @app.get("/api/tools")
-def tools_overview():
+def tools_overview(q: str = "", group: str = "", offset: int = 0, limit: int = catalog.PAGE):
+    """工具面板数据：分组 + 一页条目。默认只回分组；带 group 或 q 才回条目。"""
     detail = ops_client.describe_tools()
-    return {"tools": detail.get("tools", {}), "pending": detail.get("pending", 0),
+    page = catalog.page_tools(detail.get("tools", {}), q, group, offset, limit)
+    return {**page, "pending": detail.get("pending", 0),
             "error": detail.get("error", ""), "agent_mode": AGENT_MODE}
 
 
