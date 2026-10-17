@@ -1129,7 +1129,8 @@ const LAZY = {
        rows: d => (d.playbooks || []).map(pbRow).join(''),
        count: d => (d.playbooks || []).length, label: 'SOP'},
 };
-const opened = new Set(JSON.parse(localStorage.getItem('kb-open') || '[]'));
+// 分组的展开状态只在当前页面内记住（刷新归零），不然像是缓存没清
+const opened = new Set();
 function searchBox(id, value, placeholder) {
   return `<div class="pb-search"><input type="search" id="${id}" data-search-box
             placeholder="${placeholder}" value="${esc(value)}" autocomplete="off">
@@ -1178,7 +1179,6 @@ async function loadSearch(panel, q) {
 document.addEventListener('toggle', e => {
   const g = e.target.closest?.('.grp'); if (!g) return;
   if (g.open) { opened.add(g.dataset.grp); if (LAZY[g.dataset.panel]) loadGroup(g); } else opened.delete(g.dataset.grp);
-  localStorage.setItem('kb-open', JSON.stringify([...opened]));
 }, true);
 document.addEventListener('click', async e => {
   const btn = e.target.closest('[data-more]'); if (!btn) return;
@@ -1515,6 +1515,7 @@ let tlEditing = null, tlProposing = false, tlProposeKind = 'command', tlSearch =
 let tlScripts = [], tlScriptSel = '', tlScriptDir = '';
 
 function tlCard(name, t) {
+  mCache['tl:' + name] = {name, t};   // 「用它提问」要用到参数定义
   const params = Object.entries(t.params || {});
   const editing = tlEditing === name;
   const field = 'width:100%;box-sizing:border-box;font:inherit;font-size:12.5px;padding:7px;'
@@ -1526,6 +1527,7 @@ function tlCard(name, t) {
       <span class="nm">${esc(t.label || name)}</span>
       ${t.label ? `<span class="src">${esc(name)}</span>` : ''}
       ${(t.overridden || []).length ? '<span class="src">已在页面改过</span>' : ''}
+      ${t.enabled && t.runnable ? `<button class="run" data-tluse="${esc(name)}" title="把「用这个工具查…」填进对话框">💬 用它提问</button>` : ''}
       <button data-tledit="${esc(name)}">${editing ? '收起' : '改名/说明'}</button>
       <button data-tltoggle="${esc(name)}">${t.enabled ? '停用' : '启用'}</button>
     </div>
@@ -1683,6 +1685,22 @@ $('tlPanel').addEventListener('click', async e => {
 
   const edit = pick('tledit');
   if (edit) { tlEditing = tlEditing === edit ? null : edit; return loadTools(); }
+
+  // 💬 用它提问：把「用 xx 查一下（参数：）」填进对话框，用户补上参数后发送
+  const use = pick('tluse');
+  if (use) {
+    const hit = mCache['tl:' + use];
+    const t = hit ? hit.t : null;
+    const label = t?.label || use;
+    const req = Object.entries(t?.params || {}).filter(([, p]) => p.required).map(([k, p]) => `${p.desc || k}：`);
+    const text = `用「${label}」查一下` + (req.length ? `（${req.join('；')}）` : '');
+    if (MANAGE) { location.href = '/?q=' + encodeURIComponent(text); return; }
+    $('tlPanel').hidden = true;
+    $('question').value = text; autosize(); $('question').focus();
+    const v = $('question').value; $('question').setSelectionRange(req.length ? v.length - 1 : v.length, req.length ? v.length - 1 : v.length);
+    if (req.length) toast(`这个工具需要：${req.join(' ')}。补在括号里再发送。`, '', 5000);
+    return;
+  }
 
   const toggle = pick('tltoggle');
   if (toggle) {
