@@ -48,6 +48,21 @@ class ChatTests(unittest.TestCase):
 
     # --- memory --------------------------------------------------------------
 
+    def test_overview_question_gets_the_catalogue_not_just_snippets(self):
+        captured = []
+        with patch("app.main.store.list_documents", return_value=[
+                {"source": "巡检.md", "chunks": 5, "category": "运维"}]):
+            self.ask("总结一下知识库里有哪些主要内容", captured=captured)
+        prompt = captured[0][-1][1]
+        self.assertIn("知识库目录：共 1 个文档", prompt)
+        self.assertIn("《巡检》", prompt)
+        self.assertIn("检索片段（样本）", prompt)
+
+    def test_ordinary_question_does_not_get_the_catalogue(self):
+        captured = []
+        self.ask("退款政策是什么？", captured=captured)
+        self.assertNotIn("知识库目录", captured[0][-1][1])
+
     def test_follow_up_receives_previous_turns(self):
         first = self.ask("退款政策是什么？")
         conversation_id = first[0]["conversation"]["id"]

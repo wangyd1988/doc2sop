@@ -8,6 +8,9 @@ A chunk ranked well by either makes the list; a chunk ranked well by both rises 
 The similarity shown to users (and to the model as a hint) stays the cosine
 score, so its meaning does not change with this fusion.
 """
+import re
+from pathlib import Path
+
 from langsmith import traceable
 
 from app.config import MIN_SCORE, TOP_K
@@ -120,3 +123,32 @@ def as_context(hits) -> str:
         return "（这次没有检索到相关片段）"
     return "\n\n".join(f"[{h['index']}] 来源：{h['location']}（相似度 {h['score']:.2f}）\n{h['text']}"
                        for h in hits)
+
+
+# 「知识库里都有什么」这类问题问的是全局，8 个片段答不了；要看文档目录。
+OVERVIEW = re.compile(
+    r"(知识库|资料库|文档库|库里|你)(里|中|都)?(有|包含|收录|存|放)(了)?(哪些|什么|啥|多少)"
+    r"|(总结|概括|介绍|梳理|盘点|列)(一下)?(知识库|所有文档|全部文档|这些文档|资料)"
+    r"|有哪些(文档|资料|文件|主题|内容|分类)"
+    r"|(知识库|文档)(的)?(目录|清单|分类|概览|结构)")
+
+
+def is_overview(question: str) -> bool:
+    return bool(OVERVIEW.search(question or ""))
+
+
+def catalog_context() -> str:
+    """The whole catalogue, grouped by category, for overview questions."""
+    docs = store.list_documents()
+    if not docs:
+        return "知识库目前是空的，还没有任何文档。"
+    groups = {}
+    for d in docs:
+        groups.setdefault(d["category"], []).append(d)
+    lines = [f"知识库目录：共 {len(docs)} 个文档、{sum(d['chunks'] for d in docs)} 个片段，分 {len(groups)} 类。"]
+    for category, items in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        names = "、".join(f"《{Path(d['source']).stem}》" for d in items)
+        lines.append(f"- {category}（{len(items)} 篇）：{names}")
+    lines.append("\n请按分类概述知识库涵盖的主题，点出几个代表性文档；这是目录信息，不要用 [编号] 引用。"
+                 "下面的检索片段只是随机样本，不能代表全库，不要据此说「知识库里没有某内容」。")
+    return "\n".join(lines)

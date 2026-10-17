@@ -86,6 +86,26 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn("[2] 来源：b.txt", context)
         self.assertIn("没有检索到", retrieval.as_context([]))
 
+    def test_overview_questions_are_recognised(self):
+        for q in ["总结一下知识库里有哪些主要内容", "知识库里都有什么", "有哪些文档", "你有什么资料",
+                  "介绍一下知识库", "知识库的分类"]:
+            self.assertTrue(retrieval.is_overview(q), q)
+        for q in ["容器内存上限怎么设", "年假有几天", "mem_limit 是什么", "总结一下这篇文档的要点"]:
+            self.assertFalse(retrieval.is_overview(q), q)
+
+    def test_catalog_groups_documents_by_category(self):
+        docs = [{"source": "巡检.md", "chunks": 5, "category": "运维"},
+                {"source": "休假.md", "chunks": 3, "category": "制度"},
+                {"source": "排障.pdf", "chunks": 9, "category": "运维"}]
+        with patch.object(retrieval.store, "list_documents", return_value=docs):
+            text = retrieval.catalog_context()
+        self.assertIn("共 3 个文档、17 个片段，分 2 类", text)
+        self.assertIn("运维（2 篇）：《巡检》、《排障》", text)
+        self.assertIn("制度（1 篇）：《休假》", text)
+        self.assertIn("不要据此说", text)
+        with patch.object(retrieval.store, "list_documents", return_value=[]):
+            self.assertIn("空的", retrieval.catalog_context())
+
 
 class LexicalTests(unittest.TestCase):
     def test_tokenizer_keeps_identifiers_whole_and_splits_cjk_into_bigrams(self):

@@ -24,7 +24,7 @@ from app.rag import store
 from app.rag.answer import build_messages, rewrite_question, stream_answer, suggest_category
 from app.rag.chunking import chunk_pages
 from app.rag.embedding import EmbeddingError, embed_documents
-from app.rag.retrieval import as_context, retrieve
+from app.rag.retrieval import as_context, catalog_context, is_overview, retrieve
 from app.tracing import finish_root_run, start_root_run, traced_under
 
 FILES_DIR.mkdir(parents=True, exist_ok=True)
@@ -490,6 +490,9 @@ def ask(payload: Question):
                              ensure_ascii=False) + "\n"
             yield json.dumps({"sources": hits}, ensure_ascii=False) + "\n"
             context = as_context(hits)
+            if is_overview(question):
+                # 全局问题：把文档目录放在片段前面，模型按目录答，片段只是样本
+                context = catalog_context() + "\n\n检索片段（样本）：\n" + context
 
             if use_agent:
                 # The agent decides for itself whether the live environment is
