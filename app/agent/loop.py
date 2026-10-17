@@ -330,7 +330,8 @@ def _build_graph(bound, system, current_prompt, by_name, allow_web):
     return graph.compile(checkpointer=memory())
 
 
-def run(question: str, context: str, history, allow_web: bool = False, thread_id: str | None = None):
+def run(question: str, context: str, history, allow_web: bool = False,
+        thread_id: str | None = None, model: str | None = None):
     """跑一轮对话，边跑边产出事件。
 
     产出 (kind, payload)：
@@ -349,8 +350,8 @@ def run(question: str, context: str, history, allow_web: bool = False, thread_id
     bindable = tools + ([_web_tool()] if allow_web else [])
     if not bindable:
         log.info("no tools available, agent answers from knowledge base only")
-    model = chat_model(timeout=120, max_retries=1)
-    bound = model.bind_tools(bindable) if bindable else model
+    client = chat_model(timeout=120, max_retries=1, **({"model": model} if model else {}))
+    bound = client.bind_tools(bindable) if bindable else client
 
     system = AGENT_PROMPT + (WEB_RULES if allow_web else NO_WEB_RULES)
     # SOP 只在确实有工具可用时注入，否则模型会照着 SOP 去调不存在的工具。

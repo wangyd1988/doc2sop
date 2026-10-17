@@ -1,7 +1,7 @@
 """Prompts, query rewriting and answer generation."""
 from langsmith import traceable
 
-from app.clients import llm, rewriter
+from app.clients import chat_model, llm, rewriter
 from app.config import BOT_NAME, CATEGORY_MAX, DEFAULT_CATEGORY, HISTORY_CHARS, log, why
 
 SYSTEM_PROMPT = f"""你是「{BOT_NAME}」，一位耐心、友好的知识库客服助手，用“您”称呼用户。
@@ -73,8 +73,10 @@ def build_messages(question: str, context: str, history):
     return messages
 
 
-def stream_answer(messages):
-    """Yield answer fragments as they arrive."""
-    for chunk in llm.stream(messages):
+def stream_answer(messages, model: str | None = None):
+    """Yield answer fragments as they arrive. `model` overrides the default chat model."""
+    client = llm if not model or model == llm.model_name else chat_model(
+        model=model, timeout=120, max_retries=1)
+    for chunk in client.stream(messages):
         if chunk.content:
             yield chunk.content

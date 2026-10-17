@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
-from app import conversations, playbooks
+from app import conversations, models, playbooks
 from app.agent import loop as agent_loop
 from app.agent import ops_client, web_search
 from app.agent.extract import extract as extract_playbooks
@@ -404,11 +404,19 @@ def delete_conversation(conversation_id: str):
 
 # --- Ask ---------------------------------------------------------------------
 
+@app.get("/api/models")
+def list_models():
+    """Chat models this deployment's key may call, default first."""
+    return {"models": models.available(), "default": CHAT_MODEL}
+
+
 class Question(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     conversation_id: str | None = Field(default=None, max_length=64)
     # 页面上的「🌐 联网」开关；服务端没配置搜索时这个值不起作用。
     web: bool = True
+    # 页面选的模型；必须在网关返回的可用列表里，留空用默认。
+    model: str | None = Field(default=None, max_length=120)
 
 
 @app.post("/api/ask")
@@ -417,6 +425,10 @@ def ask(payload: Question):
     conversation_id = payload.conversation_id
     if conversation_id and not conversations.exists(conversation_id):
         raise HTTPException(404, "对话不存在，请新建对话")
+    try:
+        model_name = models.resolve(payload.model)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
     history = conversations.recent_history(conversation_id) if conversation_id else []
     # Create the conversation first so the trace carries its real id from the very first turn.
@@ -446,7 +458,8 @@ def ask(payload: Question):
         """NDJSON: conversation, sources, tool activity, then answer fragments."""
         answer, failure, tool_calls, web_hits = "", None, [], []
         try:
-            yield json.dumps({"conversation": conversation}, ensure_ascii=False) + "\n"
+            yield json.dumps({"conversation": conversation, "model": model_name},
+                             ensure_ascii=False) + "\n"
             yield json.dumps({"sources": hits}, ensure_ascii=False) + "\n"
             context = as_context(hits)
 
@@ -457,7 +470,8 @@ def ask(payload: Question):
                     with traced_under(root):
                         for kind, payload in agent_loop.run(question, context, history,
                                                             allow_web=allow_web,
-                                                            thread_id=conversation_id):
+                                                            thread_id=conversation_id,
+                                                            model=model_name):
                             if kind == "delta":
                                 answer += payload
                             elif kind == "error":
@@ -475,7 +489,7 @@ def ask(payload: Question):
                 try:
                     # Re-attach to the root run: this body runs after the response returned.
                     with traced_under(root):
-                        for fragment in stream_answer(messages):
+                        for fragment in stream_answer(messages, model=model_name):
                             answer += fragment
                             yield json.dumps({"delta": fragment}, ensure_ascii=False) + "\n"
                 except Exception as exc:
@@ -483,10 +497,12 @@ def ask(payload: Question):
                     yield json.dumps({"error": failure}, ensure_ascii=False) + "\n"
 
             if answer.strip():
-                conversations.add_message(conversation_id, "assistant", answer, hits + web_hits)
+                conversations.add_message(conversation_id, "assistant", answer, hits + web_hits,
+                                          model=model_name)
         finally:
             finish_root_run(root, outputs={"answer": answer, "search_query": search_query,
                                            "sources": len(hits), "web_sources": len(web_hits),
+                                           "model": model_name,
                                            "tools_used": [c["tool"] for c in tool_calls]},
                             error=failure)
 

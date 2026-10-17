@@ -7,8 +7,8 @@ from fastapi.testclient import TestClient
 
 from tests.support import FakeReply
 
-from app import clients, conversations, tracing
-from app.config import WEB_PASSWORD, WEB_USER
+from app import clients, conversations, models, tracing
+from app.config import CHAT_MODEL, WEB_PASSWORD, WEB_USER
 from app.main import app
 from app.rag import answer
 
@@ -103,6 +103,59 @@ class ChatTests(unittest.TestCase):
     def test_requires_authentication(self):
         self.assertEqual(self.client.get("/api/conversations").status_code, 401)
         self.assertEqual(self.client.post("/api/ask", json={"question": "你好"}).status_code, 401)
+
+    # --- model selection -----------------------------------------------------
+
+    def test_model_list_falls_back_to_default_when_gateway_is_down(self):
+        def down():
+            raise OSError("connection refused")
+
+        with patch.object(models, "_fetch", down):
+            models._cache.update(at=0.0, models=[])
+            data = self.client.get("/api/models", auth=self.auth).json()
+        self.assertEqual(data["models"], [CHAT_MODEL])
+        self.assertEqual(data["default"], CHAT_MODEL)
+
+    def test_model_list_comes_from_the_gateway_and_hides_non_chat_models(self):
+        with patch.object(models, "_fetch", return_value=["kb-embedding", "b-model", "a-model", CHAT_MODEL]):
+            models._cache.update(at=0.0, models=[])
+            data = self.client.get("/api/models", auth=self.auth).json()
+        self.assertEqual(data["models"], [CHAT_MODEL, "a-model", "b-model"])
+
+    def test_unknown_model_is_refused_before_anything_runs(self):
+        with patch.object(models, "_fetch", return_value=[CHAT_MODEL]), \
+             patch("app.main.retrieve") as retrieve:
+            response = self.client.post("/api/ask", json={"question": "你好", "model": "nope"},
+                                        auth=self.auth)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("nope", response.json()["detail"])
+        retrieve.assert_not_called()
+        self.assertEqual(conversations.list_conversations(), [])
+
+    def test_chosen_model_is_used_and_recorded(self):
+        used = []
+
+        def fake_stream(_self, messages, **kwargs):
+            used.append(_self.model_name)
+            return [FakeChunk("回答")]
+
+        with patch.object(models, "_fetch", return_value=[CHAT_MODEL, "other-model"]), \
+             patch("app.main.retrieve", return_value=self.hits), \
+             patch.object(type(clients.llm), "stream", fake_stream), \
+             patch("app.main.rewrite_question", side_effect=lambda q, h: q):
+            models._cache.update(at=0.0, models=[])
+            response = self.client.post("/api/ask", json={"question": "你好", "model": "other-model"},
+                                        auth=self.auth)
+        events = [json.loads(line) for line in response.text.splitlines() if line]
+        self.assertEqual(used, ["other-model"])
+        self.assertEqual(events[0]["model"], "other-model")
+        conversation_id = events[0]["conversation"]["id"]
+        replay = self.client.get(f"/api/conversations/{conversation_id}", auth=self.auth).json()
+        self.assertEqual(replay["messages"][-1]["model"], "other-model")
+
+    def test_default_model_when_none_chosen(self):
+        events = self.ask("你好")
+        self.assertEqual(events[0]["model"], CHAT_MODEL)
 
     # --- query rewriting -----------------------------------------------------
 

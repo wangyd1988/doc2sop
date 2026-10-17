@@ -86,11 +86,20 @@ header { display: flex; align-items: center; gap: 6px; padding: 10px 18px; borde
          position: relative; z-index: 30; }
 .head-title { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; }
 .head-title .t { font-weight: 650; font-size: 15px; letter-spacing: .2px; white-space: nowrap; }
-.model-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
-              background: var(--panel-2); border: 1px solid var(--border); padding: 3px 10px; border-radius: 999px;
-              max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-chip::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex-shrink: 0;
-                      box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
+.model-chip { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12px; color: var(--muted);
+              background: var(--panel-2); border: 1px solid var(--border); padding: 3px 26px 3px 22px; border-radius: 999px;
+              max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+              appearance: none; -webkit-appearance: none; outline: none; position: relative;
+              background-image:
+                radial-gradient(circle, var(--ok) 2.6px, color-mix(in srgb, var(--ok) 20%, transparent) 2.7px, transparent 5px),
+                linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+              background-position: 6px center, calc(100% - 13px) 55%, calc(100% - 9px) 55%;
+              background-size: 12px 12px, 4px 4px, 4px 4px; background-repeat: no-repeat; }
+.model-chip:hover { color: var(--text); border-color: var(--accent); }
+.model-chip option { font-size: 13px; color: var(--text); background: var(--panel); }
+.tools .via { margin-left: auto; font-size: 11.5px; color: var(--muted); align-self: center; padding-right: 4px;
+              max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9;
              stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
 .nav-btn { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 11px; border-radius: 10px;
@@ -345,7 +354,7 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
       <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
     <div class="head-title">
       <span class="t">知识库问答</span>
-      <span class="model-chip" id="modelInfo" hidden></span>
+      <select class="model-chip" id="modelPick" title="选择回答用的模型" hidden></select>
     </div>
     <button class="new-btn" id="newBtn" title="开始新对话">
       <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="lbl">新对话</span></button>
@@ -481,9 +490,7 @@ async function loadDocs() {
   }
   $('catList').innerHTML = (d.categories || []).map(c => `<option value="${esc(c)}">`).join('');
   const tools = d.tools || [];
-  $('modelInfo').textContent = d.chat_model;
-  $('modelInfo').title = '当前对话模型：' + d.chat_model;
-  $('modelInfo').hidden = !d.chat_model;
+  loadModels(d.chat_model);
   refreshBadges();
   $('webBtn').hidden = !d.web_search;
   paintWeb();
@@ -668,7 +675,8 @@ function addTools(bot, text, question, sources) {
   bot._web = web;
   bot.insertAdjacentHTML('beforeend',
     `<div class="tools"><button data-copy>⧉ 复制</button><button data-retry="${esc(question)}">↻ 重新回答</button>${
-      web.length && text.trim() ? '<button data-savenote title="确认这段网络答案可信后，存为知识库文档，下次直接从知识库回答">📥 存入知识库</button>' : ''}</div>`);
+      web.length && text.trim() ? '<button data-savenote title="确认这段网络答案可信后，存为知识库文档，下次直接从知识库回答">📥 存入知识库</button>' : ''}${
+      bot.dataset.model ? `<span class="via" title="回答这条用的模型">${esc(bot.dataset.model)}</span>` : ''}</div>`);
 }
 
 /* 把联网得到的答案存进知识库：先给出可编辑的预览，人确认后才入库。 */
@@ -747,6 +755,7 @@ async function openConv(id) {
   for (const m of d.messages) {
     if (m.role === 'user') { addUser(m.content); lastQuestion = m.content; continue; }
     const bot = addBot(`<div class="answer">${md(m.content)}</div>`);
+    if (m.model) bot.dataset.model = m.model;
     bot.querySelector('.sources').innerHTML = sourcesHtml(m.sources);
     arrangeSources(bot, m.content, true);
     addTools(bot, m.content, lastQuestion, m.sources);
@@ -1282,7 +1291,8 @@ async function ask() {
   const paint = () => { pending = false; if (finished) return; const stick = nearBottom(); ans.innerHTML = md(text); ans.classList.add('cursor'); if (stick) toBottom(); };
   try {
     const r = await fetch('/api/ask', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                       body: JSON.stringify({question: q, conversation_id: convId, web: webOn})});
+                                       body: JSON.stringify({question: q, conversation_id: convId, web: webOn,
+                                                             model: modelPick || undefined})});
     if (!r.ok) { const d = await r.json().catch(() => ({detail: r.status})); throw new Error(d.detail); }
     const reader = r.body.getReader(), dec = new TextDecoder(); let buf = '';
     while (true) {
@@ -1292,6 +1302,7 @@ async function ask() {
         const msg = JSON.parse(buf.slice(0, nl)); buf = buf.slice(nl + 1);
         if (msg.conversation) {
           convId = msg.conversation.id;
+          if (msg.model) bot.dataset.model = msg.model;
         } else if (msg.sources) {
           card.querySelector('.status').innerHTML = msg.sources.length ? `<span class="spin"></span>检索到 ${msg.sources.length} 个候选片段，正在判断是否相关…` : '';
           bot.querySelector('.sources').innerHTML = sourcesHtml(msg.sources);
@@ -1350,6 +1361,39 @@ async function ask() {
 }
 
 function autosize() { const t = $('question'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 180) + 'px'; }
+
+/* 模型选择：列表来自网关（这把 key 能用的模型），选择记在浏览器里。
+   也可以手动输入模型名，但最终能不能用由网关决定——页面改不了网关地址和 key。 */
+const CUSTOM = '__custom__';
+let modelPick = localStorage.getItem('kb-model') || '';
+let defaultModel = '';
+function paintModels(list) {
+  const sel = $('modelPick');
+  const names = [...new Set([...list, modelPick].filter(Boolean))];
+  sel.innerHTML = names.map(m =>
+    `<option value="${esc(m)}" ${m === (modelPick || defaultModel) ? 'selected' : ''}>${esc(m)}${m === defaultModel ? '（默认）' : ''}</option>`
+  ).join('') + `<option value="${CUSTOM}">手动输入模型名…</option>`;
+  sel.hidden = !names.length;
+  sel.title = '回答用的模型：' + (modelPick || defaultModel) + '\n列表来自网关，是这把 key 能调用的模型';
+}
+async function loadModels(fallback) {
+  defaultModel = fallback || '';
+  try {
+    const d = await (await fetch('/api/models')).json();
+    defaultModel = d.default || defaultModel;
+    paintModels(d.models || []);
+  } catch (_) { paintModels(defaultModel ? [defaultModel] : []); }
+}
+$('modelPick').addEventListener('change', e => {
+  let v = e.target.value;
+  if (v === CUSTOM) {
+    v = (prompt('输入模型名（必须是网关上这把 key 有权调用的模型）：', modelPick || defaultModel) || '').trim();
+    if (!v) { paintModels([...e.target.options].map(o => o.value).filter(x => x !== CUSTOM)); return; }
+  }
+  modelPick = v === defaultModel ? '' : v;
+  if (modelPick) localStorage.setItem('kb-model', modelPick); else localStorage.removeItem('kb-model');
+  paintModels([...e.target.options].map(o => o.value).filter(x => x !== CUSTOM));
+});
 
 /* 顶栏徽标与面板标题共用同一套口径，避免两处数字对不上：
    工具「可用」= 已启用且本机能运行；SOP「生效」= 已启用且引用的工具都可用。 */
