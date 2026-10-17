@@ -61,6 +61,12 @@ def index():
     return (WEB_DIR / "index.html").read_text(encoding="utf-8")
 
 
+@app.get("/manage", response_class=HTMLResponse)
+def manage_page():
+    """独立管理页：同一个前端，按路径切换到全屏的 工具 / SOP / 文档 管理布局。"""
+    return (WEB_DIR / "index.html").read_text(encoding="utf-8")
+
+
 # --- Documents ---------------------------------------------------------------
 
 def usable_tools() -> dict:
