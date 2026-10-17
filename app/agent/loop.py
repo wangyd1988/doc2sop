@@ -302,6 +302,29 @@ def _model_view(messages, current_prompt):
 
 # --- Graph -------------------------------------------------------------------
 
+def _call(bound, view, emit):
+    """Invoke the model, streaming answer text as it arrives.
+
+    Returns (AIMessage, streamed). Text chunks are pushed out immediately so the
+    page shows the answer growing instead of a ten-second blank followed by the
+    whole thing at once. Tool-call chunks are accumulated silently. Models or
+    test doubles without `stream` fall back to a single invoke.
+    """
+    if not hasattr(bound, "stream"):
+        return bound.invoke(view), False
+    acc, streamed = None, False
+    for chunk in bound.stream(view):
+        acc = chunk if acc is None else acc + chunk
+        text = chunk.content if isinstance(chunk.content, str) else ""
+        if text and not getattr(chunk, "tool_call_chunks", None):
+            emit(("delta", text))
+            streamed = True
+    if acc is None:
+        return AIMessage(content=""), False
+    content = acc.content if isinstance(acc.content, str) else ""
+    return AIMessage(content=content, tool_calls=list(acc.tool_calls or []), id=acc.id), streamed
+
+
 def _build_graph(bound, system, current_prompt, by_name, allow_web):
     """Compile a model ⇄ tools loop for this turn.
 
@@ -314,12 +337,12 @@ def _build_graph(bound, system, current_prompt, by_name, allow_web):
         view = [SystemMessage(content=system)] + _model_view(state["messages"], current_prompt)
         if state["rounds"] >= MAX_ROUNDS:
             view.append(HumanMessage(content="已达到工具调用次数上限，请基于目前拿到的信息给出结论和建议。"))
-            reply = bound.invoke(view)
+            reply, streamed = _call(bound, view, emit)
             # 收口这一轮不再执行工具；去掉工具调用，免得记忆里留下没有结果的调用。
             reply = AIMessage(content=reply.content or "")
         else:
-            reply = bound.invoke(view)
-        if not reply.tool_calls and reply.content:
+            reply, streamed = _call(bound, view, emit)
+        if not reply.tool_calls and reply.content and not streamed:
             emit(("delta", reply.content))
         return {"messages": [reply]}
 

@@ -438,6 +438,48 @@ class AgentLoopTests(unittest.TestCase):
         events = self.run_agent([([], "仅凭知识库回答")], [])
         self.assertEqual([kind for kind, _ in events], ["delta"])
 
+    def test_answer_text_is_streamed_as_it_arrives(self):
+        """带 stream 的模型：文字分片逐个吐出，工具调用分片静默累积。"""
+        from langchain_core.messages import AIMessageChunk
+
+        class Streaming:
+            def bind_tools(_self, tools):
+                return _self
+
+            def stream(_self, messages):
+                for part in ("结论：", "内存", "正常"):
+                    yield AIMessageChunk(content=part)
+
+            def invoke(_self, messages):
+                raise AssertionError("should stream, not invoke")
+
+        with patch.object(agent_loop, "build_tools", return_value=[FakeTool("x")]), \
+             patch.object(agent_loop, "chat_model", return_value=Streaming()):
+            events = list(agent_loop.run("问题", "片段", []))
+        self.assertEqual([p for k, p in events if k == "delta"], ["结论：", "内存", "正常"])
+
+    def test_streamed_tool_call_is_assembled_and_executed(self):
+        from langchain_core.messages import AIMessageChunk
+        tool = FakeTool("container_stats")
+        turns = iter([
+            [AIMessageChunk(content="", tool_call_chunks=[{"name": "container_stats", "args": "", "id": "c1", "index": 0}]),
+             AIMessageChunk(content="", tool_call_chunks=[{"name": None, "args": "{}", "id": None, "index": 0}])],
+            [AIMessageChunk(content="好的")],
+        ])
+
+        class Streaming:
+            def bind_tools(_self, tools):
+                return _self
+
+            def stream(_self, messages):
+                yield from next(turns)
+
+        with patch.object(agent_loop, "build_tools", return_value=[tool]), \
+             patch.object(agent_loop, "chat_model", return_value=Streaming()):
+            events = list(agent_loop.run("问题", "片段", []))
+        self.assertEqual([k for k, _ in events], ["tool_call", "tool_result", "delta"])
+        self.assertEqual(tool.calls, [{}])
+
     def test_tool_result_preview_is_truncated(self):
         tool = FakeTool("container_logs", output="行\n" * 5000)
         events = self.run_agent(
