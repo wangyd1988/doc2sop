@@ -497,7 +497,7 @@ body.manage.settings #mgroups, body.manage.settings #mlist, body.manage.settings
 .onboard { max-width: 620px; margin: 0 auto 18px; text-align: left; display: grid; gap: 8px;
            grid-template-columns: repeat(3, 1fr); }
 .onboard .st { border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: var(--panel); font-size: 13px; }
-.onboard .st.done { opacity: .6; }
+.onboard .st.done { opacity: .75; }
 .onboard .st .k { display: flex; align-items: center; gap: 6px; font-weight: 600; margin-bottom: 4px; }
 .onboard .st .k i { font-style: normal; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff;
                      display: inline-flex; align-items: center; justify-content: center; font-size: 12px; }
@@ -903,18 +903,18 @@ function welcome() {
     <div class="st"><div class="k"><i>!</i>先配置模型</div>
       <p>还没有填对话模型和向量模型的地址与 key。可以用一个网关（LiteLLM / OneAPI），也可以直接填两个厂商的 OpenAI 兼容地址——不需要网关。</p>
       <a href="/manage#settings"><button>去「管理 → 模型设置」</button></a></div></div>`
-  : (!o.docs || !o.sops) ? `<div class="onboard">
+  : `<div class="onboard">
     <div class="st ${o.docs ? 'done' : ''}"><div class="k"><i>${o.docs ? '✓' : '1'}</i>上传文档</div>
-      <p>${o.docs ? `已有 ${o.docs} 个文档。` : '把制度、手册、巡检规范拖到左侧。没有现成的？仓库 <code>sample_kb/</code> 里有三篇示例。'}</p>
+      <p>${o.docs ? `已有 ${o.docs} 个文档，继续往左侧拖就行。` : '把制度、手册、巡检规范拖到左侧。没有现成的？仓库 <code>sample_kb/</code> 里有三篇示例。'}</p>
       ${o.docs ? '' : '<button data-go="upload">选择文件</button>'}</div>
     <div class="st ${o.sops ? 'done' : ''}"><div class="k"><i>${o.sops ? '✓' : '2'}</i>抽取 SOP</div>
-      <p>${o.sops ? `已有 ${o.sops} 个 SOP 生效。` : o.tools
+      <p>${o.sops ? `已有 ${o.sops} 个 SOP 生效，${o.tools} 个工具可用。` : o.tools
           ? '顶栏「📋 SOP → 从文档抽取」，让它把文档里按步骤查看、核对的做法整理成流程，确认后启用。'
           : '当前没有可用工具，SOP 无法生效；先在宿主机配置 OPS_URL 和工具定义。'}</p>
       ${(o.docs && !o.sops && o.tools) ? '<button data-go="sop">去抽取</button>' : ''}</div>
     <div class="st"><div class="k"><i>3</i>问一句</div>
       <p>「帮我做一次日常巡检」「国庆想连休到 11 号要请几天」——它会按 SOP 调工具、对照文档给结论。只问规则时不调工具。</p></div>
-  </div>` : '';
+  </div>`;
   $('thread').innerHTML = `<div class="welcome"><div class="logo">📚</div><h2>您好，我是${esc(botName)}</h2>
     <p>📄 读您上传的文档 · 📋 照文档里的做法 · 🔧 用批准过的工具查真实数据</p>${guide}
     <div class="chips">${EXAMPLES.map(q => `<button class="chip">${esc(q)}</button>`).join('')}</div></div>`;
