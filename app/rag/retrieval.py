@@ -157,6 +157,5 @@ def catalog_context() -> str:
     for category, items in sorted(groups.items(), key=lambda kv: -len(kv[1])):
         names = "、".join(f"《{Path(d['source']).stem}》" for d in items)
         lines.append(f"- {category}（{len(items)} 篇）：{names}")
-    lines.append("\n请按分类概述知识库涵盖的主题，点出几个代表性文档；这是目录信息，不要用 [编号] 引用。"
-                 "下面的检索片段只是随机样本，不能代表全库，不要据此说「知识库里没有某内容」。")
+    lines.append("\n请按分类概述知识库涵盖的主题，点出几个代表性文档；这是目录信息，不要用 [编号] 引用，也不要调用工具。")
     return "\n".join(lines)

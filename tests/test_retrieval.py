@@ -102,7 +102,7 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn("共 3 个文档、17 个片段，分 2 类", text)
         self.assertIn("运维（2 篇）：《巡检》、《排障》", text)
         self.assertIn("制度（1 篇）：《休假》", text)
-        self.assertIn("不要据此说", text)
+        self.assertIn("不要调用工具", text)
         with patch.object(retrieval.store, "list_documents", return_value=[]):
             self.assertIn("空的", retrieval.catalog_context())
 

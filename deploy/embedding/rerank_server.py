@@ -28,7 +28,7 @@ MAX_BODY_BYTES = 256 * 1024
 MAX_DOCS = 64
 # 交叉编码器的耗时基本与 token 数成正比。判断「这段和问题相关不相关」看前 300 来个 token 足够，
 # 全文 512 要慢一倍。可用环境变量调。
-MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "320"))
+MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "256"))
 
 logging.basicConfig(level=logging.INFO)
 

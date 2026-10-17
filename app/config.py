@@ -58,7 +58,7 @@ MIN_SCORE = float(os.environ.get("MIN_SCORE", "0.25"))
 # A base-size cross-encoder costs ~0.3 s per passage on 2 vCPUs, so only the top
 # few fused candidates are rescored; the rest keep their fused order.
 RERANK_MODEL = os.environ.get("RERANK_MODEL", "").strip()
-RERANK_CANDIDATES = int(os.environ.get("RERANK_CANDIDATES", "10"))
+RERANK_CANDIDATES = int(os.environ.get("RERANK_CANDIDATES", "8"))
 RERANK_TIMEOUT = float(os.environ.get("RERANK_TIMEOUT", "10"))
 HISTORY_MESSAGES = int(os.environ.get("HISTORY_MESSAGES", "8"))
 HISTORY_CHARS = 1200

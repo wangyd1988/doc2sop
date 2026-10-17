@@ -1012,9 +1012,14 @@ function addTools(bot, text, question, sources) {
   bot.insertAdjacentHTML('beforeend',
     `<div class="tools"><button data-copy>⧉ 复制</button><button data-retry="${esc(question)}">↻ 重新回答</button>${
       web.length && text.trim() ? '<button data-savenote title="确认这段网络答案可信后，存为知识库文档，下次直接从知识库回答">📥 存入知识库</button>' : ''}${
-      (bot.dataset.model || bot.dataset.took) ? `<span class="via" title="${bot.dataset.first ? '首字 ' + bot.dataset.first + ' 秒 · ' : ''}总耗时 ${bot.dataset.took || '?'} 秒 · 模型 ${esc(bot.dataset.model || '')}">${
-        bot.dataset.took ? `<b>${bot.dataset.took}s</b>${bot.dataset.first ? `<span style="opacity:.7">（首字 ${bot.dataset.first}s）</span>` : ''}` : ''}${
-        bot.dataset.took && bot.dataset.model ? '<span class="dot">·</span>' : ''}${esc(bot.dataset.model || '')}</span>` : ''}</div>`);
+      (bot.dataset.model || bot.dataset.took) ? (() => {
+        const d = bot.dataset, parts = [];
+        if (d.retr) parts.push(`检索 ${d.retr}s`);
+        if (d.first) parts.push(`首字 ${d.first}s`);
+        const tip = `检索 = 向量化 + 关键词 + 重排，在模型开始前；首字 = 第一个字出现；总 = 到回答结束 · 模型 ${d.model || ''}`;
+        return `<span class="via" title="${esc(tip)}">${d.took ? `<b>${d.took}s</b>${parts.length ? `<span style="opacity:.7">（${parts.join(' · ')}）</span>` : ''}` : ''}${
+          d.took && d.model ? '<span class="dot">·</span>' : ''}${esc(d.model || '')}</span>`;
+      })() : ''}</div>`);
 }
 
 /* 把联网得到的答案存进知识库：先给出可编辑的预览，人确认后才入库。 */
@@ -1814,6 +1819,7 @@ async function ask() {
           convId = msg.conversation.id;
           if (msg.model) bot.dataset.model = msg.model;
         } else if (msg.sources) {
+          bot.dataset.retr = ((performance.now() - t0) / 1000).toFixed(1);
           card.querySelector('.status').innerHTML = msg.sources.length ? `<span class="spin"></span>检索到 ${msg.sources.length} 个候选片段，正在判断是否相关…` : '';
           bot.querySelector('.sources').innerHTML = sourcesHtml(msg.sources);
           arrangeSources(bot, '', false);

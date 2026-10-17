@@ -609,10 +609,15 @@ def ask(payload: Question):
     conversation_id = conversation["id"]
 
     root = start_root_run(question, conversation_id)
+    overview = is_overview(question)
     try:
         with traced_under(root):
-            search_query = rewrite_question(question, history)
-            hits = retrieve(search_query)
+            if overview:
+                # 「知识库里有什么」答案来自文档目录，不用向量化和重排，省 3～4 秒
+                search_query, hits = question, []
+            else:
+                search_query = rewrite_question(question, history)
+                hits = retrieve(search_query)
     except Exception as exc:
         finish_root_run(root, error=f"检索失败：{exc.__class__.__name__}")
         if started_new:
@@ -632,10 +637,7 @@ def ask(payload: Question):
             yield json.dumps({"conversation": conversation, "model": model_name},
                              ensure_ascii=False) + "\n"
             yield json.dumps({"sources": hits}, ensure_ascii=False) + "\n"
-            context = as_context(hits)
-            if is_overview(question):
-                # 全局问题：把文档目录放在片段前面，模型按目录答，片段只是样本
-                context = catalog_context() + "\n\n检索片段（样本）：\n" + context
+            context = catalog_context() if overview else as_context(hits)
 
             if use_agent:
                 # The agent decides for itself whether the live environment is
