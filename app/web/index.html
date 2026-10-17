@@ -635,7 +635,7 @@ if (MANAGE) document.body.classList.add('manage');
 let mTab = 'tools', mGroup = null, mItem = null, mSearch = '', mReady = false;
 const mCache = {};  // 列表里出现过的条目：id -> 数据，点开详情直接用
 // 首屏引导要用的三个数字：文档数、可用工具数、生效 SOP 数
-let onboard = {docs: 0, tools: 0, sops: 0, configured: true};
+let onboard = {docs: 0, tools: 0, sops: 0, configured: true, loaded: false};
 
 /* 页内提示，替代 alert：不阻塞，几秒后自己消失。kind: '' | 'err' | 'ok' */
 function toast(text, kind = '', ms = 4000) {
@@ -742,7 +742,7 @@ async function loadDocs() {
   const d = await (await fetch('/api/documents')).json();
   allDocs = d.documents;
   const before = JSON.stringify(onboard);
-  onboard = {docs: allDocs.length, tools: (d.tools || []).length, sops: d.playbooks || 0, configured: d.configured !== false};
+  onboard = {docs: allDocs.length, tools: (d.tools || []).length, sops: d.playbooks || 0, configured: d.configured !== false, loaded: true};
   if (d.bot_name && d.bot_name !== botName) botName = d.bot_name;
   if ($('thread').querySelector('.welcome') && (before !== JSON.stringify(onboard) || d.bot_name !== botName)) welcome();
   $('catList').innerHTML = (d.categories || []).map(c => `<option value="${esc(c)}">`).join('');
@@ -898,8 +898,8 @@ const EXAMPLES = ['总结一下知识库里有哪些主要内容', '帮我做一
 let convId = null, botName = '小知';
 function welcome() {
   const o = onboard;
-  // 还没配置模型：首屏只放一张「去配置」卡，别的都做不了
-  const guide = !o.configured ? `<div class="onboard" style="grid-template-columns:1fr">
+  // 数据没回来前不画引导卡，否则会先按「0 文档 0 工具」画一版再闪成另一版
+  const guide = !o.loaded ? '' : !o.configured ? `<div class="onboard" style="grid-template-columns:1fr">
     <div class="st"><div class="k"><i>!</i>先配置模型</div>
       <p>还没有填对话模型和向量模型的地址与 key。可以用一个网关（LiteLLM / OneAPI），也可以直接填两个厂商的 OpenAI 兼容地址——不需要网关。</p>
       <a href="/manage#settings"><button>去「管理 → 模型设置」</button></a></div></div>`
