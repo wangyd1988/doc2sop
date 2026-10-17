@@ -65,9 +65,14 @@ def get(name: str):
 
 
 def embed_endpoint(cur: dict | None = None) -> tuple[str, str]:
-    """(base_url, api_key) the embedding client should use: its own if set, else the chat one."""
+    """(base_url, api_key) for embeddings: the dedicated endpoint if one is set, else the chat one.
+
+    The dedicated key only applies together with a dedicated address — same host, same key.
+    """
     cur = cur or current()
-    return (cur["embed_base_url"] or cur["llm_base_url"], cur["embed_api_key"] or cur["llm_api_key"])
+    if cur["embed_base_url"]:
+        return cur["embed_base_url"], cur["embed_api_key"] or cur["llm_api_key"]
+    return cur["llm_base_url"], cur["llm_api_key"]
 
 
 def mask(key: str) -> str:
