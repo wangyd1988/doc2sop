@@ -28,22 +28,28 @@ class FakeReply:
 
 
 class FakeCollection:
-    """In-memory Chroma substitute backed by a plain dict."""
+    """In-memory Chroma substitute backed by a plain dict: id -> (document, metadata[, embedding])."""
 
     def __init__(self, store=None):
         self.store = {} if store is None else store
+        self.embeddings = {}
         self.last_query = {}
 
-    def get(self, where=None, include=None, **kwargs):
+    def get(self, where=None, ids=None, include=None, **kwargs):
         items = [(i, d, m) for i, (d, m) in self.store.items()
-                 if not where or m.get("source") == where["source"]]
-        return {"ids": [i for i, _, _ in items],
-                "documents": [d for _, d, _ in items],
-                "metadatas": [m for _, _, m in items]}
+                 if (not where or m.get("source") == where["source"])
+                 and (ids is None or i in ids)]
+        out = {"ids": [i for i, _, _ in items],
+               "documents": [d for _, d, _ in items],
+               "metadatas": [m for _, _, m in items]}
+        if include and "embeddings" in include:
+            out["embeddings"] = [self.embeddings.get(i, [0.0]) for i, _, _ in items]
+        return out
 
     def add(self, ids, documents, embeddings, metadatas):
-        for i, d, m in zip(ids, documents, metadatas):
+        for i, d, e, m in zip(ids, documents, embeddings, metadatas):
             self.store[i] = (d, m)
+            self.embeddings[i] = e
 
     def update(self, ids, metadatas):
         for i, m in zip(ids, metadatas):
@@ -53,6 +59,7 @@ class FakeCollection:
         for i in [i for i, (_, m) in self.store.items()
                   if m.get("source") == where["source"]]:
             del self.store[i]
+            self.embeddings.pop(i, None)
 
     def count(self):
         return len(self.store)
@@ -60,7 +67,8 @@ class FakeCollection:
     def query(self, **kwargs):
         self.last_query = kwargs
         size = min(kwargs["n_results"], len(self.store))
-        items = list(self.store.values())[:size]
-        return {"documents": [[d for d, _ in items]],
-                "metadatas": [[m for _, m in items]],
+        items = list(self.store.items())[:size]
+        return {"ids": [[i for i, _ in items]],
+                "documents": [[d for _, (d, _) in items]],
+                "metadatas": [[m for _, (_, m) in items]],
                 "distances": [[0.3] * size]}

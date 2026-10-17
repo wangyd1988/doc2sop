@@ -39,7 +39,8 @@ SOP = 做某件事时，按顺序调用哪些工具、每一步看什么、怎�
   "steps": [
     {{"tool": "工具名（必须是上面列出的）",
       "args": {{"参数名": "固定值；需要用户提供时留空字符串"}},
-      "checkpoint": "这一步要看什么、怎么判断"}}
+      "checkpoint": "这一步要看什么、怎么判断",
+      "evidence": "文档里支撑这一步的原句，原样摘录不超过 60 字"}}
   ]
 }}
 
@@ -47,7 +48,9 @@ SOP = 做某件事时，按顺序调用哪些工具、每一步看什么、怎�
 - 文档里确实描述了可按步骤执行的查看/核对流程才输出；只是概念介绍或纯规则罗列就输出空数组 []
 - 只使用和文档内容真正相关的工具，不要为了凑步骤硬塞不相关的工具
 - 最多 3 个 SOP，每个最多 6 步
-- checkpoint 要具体，写明判断标准，不要写"检查是否正常"这种空话
+- 步骤顺序必须与文档中出现的顺序一致，除非文档明确写了「先…再…」之类的流转
+- checkpoint 要具体，写明判断标准，**阈值数字必须原样来自文档**，不要写"检查是否正常"这种空话
+- evidence 必须是文档里真实存在的句子，找不到对应原句的步骤不要编
 - 参数值如果依赖具体对象（容器名、年份、日期等），填空字符串，由使用时再定
 - 只输出 JSON，不要解释、不要代码块标记"""
 
@@ -102,6 +105,7 @@ def extract(document_name: str, text: str, known_tools: dict):
         return [], "这篇文档里没有能用现有工具按步骤查看、核对的做法"
 
     candidates, dropped = [], set()
+    flat = re.sub(r"\s+", "", text)
     for item in parsed[:3]:
         if not isinstance(item, dict):
             continue
@@ -114,6 +118,10 @@ def extract(document_name: str, text: str, known_tools: dict):
                 continue
             tool = step.get("tool")
             if tool in known_tools:
+                # 原句必须真的在文档里；模型编的一律标出来，让人核对时一眼看到
+                quote = str(step.get("evidence") or "").strip()
+                if quote and re.sub(r"\s+", "", quote) not in flat:
+                    step["evidence"] = f"⚠ 未在文档中找到：{quote}"
                 kept.append(step)
             elif tool:
                 dropped.add(str(tool))

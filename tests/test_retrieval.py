@@ -1,13 +1,20 @@
-"""Retrieval behaviour: scoring, cut-off and TOP_K."""
+"""Retrieval behaviour: scoring, cut-off, TOP_K and vector + keyword fusion."""
 import unittest
 from unittest.mock import patch
 
-from tests import support  # noqa: F401  (sets env before app imports)
+from tests.support import FakeCollection  # noqa: F401  (sets env before app imports)
 
-from app.rag import retrieval
+from app.rag import lexical, retrieval, store
 
 
 class RetrievalTests(unittest.TestCase):
+    """Vector-only behaviour; the keyword retriever is silenced here."""
+
+    def setUp(self):
+        quiet = patch.object(retrieval.lexical, "search", lambda _q, _n: [])
+        quiet.start()
+        self.addCleanup(quiet.stop)
+
     def fake_store(self, documents, metadatas, distances):
         class Collection:
             def __init__(self):
@@ -19,7 +26,8 @@ class RetrievalTests(unittest.TestCase):
             def query(self, **kwargs):
                 self.asked.update(kwargs)
                 size = kwargs["n_results"]
-                return {"documents": [documents[:size]],
+                return {"ids": [[f"c{i}" for i in range(min(size, len(documents)))]],
+                        "documents": [documents[:size]],
                         "metadatas": [metadatas[:size]],
                         "distances": [distances[:size]]}
 
@@ -36,7 +44,7 @@ class RetrievalTests(unittest.TestCase):
         # Indexes stay contiguous after filtering so citations line up.
         self.assertEqual(hits[0]["index"], 1)
 
-    def test_top_k_is_requested_and_capped(self):
+    def test_candidates_go_deeper_than_top_k_and_results_are_capped(self):
         documents = [f"片段{i}" for i in range(50)]
         metadatas = [{"source": f"doc{i}.txt"} for i in range(50)]
         collection = self.fake_store(documents, metadatas, [0.3] * 50)
@@ -44,7 +52,7 @@ class RetrievalTests(unittest.TestCase):
              patch.object(retrieval, "embed_query", lambda _t: [0.0]), \
              patch.object(retrieval, "TOP_K", 8):
             hits = retrieval.retrieve("问题")
-        self.assertEqual(collection.asked["n_results"], 8)
+        self.assertEqual(collection.asked["n_results"], retrieval.CANDIDATES)
         self.assertEqual([h["index"] for h in hits], list(range(1, 9)))
 
     def test_requests_no_more_than_the_collection_holds(self):
@@ -61,12 +69,14 @@ class RetrievalTests(unittest.TestCase):
         with patch.object(retrieval.store, "collection", collection):
             self.assertEqual(retrieval.retrieve("问题"), [])
 
-    def test_page_number_appears_in_the_location(self):
-        collection = self.fake_store(["内容"], [{"source": "手册.pdf", "page": 48}], [0.3])
+    def test_page_number_and_category_appear(self):
+        collection = self.fake_store(["内容"], [{"source": "手册.pdf", "page": 48, "category": "网络补充"}], [0.3])
         with patch.object(retrieval.store, "collection", collection), \
              patch.object(retrieval, "embed_query", lambda _t: [0.0]):
             hits = retrieval.retrieve("问题")
         self.assertEqual(hits[0]["location"], "手册.pdf 第 48 页")
+        self.assertEqual(hits[0]["category"], "网络补充")
+        self.assertEqual(hits[0]["match"], "vector")
 
     def test_context_is_numbered_for_citation(self):
         hits = [{"index": 1, "location": "a.pdf 第 2 页", "text": "甲", "score": 0.7},
@@ -75,6 +85,98 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn("[1] 来源：a.pdf 第 2 页", context)
         self.assertIn("[2] 来源：b.txt", context)
         self.assertIn("没有检索到", retrieval.as_context([]))
+
+
+class LexicalTests(unittest.TestCase):
+    def test_tokenizer_keeps_identifiers_whole_and_splits_cjk_into_bigrams(self):
+        tokens = lexical.tokenize("设置 mem_limit=512m 后报 OOMKilled")
+        self.assertIn("mem_limit", tokens)
+        self.assertIn("512m", tokens)
+        self.assertIn("oomkilled", tokens)
+        self.assertIn("设置", tokens)
+        self.assertNotIn("设置后", tokens)
+
+    def test_exact_term_outranks_topic_overlap(self):
+        texts = ["容器内存上限通过 mem_limit 字段设置，超过后会被 OOMKilled",
+                 "容器的内存、CPU 等资源可以在编排文件里限制",
+                 "数据库连接池大小的建议值"]
+        index = lexical._Index([f"c{i}" for i in range(3)], texts, [{}] * 3)
+        got = index.search("mem_limit 怎么配", 3)
+        self.assertEqual(got[0][0], "c0")
+        self.assertTrue(all(score > 0 for *_, score in got))
+
+    def test_query_without_known_terms_matches_nothing(self):
+        index = lexical._Index(["c0"], ["一些内容"], [{}])
+        self.assertEqual(index.search("zzzz", 3), [])
+
+
+class HybridTests(unittest.TestCase):
+    """Vector and keyword results fuse; a keyword-only hit still gets a real cosine score."""
+
+    def setUp(self):
+        self.collection = FakeCollection()
+        for target in (store, ):
+            p = patch.object(target, "collection", self.collection)
+            p.start()
+            self.addCleanup(p.stop)
+        # Force the BM25 index to rebuild for this collection.
+        lexical._index, lexical._built_for = None, -1
+        self.addCleanup(lambda: setattr(lexical, "_index", None))
+
+    def add(self, cid, text, source, vector):
+        self.collection.add([cid], [text], [vector], [{"source": source}])
+
+    def test_weak_keyword_only_hits_are_not_admitted(self):
+        """只靠常见双字命中、语义又不沾边的片段，不能挤进结果。"""
+        self.add("v1", "休假制度：年假 5 天", "a.md", [1.0, 0.0])
+        self.add("v2", "补班安排", "b.md", [1.0, 0.0])
+        self.add("noise", "巡检有几项，几天做一次", "c.md", [0.0, 1.0])   # cosine 0, no identifiers
+        with patch.object(retrieval, "embed_query", lambda _t: [1.0, 0.0]), \
+             patch.object(retrieval, "CANDIDATES", 2):
+            hits = retrieval.retrieve("年假有几天")
+        self.assertNotIn("c.md", [h["location"] for h in hits])
+
+    def test_keyword_only_hit_is_included_with_cosine_score(self):
+        # Vector search (fake) returns the first N rows in insertion order; put the
+        # exact-term chunk last so only BM25 can surface it.
+        self.add("v1", "容器资源限制的一般原则", "a.md", [1.0, 0.0])
+        self.add("v2", "内存与 CPU 的配额", "b.md", [1.0, 0.0])
+        self.add("kw", "mem_limit 字段控制容器内存上限", "c.md", [0.6, 0.8])
+        with patch.object(retrieval, "embed_query", lambda _t: [1.0, 0.0]), \
+             patch.object(retrieval, "CANDIDATES", 2), patch.object(retrieval, "TOP_K", 8):
+            hits = retrieval.retrieve("mem_limit 怎么设")
+        by_loc = {h["location"]: h for h in hits}
+        self.assertIn("c.md", by_loc)
+        self.assertEqual(by_loc["c.md"]["match"], "lexical")
+        self.assertAlmostEqual(by_loc["c.md"]["score"], 0.6, places=3)
+
+    def test_chunk_found_by_both_ranks_first(self):
+        self.add("x", "mem_limit 字段控制容器内存上限", "both.md", [1.0, 0.0])
+        self.add("y", "容器资源限制的一般原则", "vec.md", [1.0, 0.0])
+        with patch.object(retrieval, "embed_query", lambda _t: [1.0, 0.0]):
+            hits = retrieval.retrieve("mem_limit")
+        self.assertEqual(hits[0]["location"], "both.md")
+        self.assertEqual(hits[0]["match"], "both")
+
+    def test_index_rebuilds_after_store_changes(self):
+        self.add("a", "旧内容", "a.md", [1.0, 0.0])
+        with patch.object(retrieval, "embed_query", lambda _t: [1.0, 0.0]):
+            retrieval.retrieve("新词")
+        store.replace_document(["b"], ["包含 新词 的新文档"], [[1.0, 0.0]], [{"source": "b.md"}], "b.md")
+        with patch.object(retrieval, "embed_query", lambda _t: [1.0, 0.0]):
+            hits = retrieval.retrieve("新词")
+        self.assertTrue(any(h["location"] == "b.md" and h["match"] in ("both", "lexical") for h in hits))
+
+    def test_keyword_failure_degrades_to_vector_only(self):
+        self.add("a", "内容", "a.md", [1.0, 0.0])
+
+        def boom(_q, _n):
+            raise RuntimeError("index broken")
+
+        with patch.object(retrieval, "embed_query", lambda _t: [1.0, 0.0]), \
+             patch.object(retrieval.lexical, "search", boom):
+            hits = retrieval.retrieve("内容")
+        self.assertEqual([h["location"] for h in hits], ["a.md"])
 
 
 if __name__ == "__main__":

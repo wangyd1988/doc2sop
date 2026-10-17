@@ -106,6 +106,25 @@ class ChatTests(unittest.TestCase):
 
     # --- model selection -----------------------------------------------------
 
+    def test_tool_activity_is_saved_with_the_answer_and_replayed(self):
+        """工具调用过程随回答存下来，回放时能看到调了什么、返回了什么。"""
+        def fake_run(question, context, history, **kwargs):
+            yield "tool_call", {"tool": "host_disk", "args": {}}
+            yield "tool_result", {"tool": "host_disk", "preview": "/dev/vda1 41%", "lines": 1, "chars": 13}
+            yield "delta", "磁盘正常"
+
+        with patch("app.main.retrieve", return_value=self.hits), \
+             patch("app.main.rewrite_question", side_effect=lambda q, h: q), \
+             patch("app.main.AGENT_MODE", "auto"), \
+             patch("app.main.ops_client.enabled", return_value=True), \
+             patch("app.main.agent_loop.run", side_effect=fake_run):
+            response = self.client.post("/api/ask", json={"question": "磁盘怎么样", "web": False}, auth=self.auth)
+        events = [json.loads(line) for line in response.text.splitlines() if line]
+        conversation_id = events[0]["conversation"]["id"]
+        replay = self.client.get(f"/api/conversations/{conversation_id}", auth=self.auth).json()
+        tools = replay["messages"][-1]["tools"]
+        self.assertEqual(tools, [{"tool": "host_disk", "args": {}, "preview": "/dev/vda1 41%", "lines": 1}])
+
     def test_model_list_falls_back_to_default_when_gateway_is_down(self):
         def down():
             raise OSError("connection refused")

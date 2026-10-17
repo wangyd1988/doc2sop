@@ -13,6 +13,7 @@ thread，**整轮过程**（工具调用、工具结果、搜索结果、最终�
 `run` 是一个生成器，边执行边把事件吐出来，前端可以实时看到它查了什么、
 看到了什么，而不是等一个黑盒答案。
 """
+import re
 import sqlite3
 import threading
 import uuid
@@ -80,7 +81,8 @@ AGENT_PROMPT = f"""你是「{BOT_NAME}」，一位能查资料、也能查实际
 回答要求：
 - 用了工具时，明确区分【知识库依据】和【实际数据】；没用工具时不要编造数据。
 - 用 [编号] 标注引用的知识库片段并注明来源文档。
-- 按 SOP 执行时，说明用的是哪个 SOP，并逐步给出每一步的结论。
+- 按 SOP 执行时，说明用的是哪个 SOP，并按下面给出的 SOP 输出格式逐步汇报。
+- 用户说「执行 SOP《某某》」「按某某 SOP 做一遍」时，直接按该 SOP 的步骤执行，不要反问是否需要。
 - 先给结论，再给依据，最后给建议动作。
 - 实际数据与知识库描述不一致时，要指出来，这往往就是问题所在。
 - 两边都没有足够信息时，直说没有，并指出还需要哪些信息，不要编造。
@@ -130,6 +132,17 @@ NO_WEB_RULES = """
   **也不要用你自己的训练知识补答案**——它可能过时或不准确，用户无从核实；
   如果是公开资料类问题，提示用户可以打开输入框旁的「🌐 联网」开关后再问。"""
 
+# 按 SOP 执行时的输出格式：每次结论都长一个样，才方便横向比较、也方便直接贴进群里。
+SOP_FORMAT = """**按 SOP 执行时的输出格式**（用户点了「执行 SOP」或问题与某个 SOP 匹配时）：
+1. 第一行写「按 SOP《名称》执行」。
+2. 用一个 Markdown 表格逐步汇报，列为：步骤 | 查看 | 实际数据 | 结论。
+   - 「查看」写这一步看的是什么（人话，不要写工具名）；
+   - 「实际数据」写工具返回里的关键数字或状态，不要整段粘贴；
+   - 「结论」只能是 ✅ 正常 / ⚠️ 告警 / ❌ 严重 / ❓ 无法判断 四选一，并在后面用半句话说明判断依据（引用 SOP 检查点里的阈值）。
+   - 某一步因为缺参数、工具失败而没做的，「实际数据」写「未执行：原因」，结论写 ❓。
+3. 表格之后一段「需要跟进」：只列 ⚠️ 和 ❌ 的项，每项一句建议动作；全部正常就写「无」。
+4. 不要在表格之外重复每一步的细节。"""
+
 
 class _WebQuery(BaseModel):
     query: str = Field(description="搜索关键词。只写公开、通用的词，不要包含内部项目名、IP、账号、密钥。")
@@ -149,8 +162,36 @@ def _today():
 
 def _preview(output: str):
     text = (output or "").strip()
-    return {"preview": text[:400] + ("…" if len(text) > 400 else ""),
-            "lines": len(text.splitlines())}
+    return {"preview": text[:PREVIEW_CHARS] + ("…" if len(text) > PREVIEW_CHARS else ""),
+            "lines": len(text.splitlines()), "chars": len(text)}
+
+
+PREVIEW_CHARS = 1500
+CONDENSE_LINES = 120          # outputs longer than this get condensed before reaching the model
+HEAD_LINES, TAIL_LINES, HIT_LINES = 30, 30, 60
+INTERESTING = re.compile(r"error|err\b|warn|fail|exception|traceback|panic|fatal|oom|killed|refused|"
+                         r"timeout|timed out|denied|unhealthy|restarting|exited|critical|告警|错误|失败|异常",
+                         re.IGNORECASE)
+
+
+def _condense(output: str) -> str:
+    """Trim very long tool output before it reaches the model.
+
+    A few thousand log lines mostly repeat themselves; what the model needs is the
+    head (context), the tail (latest state) and any line that looks like trouble.
+    Everything else is replaced by a marker so the model knows it was elided.
+    """
+    lines = str(output or "").splitlines()
+    if len(lines) <= CONDENSE_LINES:
+        return str(output or "")
+    head = lines[:HEAD_LINES]
+    tail = lines[-TAIL_LINES:]
+    middle = lines[HEAD_LINES:-TAIL_LINES]
+    hits = [l for l in middle if INTERESTING.search(l)]
+    picked = hits[:HIT_LINES]
+    note = (f"…（中间省略 {len(middle) - len(picked)} 行；"
+            f"其中含告警/错误关键字的 {len(hits)} 行已保留{'前 ' + str(HIT_LINES) + ' 行' if len(hits) > HIT_LINES else ''}）…")
+    return "\n".join(head + [note] + picked + ["…（以下为最后 %d 行）…" % TAIL_LINES] + tail)
 
 
 # --- Memory ------------------------------------------------------------------
@@ -312,7 +353,7 @@ def _build_graph(bound, system, current_prompt, by_name, allow_web):
                     except Exception as exc:
                         output = f"[执行失败] {why(exc)}"
             emit(("tool_result", {"tool": name, **_preview(str(output))}))
-            results.append(ToolMessage(content=_clip(output, STORE_TOOL_CHARS),
+            results.append(ToolMessage(content=_clip(_condense(output), STORE_TOOL_CHARS),
                                        tool_call_id=call["id"], name=name))
         return {"messages": results, "rounds": state["rounds"] + 1,
                 "web_count": web_count, "web_searches": web_searches}
@@ -358,7 +399,8 @@ def run(question: str, context: str, history, allow_web: bool = False,
     book = playbooks.as_prompt(set(by_name)) if by_name else ""
     prompt = f"今天是 {_today()}（北京时间）。\n\n知识库片段：\n{context}\n\n"
     if book:
-        prompt += f"可用 SOP（从团队文档沉淀的标准做法，匹配时优先按它执行）：\n{book}\n\n"
+        prompt += (f"可用 SOP（从团队文档沉淀的标准做法，匹配时优先按它执行）：\n{book}\n\n"
+                   f"{SOP_FORMAT}\n\n")
     prompt += f"用户的问题：{question}"
 
     thread_id = thread_id or uuid.uuid4().hex

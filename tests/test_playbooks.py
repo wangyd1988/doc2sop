@@ -188,6 +188,35 @@ class ExtractionTests(unittest.TestCase):
         self.assertIn("kube_get", note)
         self.assertIn("kube_logs", note)
 
+    def test_evidence_is_kept_when_it_really_appears_in_the_document(self):
+        text = "## 1. 宿主机磁盘\n根分区使用率超过 80% 记为告警。"
+        with patch.object(extract_mod, "chat_model") as factory:
+            factory.return_value.invoke.return_value = FakeReply(
+                '[{"name":"巡检","trigger":"","steps":[{"tool":"host_resources","args":{},'
+                '"checkpoint":"根分区 >80% 告警","evidence":"根分区使用率超过 80% 记为告警"}]}]')
+            got, _ = extract_mod.extract("巡检.md", text, TOOL_DESCS)
+        self.assertEqual(got[0]["steps"][0]["evidence"], "根分区使用率超过 80% 记为告警")
+
+    def test_fabricated_evidence_is_flagged_not_trusted(self):
+        """模型编的「原句」要标出来，核对的人一眼能看到。"""
+        with patch.object(extract_mod, "chat_model") as factory:
+            factory.return_value.invoke.return_value = FakeReply(
+                '[{"name":"巡检","trigger":"","steps":[{"tool":"host_resources","args":{},'
+                '"checkpoint":"看磁盘","evidence":"文档里根本没有这句"}]}]')
+            got, _ = extract_mod.extract("巡检.md", "真实正文只有这些", TOOL_DESCS)
+        self.assertTrue(got[0]["steps"][0]["evidence"].startswith("⚠ 未在文档中找到"))
+
+    def test_evidence_survives_save_and_api(self):
+        with playbooks.lock:
+            playbooks.db.execute("DELETE FROM steps")
+            playbooks.db.execute("DELETE FROM playbooks")
+            playbooks.db.commit()
+        pid = playbooks.save(None, "甲", "", [{**step("container_stats"), "evidence": "原句"}], TOOLS)
+        self.assertEqual(playbooks.get(pid)["steps"][0]["evidence"], "原句")
+        client = TestClient(app)
+        got = client.get("/api/playbooks", auth=(WEB_USER, WEB_PASSWORD)).json()["playbooks"]
+        self.assertEqual(got[0]["steps"][0]["evidence"], "原句")
+
 
 class ApiTests(unittest.TestCase):
     def setUp(self):

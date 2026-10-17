@@ -51,6 +51,12 @@ CREATE TABLE IF NOT EXISTS steps (
 CREATE INDEX IF NOT EXISTS steps_by_playbook ON steps(playbook_id, position);
 """)
 db.commit()
+# 老库没有 evidence 列（抽取时记录「文档里哪句话对应这一步」，方便人工核对）
+try:
+    db.execute("ALTER TABLE steps ADD COLUMN evidence TEXT NOT NULL DEFAULT ''")
+except sqlite3.OperationalError:
+    pass
+db.commit()
 lock = threading.Lock()
 
 
@@ -88,7 +94,8 @@ def validate(name, trigger, steps, known_tools):
         if not isinstance(args, dict):
             raise InvalidPlaybook(f"第 {index} 步的参数必须是对象")
         cleaned.append({"tool": tool, "args": args,
-                        "checkpoint": str(step.get("checkpoint") or "").strip()[:300]})
+                        "checkpoint": str(step.get("checkpoint") or "").strip()[:300],
+                        "evidence": str(step.get("evidence") or "").strip()[:300]})
     return name, trigger, cleaned
 
 
@@ -110,10 +117,11 @@ def save(playbook_id, name, trigger, steps, known_tools, source="", enabled=True
                        (playbook_id, name, trigger, source, 1 if enabled else 0,
                         timestamp, timestamp))
         for position, step in enumerate(cleaned, 1):
-            db.execute("INSERT INTO steps (playbook_id, position, tool, args, checkpoint)"
-                       " VALUES (?, ?, ?, ?, ?)",
+            db.execute("INSERT INTO steps (playbook_id, position, tool, args, checkpoint, evidence)"
+                       " VALUES (?, ?, ?, ?, ?, ?)",
                        (playbook_id, position, step["tool"],
-                        json.dumps(step["args"], ensure_ascii=False), step["checkpoint"]))
+                        json.dumps(step["args"], ensure_ascii=False), step["checkpoint"],
+                        step["evidence"]))
         db.commit()
     return playbook_id
 
@@ -123,7 +131,8 @@ def _rows_to_playbook(row, steps):
             "source": row["source"], "enabled": bool(row["enabled"]),
             "updated_at": row["updated_at"],
             "steps": [{"tool": s["tool"], "args": json.loads(s["args"]),
-                       "checkpoint": s["checkpoint"]} for s in steps]}
+                       "checkpoint": s["checkpoint"],
+                       "evidence": s["evidence"] if "evidence" in s.keys() else ""} for s in steps]}
 
 
 def get(playbook_id):

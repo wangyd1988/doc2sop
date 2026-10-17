@@ -57,6 +57,7 @@ class ImageCollector:
         self.seen = {}          # cache_key -> token
         self.skipped = 0
         self.failed = 0
+        self.on_progress = None  # callable(done, total)，后台入库用来汇报进度
 
     def add(self, source) -> str:
         """Accept raw bytes or a PIL image; return a placeholder token ('' if skipped)."""
@@ -111,11 +112,15 @@ class ImageCollector:
             return token, text
 
         with ThreadPoolExecutor(max_workers=VISION_WORKERS) as pool:
+            done = 0
             for token, text in pool.map(work, self.images.items()):
                 if text is None:
                     self.failed += 1
                     text = ""
                 self.results[token] = text
+                done += 1
+                if self.on_progress:
+                    self.on_progress(done, len(self.images))
         self._save_cache()
 
     def _save_cache(self):

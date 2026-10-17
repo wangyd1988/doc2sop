@@ -444,8 +444,48 @@ class AgentLoopTests(unittest.TestCase):
             [([{"name": "container_logs", "args": {"name": "a"}, "id": "1"}], ""),
              ([], "好的")], [tool])
         preview = [p for k, p in events if k == "tool_result"][0]
-        self.assertLessEqual(len(preview["preview"]), 401)
+        self.assertLessEqual(len(preview["preview"]), agent_loop.PREVIEW_CHARS + 1)
         self.assertGreater(preview["lines"], 100)
+        self.assertEqual(preview["chars"], len(tool.output.strip()))
+
+    def test_long_tool_output_is_condensed_for_the_model_but_keeps_error_lines(self):
+        lines = [f"INFO line {i}" for i in range(400)]
+        lines[200] = "ERROR: connection refused"
+        lines[300] = "容器 OOMKilled"
+        seen = []
+        tool = FakeTool("container_logs", output="\n".join(lines))
+        with patch.object(agent_loop, "build_tools", return_value=[tool]), \
+             patch.object(agent_loop, "chat_model", return_value=self.make_model(
+                 [([{"name": "container_logs", "args": {"name": "a"}, "id": "1"}], ""), ([], "好")], seen)):
+            list(agent_loop.run("问题", "片段", []))
+        tool_msg = [m for m in seen[1] if isinstance(m, ToolMessage)][0].content
+        self.assertIn("INFO line 0", tool_msg)            # head kept
+        self.assertIn("INFO line 399", tool_msg)          # tail kept
+        self.assertIn("connection refused", tool_msg)     # error line kept
+        self.assertIn("OOMKilled", tool_msg)
+        self.assertNotIn("INFO line 150", tool_msg)       # middle elided
+        self.assertIn("省略", tool_msg)
+        self.assertLess(len(tool_msg.splitlines()), 140)
+
+    def test_short_tool_output_is_passed_through_untouched(self):
+        text = "\n".join(f"l{i}" for i in range(50))
+        self.assertEqual(agent_loop._condense(text), text)
+
+    def test_sop_output_format_is_only_injected_when_a_sop_applies(self):
+        seen = []
+        with patch.object(agent_loop, "build_tools", return_value=[FakeTool("container_stats")]), \
+             patch.object(agent_loop.playbooks, "as_prompt", return_value="SOP《巡检》\n  1. 调用 container_stats"), \
+             patch.object(agent_loop, "chat_model", return_value=self.make_model([([], "好")], seen)):
+            list(agent_loop.run("巡检", "片段", []))
+        prompt = seen[0][-1].content
+        self.assertIn("SOP《巡检》", prompt)
+        self.assertIn("步骤 | 查看 | 实际数据 | 结论", prompt)
+        seen.clear()
+        with patch.object(agent_loop, "build_tools", return_value=[FakeTool("container_stats")]), \
+             patch.object(agent_loop.playbooks, "as_prompt", return_value=""), \
+             patch.object(agent_loop, "chat_model", return_value=self.make_model([([], "好")], seen)):
+            list(agent_loop.run("巡检", "片段", []))
+        self.assertNotIn("步骤 | 查看 | 实际数据 | 结论", seen[0][-1].content)
 
 
 class MemoryTests(unittest.TestCase):

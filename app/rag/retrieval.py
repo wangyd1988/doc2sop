@@ -1,9 +1,44 @@
-"""Recall: question -> vector -> nearest chunks -> citable snippets."""
+"""Recall: question -> vector + BM25 -> fused ranking -> citable snippets.
+
+Two retrievers, fused with reciprocal rank fusion:
+  - vector search finds chunks *about* the question;
+  - BM25 finds chunks that *contain the exact words* (field names, error codes, model numbers).
+A chunk ranked well by either makes the list; a chunk ranked well by both rises to the top.
+
+The similarity shown to users (and to the model as a hint) stays the cosine
+score, so its meaning does not change with this fusion.
+"""
 from langsmith import traceable
 
 from app.config import MIN_SCORE, TOP_K
-from app.rag import store
+from app.rag import lexical, store
 from app.rag.embedding import embed_query
+
+CANDIDATES = 30     # how deep each retriever looks before fusion
+RRF_K = 60
+# A chunk only BM25 found must earn its place: either it contains an exact identifier
+# from the question (mem_limit, OOMKilled, E1234…) or it is at least this close semantically.
+# Otherwise common CJK bigrams ("有几", "区别") drag in noise.
+LEXICAL_MIN_SCORE = 0.40
+# Everyday English words are not identifiers; "full" or "and" in the question must not admit a chunk.
+STOP = {"the", "and", "or", "is", "are", "of", "to", "in", "on", "for", "with", "by", "at", "from",
+        "as", "be", "it", "this", "that", "full", "not", "all", "new", "old", "set", "get", "use"}
+
+
+def _identifiers(text: str):
+    return {t for t in lexical.tokenize(text)
+            if lexical.ASCII.fullmatch(t) and len(t) >= 3 and t not in STOP}
+
+
+def _cosine(a, b):
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def _location(meta):
+    return meta["source"] + (f" 第 {meta['page']} 页" if meta.get("page") else "")
 
 
 @traceable(name="知识库检索", run_type="retriever")
@@ -12,21 +47,66 @@ def retrieve(question: str):
     total = store.collection.count()
     if total == 0:
         return []
+    query_vector = embed_query(question)
+    depth = min(CANDIDATES, total)
     result = store.collection.query(
-        query_embeddings=[embed_query(question)],
-        n_results=min(TOP_K, total),
+        query_embeddings=[query_vector], n_results=depth,
         include=["documents", "metadatas", "distances"])
 
-    hits = []
-    for text, meta, distance in zip(result["documents"][0], result["metadatas"][0],
-                                    result["distances"][0]):
-        # Cosine distance -> similarity, so a bigger number always means "closer".
-        score = round(1 - distance, 3)
-        if score < MIN_SCORE:
+    # id -> record; rank lists feed the fusion.
+    records, vector_rank, lexical_rank = {}, [], []
+    for cid, text, meta, distance in zip(result["ids"][0], result["documents"][0],
+                                         result["metadatas"][0], result["distances"][0]):
+        records[cid] = {"text": text, "meta": meta, "score": round(1 - distance, 3)}
+        vector_rank.append(cid)
+
+    try:
+        lexical_hits = lexical.search(question, depth)
+    except Exception:
+        lexical_hits = []
+    missing = []
+    for cid, text, meta, _ in lexical_hits:
+        if cid in records:
+            lexical_rank.append(cid)
             continue
-        location = meta["source"] + (f" 第 {meta['page']} 页" if meta.get("page") else "")
-        hits.append({"index": len(hits) + 1, "location": location,
-                     "text": text, "score": score})
+        records[cid] = {"text": text, "meta": meta, "score": None}
+        missing.append(cid)
+    if missing:
+        # Lexical-only hits still get a real cosine score so the UI stays comparable.
+        got = store.collection.get(ids=missing, include=["embeddings"])
+        for cid, vector in zip(got["ids"], got["embeddings"]):
+            records[cid]["score"] = round(_cosine(query_vector, list(vector)), 3)
+        wanted = _identifiers(question)
+        for cid in missing:
+            record = records[cid]
+            exact = bool(wanted & _identifiers(record["text"]))
+            if exact or (record["score"] or 0) >= LEXICAL_MIN_SCORE:
+                lexical_rank.append(cid)
+            else:
+                del records[cid]
+        # keep BM25 order for the ones that survived
+        order = {cid: i for i, (cid, *_rest) in enumerate(lexical_hits)}
+        lexical_rank.sort(key=order.get)
+
+    fused = {}
+    for rank_list in (vector_rank, lexical_rank):
+        for rank, cid in enumerate(rank_list, 1):
+            fused[cid] = fused.get(cid, 0.0) + 1.0 / (RRF_K + rank)
+    both = set(vector_rank) & set(lexical_rank)
+
+    hits = []
+    for cid in sorted(fused, key=lambda c: (-fused[c], -(records[c]["score"] or 0))):
+        record = records[cid]
+        if (record["score"] or 0) < MIN_SCORE:
+            continue
+        meta = record["meta"]
+        hits.append({"index": len(hits) + 1, "location": _location(meta),
+                     "text": record["text"], "score": record["score"],
+                     "category": meta.get("category") or "",
+                     "match": "both" if cid in both else
+                              "lexical" if cid in lexical_rank else "vector"})
+        if len(hits) >= TOP_K:
+            break
     return hits
 
 

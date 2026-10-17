@@ -32,11 +32,12 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_by_conversation ON messages(conversation_id, id);
 """)
-# 老库没有 model 列；加列失败说明已经有了。
-try:
-    db.execute("ALTER TABLE messages ADD COLUMN model TEXT")
-except sqlite3.OperationalError:
-    pass
+# 老库没有这些列；加列失败说明已经有了。
+for column in ("model TEXT", "tools TEXT"):
+    try:
+        db.execute(f"ALTER TABLE messages ADD COLUMN {column}")
+    except sqlite3.OperationalError:
+        pass
 db.commit()
 lock = threading.Lock()
 
@@ -64,14 +65,15 @@ def create(title: str) -> dict:
     return conversation
 
 
-def add_message(conversation_id: str, role: str, content: str, sources=None, model=None):
+def add_message(conversation_id: str, role: str, content: str, sources=None, model=None, tools=None):
     timestamp = now_iso()
     with lock:
         db.execute(
-            "INSERT INTO messages (conversation_id, role, content, sources, model, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages (conversation_id, role, content, sources, model, tools, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (conversation_id, role, content,
-             json.dumps(sources, ensure_ascii=False) if sources else None, model, timestamp))
+             json.dumps(sources, ensure_ascii=False) if sources else None, model,
+             json.dumps(tools, ensure_ascii=False) if tools else None, timestamp))
         db.execute("UPDATE conversations SET updated_at = ? WHERE id = ?",
                    (timestamp, conversation_id))
         db.commit()
@@ -98,10 +100,11 @@ def list_conversations(limit: int = 100):
 def messages_of(conversation_id: str):
     with lock:
         rows = db.execute(
-            "SELECT role, content, sources, model FROM messages WHERE conversation_id = ?"
+            "SELECT role, content, sources, model, tools FROM messages WHERE conversation_id = ?"
             " ORDER BY id", (conversation_id,)).fetchall()
     return [{"role": row["role"], "content": row["content"], "model": row["model"],
-             "sources": json.loads(row["sources"]) if row["sources"] else []}
+             "sources": json.loads(row["sources"]) if row["sources"] else [],
+             "tools": json.loads(row["tools"]) if row["tools"] else []}
             for row in rows]
 
 

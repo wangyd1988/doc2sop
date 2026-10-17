@@ -113,6 +113,43 @@ class DocumentTests(unittest.TestCase):
         self.assertEqual([d["category"] for d in listed["documents"]], ["乙类", "甲类"])
         self.assertEqual(listed["categories"], ["乙类", "甲类"])
 
+    # --- background ingestion ------------------------------------------------
+
+    def wait_job(self, job_id, timeout=10):
+        import time
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            job = self.client.get(f"/api/jobs/{job_id}", auth=self.auth).json()
+            if job["status"] in ("done", "error"):
+                return job
+            time.sleep(0.05)
+        self.fail("job did not finish")
+
+    def test_background_upload_returns_a_job_and_reports_stages(self):
+        files = {"file": ("后台.txt", io.BytesIO("内容".encode()), "text/plain")}
+        with patch.object(type(clients.rewriter), "invoke", lambda _s, _m, **kw: FakeReply("分类")):
+            response = self.client.post("/api/documents", files=files,
+                                        data={"background": "1"}, auth=self.auth)
+            self.assertEqual(response.status_code, 200, response.text)
+            job_id = response.json()["job"]
+            job = self.wait_job(job_id)
+        self.assertEqual(job["status"], "done")
+        self.assertEqual(job["stage"], "完成")
+        self.assertEqual(job["result"]["source"], "后台.txt")
+        self.assertGreater(job["result"]["chunks"], 0)
+        self.assertEqual(self.documents()["documents"][0]["source"], "后台.txt")
+
+    def test_background_upload_failure_is_reported_on_the_job(self):
+        files = {"file": ("空白.pdf", io.BytesIO(b"not a pdf"), "application/pdf")}
+        response = self.client.post("/api/documents", files=files,
+                                    data={"background": "1"}, auth=self.auth)
+        job = self.wait_job(response.json()["job"])
+        self.assertEqual(job["status"], "error")
+        self.assertTrue(job["detail"])
+
+    def test_unknown_job_is_404(self):
+        self.assertEqual(self.client.get("/api/jobs/nope", auth=self.auth).status_code, 404)
+
     # --- chunk identity ------------------------------------------------------
 
     def test_same_content_under_two_names_coexists(self):

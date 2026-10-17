@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
-from app import conversations, models, playbooks
+from app import conversations, jobs, models, playbooks
 from app.agent import loop as agent_loop
 from app.agent import ops_client, web_search
 from app.agent.extract import extract as extract_playbooks
@@ -86,25 +86,42 @@ def documents():
 
 
 @app.post("/api/documents")
-def upload(file: UploadFile = File(...), category: str = Form("")):
+def upload(file: UploadFile = File(...), category: str = Form(""), background: str = Form("")):
     name = safe_name(file.filename)
     data = file.file.read(MAX_FILE_BYTES + 1)
     if len(data) > MAX_FILE_BYTES:
         raise HTTPException(413, f"文件超过 {MAX_FILE_BYTES // 1024 // 1024}MB")
     if not data:
         raise HTTPException(400, "文件为空")
+    if background in ("1", "true", "yes"):
+        return {"job": jobs.submit(name, lambda report: ingest(name, data, category, report))}
     return ingest(name, data, category)
 
 
-def ingest(name: str, data: bytes, category: str = ""):
-    """Parse, chunk, embed and store one file. Shared by uploads and saved web notes."""
+@app.get("/api/jobs/{job_id}")
+def job_status(job_id: str):
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在或已过期")
+    return job
+
+
+def ingest(name: str, data: bytes, category: str = "", report=lambda stage: None):
+    """Parse, chunk, embed and store one file. Shared by uploads and saved web notes.
+
+    `report(stage)` is called as the work progresses so a background job can show it.
+    """
     digest = hashlib.sha256(data).hexdigest()
 
+    report("解析文件")
     images = ImageCollector()
     try:
         pages = extract_pages(name, data, images)
     except ExtractionError as exc:
         raise HTTPException(400, str(exc))
+    if images.images:
+        report(f"识别图片 0/{len(images.images)}")
+        images.on_progress = lambda done, total: report(f"识别图片 {done}/{total}")
     images.describe_all()
     if Path(name).suffix.lower() in IMAGE_SUFFIXES and images.failed:
         raise HTTPException(502, "图片识别失败，可能是图片内容无法解析或模型暂时不可用，请稍后重试")
@@ -112,6 +129,7 @@ def ingest(name: str, data: bytes, category: str = ""):
     # Splice recognised image text back into the position it occupied.
     pages = [(page, images.fill(text)) for page, text in pages]
     probe = "\n".join(text for _, text in pages)[:1000]
+    report("判断分类")
     chosen = category.strip()[:CATEGORY_MAX] or suggest_category(
         name, probe, store.all_categories())
 
@@ -119,11 +137,13 @@ def ingest(name: str, data: bytes, category: str = ""):
     if not texts:
         raise HTTPException(400, "没有提取到文字或有用的图片内容（扫描件请确认图片清晰度）")
 
+    report(f"向量化 {len(texts)} 个片段")
     try:
         vectors = embed_documents(texts)
     except EmbeddingError as exc:
         raise HTTPException(502, f"向量化失败：{exc}（向量服务可能不可达）")
 
+    report("写入知识库")
     store.replace_document(ids, texts, vectors, metas, name)
     (FILES_DIR / name).write_bytes(data)
     return {"source": name, "chunks": len(texts), "images": images.stats(),
@@ -222,6 +242,8 @@ class PlaybookStep(BaseModel):
     tool: str = Field(min_length=1, max_length=60)
     args: dict = Field(default_factory=dict)
     checkpoint: str = Field(default="", max_length=300)
+    # 抽取时记录的文档原句，供人核对；手工建的 SOP 可以为空
+    evidence: str = Field(default="", max_length=300)
 
 
 class PlaybookBody(BaseModel):
@@ -419,6 +441,12 @@ class Question(BaseModel):
     model: str | None = Field(default=None, max_length=120)
 
 
+@app.post("/api/retrieve")
+def retrieve_only(body: Question):
+    """只检索不生成：用来核对混合召回（向量 + 关键词）的效果。"""
+    return {"hits": retrieve(body.question.strip())}
+
+
 @app.post("/api/ask")
 def ask(payload: Question):
     question = payload.question.strip()
@@ -477,7 +505,14 @@ def ask(payload: Question):
                             elif kind == "error":
                                 failure = payload
                             elif kind == "tool_call":
-                                tool_calls.append(payload)
+                                tool_calls.append({"tool": payload["tool"], "args": payload.get("args") or {}})
+                            elif kind == "tool_result" and tool_calls:
+                                # 结果按顺序贴回最近一个还没有结果的调用，回放时能一起看到
+                                for call in reversed(tool_calls):
+                                    if "preview" not in call:
+                                        call.update(preview=payload.get("preview", ""),
+                                                    lines=payload.get("lines", 0))
+                                        break
                             elif kind == "web_sources":
                                 web_hits.extend(payload)
                             yield json.dumps({kind: payload}, ensure_ascii=False) + "\n"
@@ -498,7 +533,7 @@ def ask(payload: Question):
 
             if answer.strip():
                 conversations.add_message(conversation_id, "assistant", answer, hits + web_hits,
-                                          model=model_name)
+                                          model=model_name, tools=tool_calls)
         finally:
             finish_root_run(root, outputs={"answer": answer, "search_query": search_query,
                                            "sources": len(hits), "web_sources": len(web_hits),
