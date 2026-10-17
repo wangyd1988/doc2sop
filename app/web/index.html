@@ -252,6 +252,12 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .pb-pick { border: 1px solid var(--accent); border-radius: 10px; padding: 10px; margin-bottom: 8px;
            background: var(--accent-soft); }
 .pb-pick .hd { font-size: 13px; font-weight: 600; margin-bottom: 7px; }
+.pb-help { font-size: 12px; color: var(--muted); line-height: 1.6; margin-bottom: 8px; }
+.pb-help summary { cursor: pointer; color: var(--accent); user-select: none; }
+.pb-help[open] summary { margin-bottom: 4px; }
+.pb-help ol { margin: 4px 0; padding-left: 20px; }
+.pb-help li { margin: 2px 0; }
+.pb-help code { font-size: 11.5px; }
 .pb-pick input, .pb-pick select { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px;
                                   padding: 6px 9px; border-radius: 7px; border: 1px solid var(--border);
                                   background: var(--panel); color: var(--text); outline: none; }
@@ -863,6 +869,20 @@ function pbPicker() {
     `<option value="${esc(d.source)}">${esc(d.source)}　[${esc(d.category || '未分类')}]</option>`).join('');
   return `<div class="pb-pick">
     <div class="hd">从哪个文档抽取 SOP？</div>
+    <details class="pb-help">
+      <summary>文档怎么写才抽得出来？</summary>
+      <div>抽取器会把文档里<b>按步骤查看、核对</b>的做法，翻译成对现有工具的有序调用。写法要点：</div>
+      <ol>
+        <li>标题写清是「做什么」的规范/手册，开头一句话说明什么时候用</li>
+        <li>第一屏就是带编号的步骤，每步标题是「看什么」的名词（宿主机磁盘、当年节假日…）</li>
+        <li>每步至少一条带数字或明确状态的判断标准，如「根分区 &gt;80% 告警」，不要写「检查是否正常」</li>
+        <li>写意图不写命令：「查看各挂载点使用率」而不是「执行 df -h」</li>
+        <li>容器名、年份这类具体对象不要写死，使用时由提问补上</li>
+        <li>修改、重启、删除类操作放单独一节，抽取只认只读步骤</li>
+        <li>只读前 6000 字，最多 3 个 SOP × 6 步；一件事一篇</li>
+      </ol>
+      <div>参考 <code>sample_kb/日常巡检规范.md</code>；完整教程见仓库 <code>docs/SOP文档写法.md</code>。抽出的 SOP 默认停用，确认顺序、工具、检查点无误后再启用。</div>
+    </details>
     <input id="pbDocFilter" placeholder="输入关键字筛选文档名或分类…" value="${esc(pbDocFilter)}">
     <select id="pbDocSelect" size="8">${options || '<option disabled>没有匹配的文档</option>'}</select>
     <div class="row">
