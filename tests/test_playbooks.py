@@ -1,6 +1,6 @@
-"""技能：存储、校验与抽取。
+"""SOP：存储、校验与抽取。
 
-核心安全属性：技能只能引用已存在的工具，不能通过它新增执行能力。
+核心安全属性：SOP 只能引用已存在的工具，不能通过它新增执行能力。
 """
 import unittest
 from unittest.mock import patch
@@ -41,10 +41,10 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(got["steps"][0]["args"], {"name": "kb-app", "lines": 100})
 
     def test_unknown_tool_is_rejected(self):
-        """这条是技能不会扩权的根本保证。"""
+        """这条是 SOP 不会扩权的根本保证。"""
         for bad in ["docker_exec", "rm", "", "container_logs; rm -rf /"]:
             with self.subTest(bad=bad), self.assertRaises(playbooks.InvalidPlaybook) as cm:
-                playbooks.save(None, "坏技能", "", [step(bad)], TOOLS)
+                playbooks.save(None, "坏 SOP", "", [step(bad)], TOOLS)
             self.assertIn("不存在的工具", str(cm.exception))
 
     def test_empty_name_or_steps_rejected(self):
@@ -60,7 +60,7 @@ class StoreTests(unittest.TestCase):
         self.assertIn("步骤最多", str(cm.exception))
 
     def test_update_replaces_steps_without_duplicating(self):
-        pid = playbooks.save(None, "原技能", "", [step("container_stats"),
+        pid = playbooks.save(None, "原 SOP", "", [step("container_stats"),
                                                   step("host_resources")], TOOLS)
         playbooks.save(pid, "改过的", "新触发", [step("container_logs", name="x")], TOOLS)
         got = playbooks.get(pid)
@@ -81,7 +81,7 @@ class StoreTests(unittest.TestCase):
     def test_prompt_only_includes_usable_playbooks(self):
         playbooks.save(None, "可用的", "触发甲", [step("container_stats")], TOOLS)
         playbooks.save(None, "停用的", "", [step("host_resources")], TOOLS, enabled=False)
-        # 这个技能引用的工具稍后会从可用集合里消失
+        # 这个 SOP 引用的工具稍后会从可用集合里消失
         playbooks.save(None, "工具没了", "", [step("container_logs", name="x")], TOOLS)
 
         text = playbooks.as_prompt({"container_stats", "host_resources"})
@@ -91,7 +91,7 @@ class StoreTests(unittest.TestCase):
         self.assertIn("触发甲", text)
 
     def test_prompt_is_empty_without_tools(self):
-        playbooks.save(None, "某技能", "", [step("container_stats")], TOOLS)
+        playbooks.save(None, "某 SOP", "", [step("container_stats")], TOOLS)
         self.assertEqual(playbooks.as_prompt(set()), "")
 
 
@@ -203,7 +203,7 @@ class ApiTests(unittest.TestCase):
         self.addCleanup(self.tools.stop)
 
     def body(self, **over):
-        base = {"name": "测试技能", "trigger": "某种情况",
+        base = {"name": "测试 SOP", "trigger": "某种情况",
                 "steps": [{"tool": "container_stats", "args": {}, "checkpoint": "看内存"}],
                 "enabled": True}
         base.update(over)

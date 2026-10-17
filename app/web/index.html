@@ -357,9 +357,9 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
       <div class="pb-panel" id="tlPanel" hidden></div>
     </div>
     <div class="pb-wrap">
-      <button class="nav-btn" id="pbBtn" title="技能：从文档里学会的做法，按步骤调用已有工具">
-        <svg viewBox="0 0 24 24"><path d="M12 3l2.2 5.3L20 9l-4.4 3.9L17 19l-5-3-5 3 1.4-6.1L4 9l5.8-.7z"/></svg>
-        <span class="lbl">技能</span><span class="badge" id="pbBadge"></span></button>
+      <button class="nav-btn" id="pbBtn" title="SOP（标准作业流程）：从文档整理出的操作步骤，按顺序调用已有工具">
+        <svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3h6v1M9 10h6M9 14h6M9 18h3"/></svg>
+        <span class="lbl">SOP</span><span class="badge" id="pbBadge"></span></button>
       <div class="pb-panel" id="pbPanel" hidden></div>
     </div>
     <div class="hist-wrap">
@@ -604,7 +604,7 @@ const EXAMPLES = ['总结一下知识库里有哪些主要内容', '帮我做一
 let convId = null, botName = '小知';
 function welcome() {
   $('thread').innerHTML = `<div class="welcome"><div class="logo">📚</div><h2>您好，我是${esc(botName)}</h2>
-    <p>📄 读您上传的文档 · 🧩 照文档里的做法 · 🔧 用批准过的工具查真实数据</p>
+    <p>📄 读您上传的文档 · 📋 照文档里的做法 · 🔧 用批准过的工具查真实数据</p>
     <div class="chips">${EXAMPLES.map(q => `<button class="chip">${esc(q)}</button>`).join('')}</div></div>`;
 }
 function sourcesHtml(sources) {
@@ -817,7 +817,7 @@ function pbCard(p) {
       <button data-edit="${p.id}">编辑</button>
       <button data-del="${p.id}">删除</button>
     </div>
-    ${bad ? `<div class="pb-warn">⚠ 引用了当前不可用的工具：${esc(p.missing_tools.join('、'))}，该技能不会生效</div>` : ''}
+    ${bad ? `<div class="pb-warn">⚠ 引用了当前不可用的工具：${esc(p.missing_tools.join('、'))}，该 SOP 不会生效</div>` : ''}
     <div class="pb-body">
       ${p.trigger ? `<div class="pb-trig">适用：${esc(p.trigger)}</div>` : ''}
       ${steps}
@@ -827,9 +827,9 @@ function pbCard(p) {
 function pbEditor(p) {
   const tools = Object.entries(pbTools).map(([n, d]) => `${n}：${d}`).join('\n');
   return `<div class="pb pb-edit" data-id="${p.id || ''}">
-    <div class="pb-top"><span class="nm">${p.id ? '编辑技能' : '新建技能'}</span></div>
+    <div class="pb-top"><span class="nm">${p.id ? '编辑 SOP' : '新建 SOP'}</span></div>
     <div class="pb-body">
-      <input id="pbName" placeholder="技能名称" maxlength="60" value="${esc(p.name || '')}"
+      <input id="pbName" placeholder="SOP 名称" maxlength="60" value="${esc(p.name || '')}"
              style="width:100%;box-sizing:border-box;padding:7px 9px;border-radius:7px;
                     border:1px solid var(--border);background:var(--panel-2);color:var(--text);font:inherit">
       <input id="pbTrigger" placeholder="什么情况下用它，例如：用户反馈服务反复重启" maxlength="200"
@@ -853,7 +853,7 @@ function pbPicker() {
   const options = matched.map(d =>
     `<option value="${esc(d.source)}">${esc(d.source)}　[${esc(d.category || '未分类')}]</option>`).join('');
   return `<div class="pb-pick">
-    <div class="hd">从哪个文档抽取技能？</div>
+    <div class="hd">从哪个文档抽取 SOP？</div>
     <input id="pbDocFilter" placeholder="输入关键字筛选文档名或分类…" value="${esc(pbDocFilter)}">
     <select id="pbDocSelect" size="8">${options || '<option disabled>没有匹配的文档</option>'}</select>
     <div class="row">
@@ -872,15 +872,15 @@ async function loadPlaybooks() {
   const sc = countSkills(list);
   setBadge('pbBadge', sc, '生效');
   $('pbPanel').innerHTML =
-    `<div class="pb-head"><span class="t">技能<small>${sc.live} 个生效 · 共 ${sc.total} 个</small></span>
+    `<div class="pb-head"><span class="t">SOP · 标准作业流程<small>${sc.live} 个生效 · 共 ${sc.total} 个</small></span>
        <button class="icon-btn" id="pbNew">＋ 新建</button>
        <button class="icon-btn" id="pbFromDoc">从文档抽取</button></div>
-     <div class="tl-note">📄 文档写了怎么做 → 🧩 技能定好按什么顺序做 → 🔧 工具去执行。<br>
-       适用于故障排查、日常巡检、上线前检查、上线后验收。技能只能调用已有工具，不能新增执行能力。</div>` +
+     <div class="tl-note">📄 文档写了怎么做 → 📋 SOP 定好按什么顺序做 → 🔧 工具去执行。<br>
+       适用于故障排查、日常巡检、上线前检查、上线后验收。SOP 只能调用已有工具，不能新增执行能力。</div>` +
     (pbPicking ? pbPicker() : '') +
     (pbEditing !== null ? pbEditor(pbEditing) : '') +
     (list.length ? list.map(pbCard).join('')
-                 : '<div class="empty">还没有技能。点「从文档抽取」，让 Agent 从你的排查手册、巡检规范里学会做法。</div>');
+                 : '<div class="empty">还没有 SOP。点「从文档抽取」，让 Agent 从你的排查手册、巡检规范里整理出操作步骤。</div>');
   if (pbPicking) {
     const input = $('pbDocFilter');
     input.focus();
@@ -928,9 +928,9 @@ $('pbPanel').addEventListener('click', async e => {
       await loadPlaybooks();
       loadDocs();
       alert(d.extracted.length
-        ? `从《${doc}》抽取出 ${d.extracted.length} 个技能，已默认停用。\n请核对步骤无误后再启用。`
+        ? `从《${doc}》抽取出 ${d.extracted.length} 个 SOP，已默认停用。\n请核对步骤无误后再启用。`
           + (d.note ? `\n\n${d.note}` : '')
-        : `《${doc}》没有抽出技能。\n\n原因：${d.note || '未知'}`);
+        : `《${doc}》没有抽出 SOP。\n\n原因：${d.note || '未知'}`);
     } catch (ex) {
       btn.disabled = false;
       btn.textContent = '开始抽取';
@@ -976,7 +976,7 @@ $('pbPanel').addEventListener('click', async e => {
 
   const delId = id('del');
   if (delId) {
-    if (!confirm('确定删除这个技能？')) return;
+    if (!confirm('确定删除这个 SOP？')) return;
     await fetch('/api/playbooks/' + delId, {method: 'DELETE'});
     return loadPlaybooks().then(loadDocs);
   }
@@ -1145,7 +1145,7 @@ async function loadTools() {
   const names = Object.keys(tools).sort();
   const tc = countTools(tools);
   setBadge('tlBadge', tc, '可用');
-  // 工具停用/启用会改变技能是否生效，顺带刷新技能徽标。
+  // 工具停用/启用会改变 SOP 是否生效，顺带刷新 SOP 徽标。
   fetch('/api/playbooks').then(r => r.json()).then(p => setBadge('pbBadge', countSkills(p.playbooks), '生效')).catch(() => {});
   const waiting = tlProposing ? [] : await (await fetch('/api/tools/pending')).json()
     .then(r => r.pending || []).catch(() => []);
@@ -1352,7 +1352,7 @@ async function ask() {
 function autosize() { const t = $('question'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 180) + 'px'; }
 
 /* 顶栏徽标与面板标题共用同一套口径，避免两处数字对不上：
-   工具「可用」= 已启用且本机能运行；技能「生效」= 已启用且引用的工具都可用。 */
+   工具「可用」= 已启用且本机能运行；SOP「生效」= 已启用且引用的工具都可用。 */
 const countTools = tools => {
   const all = Object.values(tools || {});
   return {live: all.filter(t => t.enabled && t.runnable).length, total: all.length};

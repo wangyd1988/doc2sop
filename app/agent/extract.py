@@ -1,6 +1,6 @@
-"""从上传的文档里抽取技能。
+"""从上传的文档里抽取 SOP。
 
-技能 = 文档里那些"按步骤查看、核对"的做法，编排成对已有工具的有序调用：
+SOP = 文档里那些"按步骤查看、核对"的做法，编排成对已有工具的有序调用：
 故障排查、日常巡检、上线检查、模型 key 自查、请假前核对日历……都算。
 
 安全边界：模型只能**引用已有工具**来编排步骤，不能定义新命令。抽取结果会经过
@@ -18,9 +18,9 @@ from app.config import log, why
 # 推理型模型会先输出思考再给答案，预算不足时正式输出会是空的。给足余量。
 MAX_OUTPUT_TOKENS = 8000
 
-EXTRACT_PROMPT = """你要从一份文档里，整理出 Agent 可以复用的「技能」。
+EXTRACT_PROMPT = """你要从一份文档里，整理出 Agent 可以复用的「SOP」（标准作业流程）。
 
-技能 = 做某件事时，按顺序调用哪些工具、每一步看什么、怎么判断。
+SOP = 做某件事时，按顺序调用哪些工具、每一步看什么、怎么判断。
 它不限于某个岗位，凡是文档里**按步骤查看、核对**的做法都算，例如：
 - 运维：服务反复重启时怎么一步步定位；每日巡检看哪些指标、阈值多少
 - 研发：调不通大模型时，先核对可用模型，再看 key 的额度和限流
@@ -34,7 +34,7 @@ EXTRACT_PROMPT = """你要从一份文档里，整理出 Agent 可以复用的�
 
 输出 JSON 数组，每个元素形如：
 {{
-  "name": "技能名称，不超过 20 字，例如：容器重启排查、模型调用自查、请假拼假核对",
+  "name": "SOP 名称，不超过 20 字，例如：容器重启排查、模型调用自查、请假拼假核对",
   "trigger": "什么时候用它，例如：用户反馈 Ingress 访问超时；或：用户问节假日怎么请假最划算",
   "steps": [
     {{"tool": "工具名（必须是上面列出的）",
@@ -46,7 +46,7 @@ EXTRACT_PROMPT = """你要从一份文档里，整理出 Agent 可以复用的�
 要求：
 - 文档里确实描述了可按步骤执行的查看/核对流程才输出；只是概念介绍或纯规则罗列就输出空数组 []
 - 只使用和文档内容真正相关的工具，不要为了凑步骤硬塞不相关的工具
-- 最多 3 个技能，每个最多 6 步
+- 最多 3 个 SOP，每个最多 6 步
 - checkpoint 要具体，写明判断标准，不要写"检查是否正常"这种空话
 - 参数值如果依赖具体对象（容器名、年份、日期等），填空字符串，由使用时再定
 - 只输出 JSON，不要解释、不要代码块标记"""
@@ -69,9 +69,9 @@ def _parse(text):
     return parsed if isinstance(parsed, list) else None
 
 
-@traceable(name="技能抽取", run_type="chain")
+@traceable(name="SOP 抽取", run_type="chain")
 def extract(document_name: str, text: str, known_tools: dict):
-    """返回 (候选技能列表, 说明)。失败时返回空列表，绝不抛异常。"""
+    """返回 (候选 SOP 列表, 说明)。失败时返回空列表，绝不抛异常。"""
     if not known_tools:
         return [], "当前没有可用的工具"
     listing = "\n".join(f"- {name}：{desc}" for name, desc in sorted(known_tools.items()))
@@ -96,7 +96,7 @@ def extract(document_name: str, text: str, known_tools: dict):
 
     parsed = _parse(content)
     if parsed is None:
-        return [], "模型返回的内容无法解析为技能，请重试"
+        return [], "模型返回的内容无法解析为 SOP，请重试"
     if not parsed:
         # 模型明确返回空数组：这篇文档确实没有可编排的流程。
         return [], "这篇文档里没有能用现有工具按步骤查看、核对的做法"

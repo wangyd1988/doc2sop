@@ -211,7 +211,7 @@ def delete_document(name: str):
     name = safe_name(name)
     store.delete_document(name)
     (FILES_DIR / name).unlink(missing_ok=True)
-    # 文档没了，从它抽出来的技能也一并清掉，避免留下孤儿流程。
+    # 文档没了，从它抽出来的 SOP 也一并清掉，避免留下孤儿流程。
     removed = playbooks.delete_by_source(name)
     return {"deleted": name, "playbooks_removed": removed}
 
@@ -236,7 +236,7 @@ def list_playbooks():
     tools = usable_tools()
     items = playbooks.list_all()
     for item in items:
-        # 工具被下线后，依赖它的技能要在界面上标出来，而不是静默失效。
+        # 工具被下线后，依赖它的 SOP 要在界面上标出来，而不是静默失效。
         item["missing_tools"] = sorted({s["tool"] for s in item["steps"]
                                         if s["tool"] not in tools})
     return {"playbooks": items, "tools": tools}
@@ -258,7 +258,7 @@ def create_playbook(body: PlaybookBody):
 def update_playbook(playbook_id: str, body: PlaybookBody):
     existing = playbooks.get(playbook_id)
     if not existing:
-        raise HTTPException(404, "技能不存在")
+        raise HTTPException(404, "SOP 不存在")
     try:
         playbooks.save(playbook_id, body.name, body.trigger,
                        [s.model_dump() for s in body.steps], set(usable_tools()),
@@ -280,11 +280,11 @@ class ExtractBody(BaseModel):
 
 @app.post("/api/playbooks/extract")
 def extract_from_document(body: ExtractBody):
-    """从已入库的文档里抽取候选技能，返回但不直接保存，由用户确认。"""
+    """从已入库的文档里抽取候选 SOP，返回但不直接保存，由用户确认。"""
     name = safe_name(body.source)
     tools = usable_tools()
     if not tools:
-        raise HTTPException(400, "当前没有可用的工具，无法编排技能")
+        raise HTTPException(400, "当前没有可用的工具，无法编排 SOP")
 
     chunks = store.collection.get(where={"source": name}, include=["documents"])
     if not chunks["documents"]:
