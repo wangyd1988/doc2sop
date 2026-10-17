@@ -1,0 +1,13 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    OMP_NUM_THREADS=2
+
+WORKDIR /app
+# 不装 fastembed：直接用 onnxruntime + tokenizers，镜像小一半，也能控制 ORT 的内存参数
+RUN pip install --no-cache-dir "onnxruntime>=1.18,<2" "tokenizers>=0.19,<1" "huggingface_hub>=0.23,<1" "numpy>=1.26,<3"
+COPY rerank_server.py /app/rerank_server.py
+
+EXPOSE 8081
+CMD ["python", "/app/rerank_server.py"]

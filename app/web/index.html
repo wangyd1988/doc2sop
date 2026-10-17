@@ -516,6 +516,7 @@ body.manage.settings #mgroups, body.manage.settings #mlist, body.manage.settings
 .src summary .tag { font-size: 10.5px; padding: 1px 6px; border-radius: 6px; flex-shrink: 0; }
 .src summary .tag.net { background: rgba(14,165,233,.14); color: #0284c7; }
 .src summary .tag.kw { background: rgba(217,119,6,.14); color: #b45309; }
+.src summary .tag.rr { background: rgba(124,58,237,.12); color: #6d28d9; font-variant-numeric: tabular-nums; }
 
 /* SOP 卡片里的原句 */
 .pb-step .ev { flex-basis: 100%; margin-left: 26px; font-size: 11.5px; color: var(--muted); }
@@ -932,7 +933,8 @@ function sourcesHtml(sources) {
     const pct = Math.max(0, Math.min(100, Math.round(s.score * 100)));
     // 「网络补充」是之前联网搜到、人确认后存进来的，和手写文档区分开；「关键词」表示靠精确词命中而非语义
     const tags = (s.category === '网络补充' ? '<span class="tag net" title="这段来自之前联网搜索后存入知识库的内容，注意时效">网络补充</span>' : '')
-               + (s.match === 'lexical' ? '<span class="tag kw" title="靠关键词精确匹配召回（字段名、错误码等）">关键词</span>' : '');
+               + (s.match === 'lexical' ? '<span class="tag kw" title="靠关键词精确匹配召回（字段名、错误码等）">关键词</span>' : '')
+               + (s.rerank != null ? `<span class="tag rr" title="交叉编码器重排分（越高越相关，可为负）">重排 ${Number(s.rerank).toFixed(1)}</span>` : '');
     return `<details class="src" data-n="${s.index}"><summary><span class="n">[${s.index}]</span>
       <span class="loc" title="${esc(s.location)}">${esc(s.location)}</span>${tags}
       <span class="bar" title="相似度 ${s.score}"><i style="width:${pct}%"></i></span></summary>
@@ -2085,6 +2087,7 @@ async function renderSettings() {
       <label><span>向量模型地址<i>可选：没有网关、向量和对话来自不同厂商时填；留空同上</i></span><div class="inline"><input id="stEmbedUrl" value="${esc(s.embed_base_url || '')}" placeholder="留空 = 和对话模型同一地址，例如 https://api.siliconflow.cn/v1">${src('embed_base_url')}</div></label>
       <label><span>向量模型 Key<i>可选，只写不读</i></span><div class="inline"><input id="stEmbedKey" type="password" autocomplete="new-password" placeholder="${s.embed_api_key_masked ? '已设置 ' + esc(s.embed_api_key_masked) + '，留空不改' : '留空 = 用上面的 key'}">${src('embed_api_key')}</div></label>
       <label><span>图片识别<i>多个用逗号，按顺序尝试</i></span><div class="inline"><input id="stVision" value="${esc(s.vision_models.join(', '))}" placeholder="可留空，不识别文档内图片">${src('vision_models')}</div></label>
+      <label><span>重排模型<i>可选：网关上的 rerank 模型名，召回后交叉编码器精排</i></span><div class="inline"><input id="stRerank" value="${esc(s.rerank_model || '')}" placeholder="留空 = 不重排，只用向量+关键词融合排序">${src('rerank_model')}</div></label>
       <datalist id="stModels"></datalist>
       <div id="stWarn" class="warn" hidden></div>
       <div class="row"><button id="stTest">测试连接</button><button class="pri" id="stSave">保存</button>
@@ -2111,18 +2114,19 @@ function pollReindex(id) {
 function stBody(reindex) {
   return {llm_base_url: $('stUrl').value.trim(), llm_api_key: $('stKey').value, chat_model: $('stChat').value.trim(),
           embed_model: $('stEmbed').value.trim(), vision_models: $('stVision').value.split(',').map(s => s.trim()).filter(Boolean),
-          embed_base_url: $('stEmbedUrl').value.trim(), embed_api_key: $('stEmbedKey').value, reindex};
+          embed_base_url: $('stEmbedUrl').value.trim(), embed_api_key: $('stEmbedKey').value,
+          rerank_model: $('stRerank').value.trim(), reindex};
 }
 $('msettings').addEventListener('click', async e => {
   const id = e.target.id;
   const preset = e.target.dataset.preset;
   if (preset === 'gateway') {
     $('stUrl').value = 'http://127.0.0.1:4000/v1'; $('stChat').value = 'kb-chat'; $('stEmbed').value = 'kb-embedding';
-    $('stEmbedUrl').value = ''; $('stVision').value = 'kb-vision'; $('stKey').focus(); return;
+    $('stEmbedUrl').value = ''; $('stVision').value = 'kb-vision'; $('stRerank').value = 'kb-rerank'; $('stKey').focus(); return;
   }
   if (preset === 'direct') {
     $('stUrl').value = 'https://api.deepseek.com/v1'; $('stChat').value = 'deepseek-chat';
-    $('stEmbedUrl').value = 'https://api.siliconflow.cn/v1'; $('stEmbed').value = 'BAAI/bge-m3'; $('stVision').value = '';
+    $('stEmbedUrl').value = 'https://api.siliconflow.cn/v1'; $('stEmbed').value = 'BAAI/bge-m3'; $('stVision').value = ''; $('stRerank').value = '';
     toast('示例填好了：对话用 DeepSeek，向量用硅基流动的 bge-m3。换成您自己的两把 key 即可；图片识别留空表示不识别文档内图片。', '', 9000);
     $('stKey').focus(); return;
   }
@@ -2135,7 +2139,7 @@ $('msettings').addEventListener('click', async e => {
       stTest = d;
       $('stModels').innerHTML = (d.models || []).map(m => `<option value="${esc(m)}">`).join('');
       box.className = 'result ' + (d.ok ? 'ok' : 'err');
-      box.innerHTML = `${d.models.length ? `对话地址可达，这把 key 能用 ${d.models.length} 个模型。` : esc(d.models_note || '')}<br>对话模型：${d.chat ? '✓ ' + (d.chat === '可调用' ? '可调用' : '回复「' + esc(d.chat) + '」') : '✕'}　向量模型${d.separate_embed ? '（独立地址）' : ''}：${d.embed ? '✓ ' + d.embed_dim + ' 维' : '✕'}`
+      box.innerHTML = `${d.models.length ? `对话地址可达，这把 key 能用 ${d.models.length} 个模型。` : esc(d.models_note || '')}<br>对话模型：${d.chat ? '✓ ' + (d.chat === '可调用' ? '可调用' : '回复「' + esc(d.chat) + '」') : '✕'}　向量模型${d.separate_embed ? '（独立地址）' : ''}：${d.embed ? '✓ ' + d.embed_dim + ' 维' : '✕'}${d.rerank !== null && d.rerank !== undefined ? '　重排：' + (d.rerank === 'ok' ? '✓' : '✕') : ''}`
         + (d.dim_mismatch ? `<br>⚠ ${esc(d.dim_mismatch)}` : '') + (d.errors.length ? `<ul>${d.errors.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '');
     } catch (err) { box.className = 'result err'; box.textContent = '测试失败：' + err.message; }
     e.target.disabled = false; e.target.textContent = '测试连接'; return;

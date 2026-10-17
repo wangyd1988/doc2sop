@@ -199,5 +199,75 @@ class HybridTests(unittest.TestCase):
         self.assertEqual([h["location"] for h in hits], ["a.md"])
 
 
+class RerankTests(unittest.TestCase):
+    """Cross-encoder rerank is best-effort: reorders the fused head, never blocks answering."""
+
+    def hits(self, n):
+        return [{"index": i + 1, "location": f"d{i}.md", "text": f"片段{i}", "score": 0.5, "match": "vector"}
+                for i in range(n)]
+
+    def test_disabled_when_no_model_configured(self):
+        from app.rag import rerank
+        with patch.object(rerank.settings, "get", lambda k: "" if k == "rerank_model" else "x"):
+            self.assertFalse(rerank.enabled())
+            self.assertEqual([h["location"] for h in rerank.rerank("q", self.hits(12), 8)],
+                             [f"d{i}.md" for i in range(8)])
+
+    def test_reorders_by_score_and_renumbers(self):
+        from app.rag import rerank
+        captured = {}
+
+        def fake_post(url, payload):
+            captured.update(url=url, payload=payload)
+            n = len(payload["documents"])
+            return {"results": [{"index": i, "relevance_score": float(i)} for i in range(n)]}   # last is best
+
+        with patch.object(rerank, "enabled", return_value=True), \
+             patch.object(rerank.settings, "get", lambda k: {"rerank_model": "kb-rerank", "llm_base_url": "http://gw:4000/v1", "llm_api_key": "k"}[k]), \
+             patch.object(rerank, "RERANK_CANDIDATES", 12), patch.object(rerank, "_post", fake_post):
+            out = rerank.rerank("问题", self.hits(20), 8)
+        self.assertEqual(captured["url"], "http://gw:4000/v1/rerank")
+        self.assertEqual(captured["payload"]["model"], "kb-rerank")
+        self.assertEqual(len(captured["payload"]["documents"]), 12)          # only the head is scored
+        self.assertEqual([h["location"] for h in out], [f"d{i}.md" for i in range(11, 3, -1)])
+        self.assertEqual([h["index"] for h in out], list(range(1, 9)))      # citations stay contiguous
+        self.assertEqual(out[0]["rerank"], 11.0)
+
+    def test_failure_falls_back_to_fused_order(self):
+        from app.rag import rerank
+
+        def boom(url, payload):
+            raise TimeoutError("slow")
+
+        with patch.object(rerank, "enabled", return_value=True), \
+             patch.object(rerank.settings, "get", lambda k: "x"), patch.object(rerank, "_post", boom):
+            out = rerank.rerank("q", self.hits(12), 8)
+        self.assertEqual([h["location"] for h in out], [f"d{i}.md" for i in range(8)])
+        self.assertNotIn("rerank", out[0])
+
+    def test_retrieval_keeps_more_candidates_when_rerank_is_on(self):
+        collection = RetrievalTests.fake_store(self, [f"片段{i}" for i in range(40)],
+                                               [{"source": f"d{i}.md"} for i in range(40)], [0.3] * 40)
+        seen = {}
+
+        def fake_rerank(question, hits, keep):
+            seen["n"] = len(hits)
+            return hits[:keep]
+
+        with patch.object(retrieval.store, "collection", collection), \
+             patch.object(retrieval, "embed_query", lambda _t: [0.0]), \
+             patch.object(retrieval.lexical, "search", lambda _q, _n: []), \
+             patch.object(retrieval.rerank, "enabled", return_value=True), \
+             patch.object(retrieval.rerank, "rerank", fake_rerank), \
+             patch.object(retrieval, "TOP_K", 8), patch.object(retrieval, "RERANK_CANDIDATES", 12):
+            out = retrieval.retrieve("问题")
+        self.assertEqual(seen["n"], 12)
+        self.assertEqual(len(out), 8)
+
+    def test_context_shows_rerank_score_when_present(self):
+        text = retrieval.as_context([{"index": 1, "location": "a.md", "text": "甲", "score": 0.6, "rerank": 4.25}])
+        self.assertIn("重排分 4.2", text)
+
+
 if __name__ == "__main__":
     unittest.main()

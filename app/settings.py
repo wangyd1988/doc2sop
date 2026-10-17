@@ -22,7 +22,7 @@ from app.config import DATA_DIR, log, why
 
 PATH = DATA_DIR / "settings.json"
 FIELDS = ("llm_base_url", "llm_api_key", "chat_model", "embed_model", "vision_models",
-          "embed_base_url", "embed_api_key")
+          "embed_base_url", "embed_api_key", "rerank_model")
 SECRETS = ("llm_api_key", "embed_api_key")
 _lock = threading.Lock()
 _overrides: dict = {}
@@ -34,7 +34,8 @@ def _env_defaults() -> dict:
             "chat_model": config.CHAT_MODEL, "embed_model": config.EMBED_MODEL,
             "vision_models": list(config.VISION_MODELS),
             # 向量模型可以在另一个地址（没有网关、对话和向量来自不同厂商时）；空 = 和对话模型同一处
-            "embed_base_url": config.EMBED_BASE_URL, "embed_api_key": config.EMBED_API_KEY}
+            "embed_base_url": config.EMBED_BASE_URL, "embed_api_key": config.EMBED_API_KEY,
+            "rerank_model": config.RERANK_MODEL}
 
 
 def _load():
@@ -98,6 +99,7 @@ def public() -> dict:
             "chat_model": cur["chat_model"], "embed_model": cur["embed_model"],
             "vision_models": cur["vision_models"],
             "embed_base_url": cur["embed_base_url"], "embed_api_key_masked": mask(cur["embed_api_key"]),
+            "rerank_model": cur["rerank_model"],
             "source": src}
 
 
@@ -152,10 +154,10 @@ def _models_url(base: str) -> str:
 
 
 def test(base_url: str, api_key: str, chat_model: str, embed_model: str,
-         embed_base_url: str = "", embed_api_key: str = "") -> dict:
+         embed_base_url: str = "", embed_api_key: str = "", rerank_model: str = "") -> dict:
     """Try the endpoints with these values before saving. Never raises."""
     out = {"ok": False, "models": [], "chat": None, "embed": None, "embed_dim": None, "errors": [],
-           "separate_embed": bool(embed_base_url)}
+           "separate_embed": bool(embed_base_url), "rerank": None}
     cur = current()
     api_key = api_key or cur["llm_api_key"]
     if not api_key:
@@ -185,5 +187,20 @@ def test(base_url: str, api_key: str, chat_model: str, embed_model: str,
         out["embed_dim"] = len(vec)
     except Exception as exc:
         out["errors"].append(f"向量模型 {embed_model}（{e_url}）调用失败：{why(exc)}")
+    if rerank_model:
+        try:
+            base = base_url.rstrip("/")
+            base = base[:-3] if base.endswith("/v1") else base
+            req = urllib.request.Request(
+                base + "/v1/rerank",
+                json.dumps({"model": rerank_model, "query": "测试", "documents": ["相关", "无关"]}).encode(),
+                {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                results = json.load(r).get("results", [])
+            out["rerank"] = "ok" if results else "无结果"
+            if not results:
+                out["errors"].append(f"重排模型 {rerank_model} 返回为空")
+        except Exception as exc:
+            out["errors"].append(f"重排模型 {rerank_model} 调用失败：{why(exc)}")
     out["ok"] = not out["errors"]
     return out

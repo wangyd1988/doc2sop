@@ -13,8 +13,8 @@ from pathlib import Path
 
 from langsmith import traceable
 
-from app.config import MIN_SCORE, TOP_K
-from app.rag import lexical, store
+from app.config import MIN_SCORE, RERANK_CANDIDATES, TOP_K
+from app.rag import lexical, rerank, store
 from app.rag.embedding import embed_query
 
 CANDIDATES = 30     # how deep each retriever looks before fusion
@@ -98,6 +98,8 @@ def retrieve(question: str):
     both = set(vector_rank) & set(lexical_rank)
 
     hits = []
+    # 融合后先多留一些给重排（它只看前 RERANK_CANDIDATES 条），没开重排时就是 TOP_K
+    want = max(TOP_K, RERANK_CANDIDATES) if rerank.enabled() else TOP_K
     for cid in sorted(fused, key=lambda c: (-fused[c], -(records[c]["score"] or 0))):
         record = records[cid]
         if (record["score"] or 0) < MIN_SCORE:
@@ -108,9 +110,9 @@ def retrieve(question: str):
                      "category": meta.get("category") or "",
                      "match": "both" if cid in both else
                               "lexical" if cid in lexical_rank else "vector"})
-        if len(hits) >= TOP_K:
+        if len(hits) >= want:
             break
-    return hits
+    return rerank.rerank(question, hits, TOP_K)
 
 
 def as_context(hits) -> str:
@@ -121,8 +123,14 @@ def as_context(hits) -> str:
     """
     if not hits:
         return "（这次没有检索到相关片段）"
-    return "\n\n".join(f"[{h['index']}] 来源：{h['location']}（相似度 {h['score']:.2f}）\n{h['text']}"
-                       for h in hits)
+    note = ""
+    if any(h.get("rerank") is not None for h in hits):
+        note = ("（重排分由交叉编码器给出：大于 0 通常相关，小于 -2 基本无关；它比相似度可靠得多，"
+                "全部为负时应判断为知识库没有相关内容）\n\n")
+    return note + "\n\n".join(
+        f"[{h['index']}] 来源：{h['location']}（相似度 {h['score']:.2f}"
+        + (f"，重排分 {h['rerank']:.1f}" if h.get("rerank") is not None else "") + f"）\n{h['text']}"
+        for h in hits)
 
 
 # 「知识库里都有什么」这类问题问的是全局，8 个片段答不了；要看文档目录。

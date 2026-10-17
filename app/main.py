@@ -480,6 +480,8 @@ class SettingsBody(BaseModel):
     # 向量模型单独的地址 / key（没有网关时用）；留空 = 与对话模型相同
     embed_base_url: str = Field(default="", max_length=300, pattern=r"^(https?://.*)?$")
     embed_api_key: str = Field(default="", max_length=500)
+    # 重排模型（网关上的 rerank 模型名），留空关闭
+    rerank_model: str = Field(default="", max_length=120)
     # 换向量模型必须同时重建索引；页面要显式确认
     reindex: bool = False
 
@@ -494,7 +496,7 @@ def get_settings():
 @app.post("/api/settings/test")
 def test_settings(body: SettingsBody):
     result = settings.test(body.llm_base_url, body.llm_api_key, body.chat_model, body.embed_model,
-                           body.embed_base_url, body.embed_api_key)
+                           body.embed_base_url, body.embed_api_key, body.rerank_model)
     dim = store.dimension()
     if result.get("embed_dim") and dim and result["embed_dim"] != dim:
         result["dim_mismatch"] = f"当前索引是 {dim} 维，新向量模型是 {result['embed_dim']} 维，保存后必须重建索引"

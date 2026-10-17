@@ -54,6 +54,12 @@ VISION_WORKERS = int(os.environ.get("VISION_WORKERS", "3"))
 TOP_K = int(os.environ.get("TOP_K", "8"))
 # Drop clearly unrelated chunks so greetings and chit-chat are not answered with noise.
 MIN_SCORE = float(os.environ.get("MIN_SCORE", "0.25"))
+# Cross-encoder rerank through the gateway (LiteLLM /rerank). Empty = off.
+# A base-size cross-encoder costs ~0.3 s per passage on 2 vCPUs, so only the top
+# few fused candidates are rescored; the rest keep their fused order.
+RERANK_MODEL = os.environ.get("RERANK_MODEL", "").strip()
+RERANK_CANDIDATES = int(os.environ.get("RERANK_CANDIDATES", "12"))
+RERANK_TIMEOUT = float(os.environ.get("RERANK_TIMEOUT", "10"))
 HISTORY_MESSAGES = int(os.environ.get("HISTORY_MESSAGES", "8"))
 HISTORY_CHARS = 1200
 
