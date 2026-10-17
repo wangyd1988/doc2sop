@@ -353,7 +353,7 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .step.web .cmd { color: #0284c7; }
 .hint { max-width: 820px; margin: 6px auto 0; font-size: 12px; color: var(--muted); text-align: center; }
 
-/* ---------- 独立管理页（/manage）：复用抽屉里的全部渲染逻辑，只换布局 ---------- */
+/* ---------- 独立管理页（/manage）：导航 → 分组 → 列表 → 详情 四栏 ---------- */
 a.nav-btn { text-decoration: none; }
 #manage { display: none; }
 body.manage > aside, body.manage #chat, body.manage .composer, body.manage #newBtn, body.manage .nav-sep,
@@ -362,26 +362,71 @@ body.manage #manageBtn { display: none !important; }
 #backBtn { display: none; }
 body.manage #backBtn { display: inline-flex; }
 body.manage #manage { display: flex; flex: 1; min-height: 0; }
-#mnav { width: 196px; flex-shrink: 0; border-right: 1px solid var(--border); padding: 14px 10px; display: flex;
-        flex-direction: column; gap: 4px; background: var(--panel); }
+#mnav { width: 168px; flex-shrink: 0; border-right: 1px solid var(--border); padding: 12px 8px; display: flex;
+        flex-direction: column; gap: 3px; background: var(--panel); }
 #mnav button { display: flex; align-items: center; gap: 9px; text-align: left; padding: 9px 12px; border-radius: 9px;
                font-size: 13.5px; color: var(--text); }
 #mnav button:hover { background: var(--panel-2); }
 #mnav button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 #mnav button .badge { margin-left: auto; }
 .mnav-note { margin-top: auto; font-size: 11.5px; color: var(--muted); line-height: 1.6; padding: 10px 6px 0; }
-#mbody { flex: 1; min-width: 0; overflow-y: auto; padding: 20px 28px 40px; }
-body.manage #mbody .pb-panel { position: static; width: auto; max-width: 980px; margin: 0 auto; border: 0;
-                               box-shadow: none; animation: none; padding: 0; overflow: visible; }
-body.manage .pb-head { position: static; margin: 0; padding: 0 0 12px; }
-body.manage .pb-head .t { font-size: 18px; }
-body.manage .pb-head .x { display: none; }
-body.manage #mbody aside { display: flex; position: static; transform: none; width: auto; max-width: 980px; margin: 0 auto;
-                           border: 0; box-shadow: none; height: auto; background: transparent; }
-body.manage #mbody aside .brand { display: none; }
-body.manage #mbody aside .docs { overflow: visible; }
+#mgroups { width: 230px; flex-shrink: 0; border-right: 1px solid var(--border); overflow-y: auto; padding: 10px 8px; background: var(--panel); }
+.mg-head { font-size: 11.5px; color: var(--muted); font-weight: 600; letter-spacing: .04em; padding: 6px 10px 6px; }
+.mg { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--text); }
+.mg:hover { background: var(--panel-2); }
+.mg.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.mg .n { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mg .c { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.mg .c b { color: #059669; font-weight: 600; }
+.mg.on .c, .mg.on .c b { color: var(--accent); }
+.mg.special { color: #b45309; }
+#mlist { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+.mtool { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.mtool .ttl { font-weight: 650; font-size: 15px; white-space: nowrap; }
+.mtool .ttl small { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 8px; }
+.mtool input[type=search] { flex: 1; min-width: 120px; font: inherit; font-size: 13px; padding: 7px 11px; border-radius: 8px;
+                            border: 1px solid var(--border); background: var(--panel-2); color: var(--text); outline: none; }
+.mtool input[type=search]:focus { border-color: var(--accent); }
+.mtool .act { white-space: nowrap; font-size: 13px; padding: 7px 13px; border-radius: 8px; background: var(--user-bg); color: #fff; }
+.mtool .act.ghost { background: var(--panel-2); color: var(--text); }
+.mtool .act:hover { filter: brightness(1.05); }
+.mrows { flex: 1; overflow-y: auto; }
+.mrow { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto; column-gap: 12px; padding: 10px 16px;
+        border-bottom: 1px solid var(--border); cursor: pointer; background: var(--panel); }
+.mrow:hover { background: var(--panel-2); }
+.mrow.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.mrow .t { grid-column: 1; grid-row: 1; font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrow .t code { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 6px; }
+.mrow .s { grid-column: 1; grid-row: 2; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrow .st { grid-column: 2; grid-row: 1 / 3; align-self: center; font-size: 11.5px; padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+            background: var(--panel-2); color: var(--muted); }
+.mrow .st.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+.mrow .st.bad { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+.mrow .st.cat { background: var(--accent-soft); color: var(--accent); }
+.mrows .more { margin: 10px 16px; width: auto; }
+.mrows .empty { padding: 48px 16px; }
+#mdetail { width: 440px; flex-shrink: 0; border-left: 1px solid var(--border); overflow-y: auto; padding: 16px; background: var(--panel); }
+#mdetail .pb-panel { position: static; width: auto; border: 0; box-shadow: none; animation: none; padding: 0; overflow: visible; }
+#mdetail .pb-panel[hidden] { display: none; }
+#mdetail .pb { margin: 0 0 10px; }
+#mdetail .pb-pick, #mdetail .pb-edit { margin: 0; }
+.md-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 60px 10px; line-height: 1.8; }
+.md-doc .hd { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.md-doc .hd .ico { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 700; }
+.md-doc .hd .nm { font-weight: 650; font-size: 14.5px; word-break: break-all; }
+.md-doc dl { display: grid; grid-template-columns: 70px 1fr; gap: 6px 10px; font-size: 13px; margin: 0 0 14px; }
+.md-doc dt { color: var(--muted); } .md-doc dd { margin: 0; }
+.md-doc .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.md-doc .acts button { font-size: 12.5px; padding: 6px 12px; border-radius: 8px; background: var(--panel-2); color: var(--text); }
+.md-doc .acts button.pri { background: var(--user-bg); color: #fff; }
+.md-doc .acts button.danger { color: var(--danger); }
+.md-doc .sub { font-size: 12px; color: var(--muted); font-weight: 600; margin: 12px 0 6px; }
+.md-doc .sop { font-size: 13px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px;
+               display: flex; justify-content: space-between; gap: 8px; }
+.md-doc .sop .m { color: var(--muted); font-size: 12px; }
+@media (max-width: 1100px) { #mdetail { width: 360px; } #mgroups { width: 190px; } }
 @media (max-width: 820px) { #mnav { width: 56px; padding: 10px 6px; } #mnav button { justify-content: center; padding: 9px 0; }
-  #mnav button span:not(:first-child), #mnav .badge, .mnav-note { display: none; } #mbody { padding: 14px 12px 30px; } }
+  #mnav button span:not(:first-child), #mnav .badge, .mnav-note { display: none; } #mgroups { display: none; } #mdetail { display: none; } }
 
 /* 页内提示：替代 alert，不打断操作 */
 #toasts { position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%); z-index: 100;
@@ -490,9 +535,11 @@ body.manage #mbody aside .docs { overflow: visible; }
       <button data-tab="tools"><span>🔧</span>工具<span class="badge" id="mTlBadge"></span></button>
       <button data-tab="sop"><span>📋</span>SOP<span class="badge" id="mPbBadge"></span></button>
       <button data-tab="docs"><span>📄</span>文档<span class="badge" id="mDocBadge"></span></button>
-      <div class="mnav-note">三层关系：文档写了怎么做 → SOP 定好顺序 → 工具去执行。<br>工具只能在宿主机批准；SOP 只能引用已有工具。</div>
+      <div class="mnav-note">文档写了怎么做 → SOP 定好顺序 → 工具去执行。<br>工具只能在宿主机批准；SOP 只能引用已有工具。</div>
     </nav>
-    <div id="mbody"></div>
+    <div id="mgroups"></div>
+    <div id="mlist"><div class="mtool" id="mtool"></div><div class="mrows" id="mrows"></div></div>
+    <div id="mdetail"></div>
   </div>
   <div id="chat"><div class="wrap" id="thread"></div></div>
   <div class="composer">
@@ -512,9 +559,11 @@ const TYPE = {pdf:['PDF','#e5484d'], docx:['DOC','#3b82f6'], pptx:['PPT','#f9731
   md:['MD','#0ea5e9'], markdown:['MD','#0ea5e9'], png:['IMG','#10b981'], jpg:['IMG','#10b981'], jpeg:['IMG','#10b981'],
   webp:['IMG','#10b981'], bmp:['IMG','#10b981'], gif:['IMG','#10b981']};
 let allDocs = [], seq = 0;
-// 管理页模式：同一份页面，路径 /manage 时切成全屏的 工具 / SOP / 文档 布局
+// 管理页模式：同一份页面，路径 /manage 时切成全屏的 工具 / SOP / 文档 后台布局
 const MANAGE = location.pathname.replace(/\/+$/, '') === '/manage';
 if (MANAGE) document.body.classList.add('manage');
+let mTab = 'tools', mGroup = null, mItem = null, mSearch = '', mReady = false;
+const mCache = {};  // 列表里出现过的条目：id -> 数据，点开详情直接用
 // 首屏引导要用的三个数字：文档数、可用工具数、生效 SOP 数
 let onboard = {docs: 0, tools: 0, sops: 0};
 
@@ -628,10 +677,12 @@ async function loadDocs() {
   $('summary').textContent = `${allDocs.length} 个文档 · ${chunks} 个片段`;
   $('docCount').textContent = allDocs.length;
   $('mDocBadge').textContent = allDocs.length || '';
+  if (MANAGE && mTab === 'docs' && mReady) renderManage();
   renderDocs();
 }
 $('filter').oninput = renderDocs;
-$('docs').onclick = async e => {
+/* 文档的 改分类 / 下载 / 删除：侧栏列表和管理页详情共用同一个处理器 */
+async function docActions(e) {
   const tag = e.target.closest('.tag');
   if (tag) {
     const next = prompt(`「${tag.dataset.cat}」的分类：`, tag.dataset.now);
@@ -677,8 +728,10 @@ $('docs').onclick = async e => {
   const name = e.target.closest('.del')?.dataset.name;
   if (!name || !confirm(`确定删除「${name}」？`)) return;
   await fetch('/api/documents/' + encodeURIComponent(name), {method: 'DELETE'});
+  if (MANAGE && mItem === name) mItem = null;
   loadDocs();
-};
+}
+$('docs').onclick = docActions;
 
 /* ---------- Upload ---------- */
 let uploading = Promise.resolve();
@@ -973,8 +1026,10 @@ let pbTools = {}, pbEditing = null, pbPicking = false, pbDocFilter = '', pbSearc
 const PAGE = 30;
 const LAZY = {
   tl: {url: '/api/tools', key: 'group', items: d => Object.entries(d.tools || {}).map(([n, t]) => tlCard(n, t)).join(''),
+       rows: d => Object.entries(d.tools || {}).map(([n, t]) => tlRow(n, t)).join(''),
        count: d => Object.keys(d.tools || {}).length, label: '工具'},
   pb: {url: '/api/playbooks', key: 'source', items: d => (d.playbooks || []).map(pbCard).join(''),
+       rows: d => (d.playbooks || []).map(pbRow).join(''),
        count: d => (d.playbooks || []).length, label: 'SOP'},
 };
 const opened = new Set(JSON.parse(localStorage.getItem('kb-open') || '[]'));
@@ -998,9 +1053,9 @@ async function fetchPage(panel, params, offset) {
   const qs = new URLSearchParams({...params, offset, limit: PAGE});
   return (await fetch(`${cfg.url}?${qs}`)).json();
 }
-function moreHtml(panel, params, next, total) {
+function moreHtml(panel, params, next, total, render = 'items') {
   const left = total - next;
-  return left > 0 ? `<button class="more" data-more="${panel}" data-params='${esc(JSON.stringify(params))}' data-next="${next}">加载更多（还有 ${left} 条）</button>` : '';
+  return left > 0 ? `<button class="more" data-more="${panel}" data-render="${render}" data-params='${esc(JSON.stringify(params))}' data-next="${next}">加载更多（还有 ${left} 条）</button>` : '';
 }
 async function loadGroup(el) {
   const panel = el.dataset.panel, body = el.querySelector('.body');
@@ -1031,10 +1086,11 @@ document.addEventListener('toggle', e => {
 document.addEventListener('click', async e => {
   const btn = e.target.closest('[data-more]'); if (!btn) return;
   const panel = btn.dataset.more, params = JSON.parse(btn.dataset.params), next = +btn.dataset.next;
+  const render = btn.dataset.render || 'items';
   btn.disabled = true; btn.textContent = '加载中…';
   const d = await fetchPage(panel, params, next);
-  btn.insertAdjacentHTML('beforebegin', LAZY[panel].items(d));
-  btn.outerHTML = moreHtml(panel, params, next + LAZY[panel].count(d), d.total);
+  btn.insertAdjacentHTML('beforebegin', LAZY[panel][render](d));
+  btn.outerHTML = moreHtml(panel, params, next + LAZY[panel].count(d), d.total, render);
 });
 /* 面板重绘后把之前展开的组重新装回第一页；搜索框有字就重跑搜索 */
 function restorePanel(panel, q) {
@@ -1164,6 +1220,7 @@ async function pbGet(id) {
 }
 
 async function loadPlaybooks() {
+  if (MANAGE) return renderManage();
   const d = await (await fetch('/api/playbooks')).json();
   pbTools = d.tools || {};
   const sc = {live: d.live || 0, total: d.count || 0};
@@ -1282,6 +1339,7 @@ $('pbPanel').addEventListener('click', async e => {
   if (delId) {
     if (!confirm('确定删除这个 SOP？')) return;
     await fetch('/api/playbooks/' + delId, {method: 'DELETE'});
+    if (MANAGE && mItem === delId) mItem = null;
     return loadPlaybooks().then(loadDocs);
   }
 
@@ -1460,6 +1518,7 @@ function tlWaiting(items) {
 }
 
 async function loadTools() {
+  if (MANAGE) return renderManage();
   const d = await (await fetch('/api/tools')).json();
   const tc = {live: d.live || 0, total: d.count || 0};
   setBadge('tlBadge', tc, '可用');
@@ -1757,25 +1816,211 @@ $('askBtn').onclick = ask;
 $('newBtn').onclick = newConv;
 $('menuBtn').onclick = () => document.body.classList.toggle('menu');
 $('scrim').onclick = () => document.body.classList.remove('menu');
-/* ---------- 管理页 ---------- */
-function manageTab(tab) {
-  localStorage.setItem('kb-mtab', tab);
-  document.querySelectorAll('#mnav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
-  // 先把面板和文档栏放回原位、藏起来，再把选中的那个装进管理区
-  const body = $('mbody'), aside = document.querySelector('aside');
-  for (const id of ['tlPanel', 'pbPanel']) { document.body.appendChild($(id)); $(id).hidden = true; }
-  if (aside.parentElement === body) document.body.prepend(aside);
-  body.innerHTML = '';
-  if (tab === 'tools') { body.appendChild($('tlPanel')); $('tlPanel').hidden = false; tlEditing = null; tlProposing = false; loadTools(); }
-  else if (tab === 'sop') { body.appendChild($('pbPanel')); $('pbPanel').hidden = false; pbEditing = null; pbPicking = false; loadPlaybooks(); }
-  else { body.appendChild(aside); renderDocs(); }
-  document.querySelector('.head-title .t').textContent = '管理 · ' + {tools: '工具', sop: 'SOP', docs: '文档'}[tab];
+/* ---------- 管理页：导航 → 分组 → 列表 → 详情 ----------
+   分组和列表由服务端分页接口喂数据（文档全在本地，客户端分组分页）；
+   详情区里放的是 tlPanel / pbPanel 这两个元素本身，所以抽屉那套 改名/启停/编辑/保存 的事件处理原样可用。 */
+const TAB = {
+  tools: {panel: 'tl', title: '工具', unit: '个可用', key: 'group', newLabel: '＋ 申请新工具'},
+  sop:   {panel: 'pb', title: 'SOP', unit: '个生效', key: 'source', newLabel: '＋ 新建'},
+  docs:  {title: '文档', unit: '个文档'},
+};
+function tlRow(name, t) {
+  const st = t.enabled && t.runnable ? ['ok', '可用'] : !t.runnable ? ['bad', '不可运行'] : ['', '已停用'];
+  mCache['tl:' + name] = {name, t};
+  return `<div class="mrow ${mItem === name ? 'on' : ''}" data-mitem="${esc(name)}">
+    <div class="t">${esc(t.label || name)}${t.label ? `<code>${esc(name)}</code>` : ''}</div>
+    <div class="s">${esc(t.desc)}</div><span class="st ${st[0]}">${st[1]}</span></div>`;
 }
-$('mnav').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b) manageTab(b.dataset.tab); });
+function pbRow(p) {
+  const bad = (p.missing_tools || []).length;
+  const st = p.enabled && !bad ? ['ok', '生效'] : bad ? ['bad', '工具缺失'] : ['', '已停用'];
+  mCache['pb:' + p.id] = p;
+  return `<div class="mrow ${mItem === p.id ? 'on' : ''}" data-mitem="${esc(p.id)}">
+    <div class="t">${esc(p.name)}</div>
+    <div class="s">${p.steps.length} 步 · ${esc(p.steps.map(s => s.tool).join(' → '))}${p.trigger ? ' · ' + esc(p.trigger) : ''}</div>
+    <span class="st ${st[0]}">${st[1]}</span></div>`;
+}
+function docRow(d) {
+  mCache['doc:' + d.source] = d;
+  return `<div class="mrow ${mItem === d.source ? 'on' : ''}" data-mitem="${esc(d.source)}">
+    <div class="t">${esc(d.source)}</div><div class="s">${d.chunks} 个片段</div>
+    <span class="st cat">${esc(d.category || '未分类')}</span></div>`;
+}
+function mgHtml(name, live, total, special) {
+  const c = live == null ? `${total}` : `<b>${live}</b> / ${total}`;
+  return `<div class="mg ${mGroup === name ? 'on' : ''} ${special ? 'special' : ''}" data-mgroup="${esc(name)}">
+    <span class="n">${esc(name)}</span><span class="c">${c}</span></div>`;
+}
 
+async function renderManage() {
+  const cfg = TAB[mTab];
+  document.querySelectorAll('#mnav button').forEach(b => b.classList.toggle('on', b.dataset.tab === mTab));
+  document.querySelector('.head-title .t').textContent = '管理 · ' + cfg.title;
+
+  // 1. 分组栏
+  let groups, live, count, pending = [];
+  if (mTab === 'docs') {
+    const by = {};
+    for (const d of allDocs) { const k = d.category || '未分类'; by[k] = (by[k] || 0) + 1; }
+    groups = Object.entries(by).sort((a, b) => b[1] - a[1]).map(([name, total]) => ({name, total}));
+    count = allDocs.length; live = null;
+  } else {
+    const d = await (await fetch(LAZY[cfg.panel].url)).json();
+    groups = d.groups || []; live = d.live || 0; count = d.count || 0;
+    if (mTab === 'sop') pbTools = d.tools || {};
+    setBadge(cfg.panel + 'Badge', {live, total: count}, cfg.unit.slice(1));
+    if (mTab === 'tools') pending = await fetch('/api/tools/pending').then(r => r.json()).then(r => r.pending || []).catch(() => []);
+    if (d.error) toast('工具接口不可用：' + d.error, 'err');
+  }
+  if (!groups.some(g => g.name === mGroup) && mGroup !== '__pending') mGroup = groups[0]?.name || null;
+  $('mgroups').innerHTML = `<div class="mg-head">${mTab === 'docs' ? '分类' : mTab === 'tools' ? '分组' : '来源文档'}</div>`
+    + groups.map(g => mgHtml(g.name, g.live, g.total)).join('')
+    + (mTab === 'tools' && pending.length ? `<div class="mg-head" style="margin-top:8px">审批</div>${mgHtml('__pending', null, pending.length, true).replace('__pending</span>', '待审申请</span>')}` : '')
+    + (!groups.length ? '<div class="empty">空</div>' : '');
+
+  // 2. 列表栏：工具栏 + 行
+  const stat = live == null ? `共 ${count} 个` : `${live} ${cfg.unit} · 共 ${count} 个`;
+  $('mtool').innerHTML =
+    `<span class="ttl">${esc(mSearch ? '搜索结果' : mGroup === '__pending' ? '待审申请' : mGroup || cfg.title)}<small>${stat}</small></span>
+     <input type="search" id="mSearch" placeholder="搜索${cfg.title}…" value="${esc(mSearch)}" autocomplete="off">
+     ${mTab === 'docs' ? '<button class="act" id="mUpload">＋ 上传文档</button>'
+       : mTab === 'sop' ? '<button class="act ghost" id="mNewSop">＋ 新建</button><button class="act" id="mExtract">从文档抽取</button>'
+       : `<button class="act" id="mNewTool">${cfg.newLabel}</button>`}`;
+  const rows = $('mrows');
+  if (mTab === 'docs') {
+    const f = mSearch.trim().toLowerCase();
+    const list = allDocs.filter(d => f ? (d.source.toLowerCase().includes(f) || (d.category || '').toLowerCase().includes(f))
+                                     : (d.category || '未分类') === mGroup);
+    rows.innerHTML = list.length ? list.slice(0, PAGE).map(docRow).join('')
+        + (list.length > PAGE ? `<button class="more" data-docmore="${PAGE}">加载更多（还有 ${list.length - PAGE} 条）</button>` : '')
+      : '<div class="empty">没有文档</div>';
+    rows._docList = list;
+    if (mSearch) $('mtool').querySelector('small').textContent = `匹配 ${list.length} 条`;
+  } else if (mGroup === '__pending') {
+    rows.innerHTML = `<div style="padding:12px 16px">${tlWaiting(pending)}</div>`;
+  } else {
+    const params = mSearch.trim() ? {q: mSearch} : mGroup ? {[cfg.key]: mGroup} : null;
+    if (!params) rows.innerHTML = '<div class="empty">还没有条目</div>';
+    else {
+      rows.innerHTML = '<div class="empty">加载中…</div>';
+      const d = await fetchPage(cfg.panel, params, 0);
+      rows.innerHTML = (d.total ? LAZY[cfg.panel].rows(d) : `<div class="empty">没有匹配的${cfg.title}</div>`)
+                     + moreHtml(cfg.panel, params, LAZY[cfg.panel].count(d), d.total, 'rows');
+      if (mSearch) $('mtool').querySelector('small').textContent = `匹配 ${d.total} 条`;
+    }
+  }
+
+  // 3. 详情栏
+  renderDetail();
+  const box = $('mSearch');
+  if (document.activeElement?.id !== 'mSearch' && mSearchFocus) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+  mSearchFocus = false;
+}
+let mSearchFocus = false;
+
+async function renderDetail() {
+  const det = $('mdetail');
+  for (const id of ['tlPanel', 'pbPanel']) if ($(id).parentElement !== det) { document.body.appendChild($(id)); $(id).hidden = true; }
+  const mount = id => { det.querySelectorAll(':scope > *:not(.pb-panel)').forEach(x => x.remove()); det.appendChild($(id)); $(id).hidden = false; return $(id); };
+  const empty = text => { det.querySelectorAll(':scope > .pb-panel').forEach(p => p.hidden = true); det.insertAdjacentHTML('beforeend', `<div class="md-empty">${text}</div>`); };
+  det.querySelectorAll('.md-empty, .md-doc').forEach(x => x.remove());
+
+  if (mTab === 'tools') {
+    const p = mount('tlPanel');
+    if (tlProposing) {
+      if (tlProposeKind === 'script') { const s = await (await fetch('/api/tools/scripts')).json().catch(() => ({})); tlScripts = s.scripts || []; tlScriptDir = s.directory || ''; }
+      p.innerHTML = tlProposeForm(); $('tlNewName')?.focus(); return;
+    }
+    const hit = mCache['tl:' + mItem];
+    if (!hit) { p.hidden = true; return empty('从左侧选择一个工具<br>查看命令、参数，或改名、改说明、启停'); }
+    p.innerHTML = tlCard(hit.name, hit.t);
+    if (tlEditing) { const box = $('tlLabel') || $('tlDesc'); box?.focus(); }
+  } else if (mTab === 'sop') {
+    const p = mount('pbPanel');
+    if (pbPicking) { p.innerHTML = pbPicker(); $('pbDocFilter')?.focus(); return; }
+    if (pbEditing !== null) { p.innerHTML = pbEditor(pbEditing); return; }
+    const hit = mCache['pb:' + mItem];
+    if (!hit) { p.hidden = true; return empty('从左侧选择一个 SOP<br>查看步骤与文档原句，或执行、编辑、启停'); }
+    p.innerHTML = pbCard(hit);
+  } else {
+    det.querySelectorAll(':scope > .pb-panel').forEach(p => p.hidden = true);
+    const d = mCache['doc:' + mItem] || allDocs.find(x => x.source === mItem);
+    if (!d) return empty('从左侧选择一个文档<br>查看信息、改分类、下载、删除，或从它抽取 SOP');
+    const ext = d.source.split('.').pop().toLowerCase(); const [label, color] = TYPE[ext] || ['FILE', '#64748b'];
+    det.insertAdjacentHTML('beforeend', `<div class="md-doc">
+      <div class="hd"><div class="ico" style="background:${color}">${label}</div><div class="nm">${esc(d.source)}</div></div>
+      <dl><dt>分类</dt><dd>${esc(d.category || '未分类')}</dd><dt>片段数</dt><dd>${d.chunks}</dd><dt>类型</dt><dd>${esc(ext.toUpperCase())}</dd></dl>
+      <div class="acts">
+        <button class="pri" data-mextract="${esc(d.source)}">从此文档抽取 SOP</button>
+        <button class="tag" data-cat="${esc(d.source)}" data-now="${esc(d.category || '未分类')}">改分类</button>
+        <button class="download" data-name="${esc(d.source)}">下载原文件</button>
+        <button class="del danger" data-name="${esc(d.source)}">删除</button>
+      </div>
+      <div class="sub">由它抽取的 SOP</div><div id="mDocSops"><span class="m" style="color:var(--muted);font-size:12px">加载中…</span></div></div>`);
+    const r = await fetchPage('pb', {source: d.source}, 0).catch(() => ({playbooks: []}));
+    const box = $('mDocSops'); if (!box) return;
+    box.innerHTML = r.playbooks?.length ? r.playbooks.map(p => `<div class="sop"><span>${esc(p.name)}</span><span class="m">${p.steps.length} 步 · ${p.enabled ? '已启用' : '已停用'}</span></div>`).join('')
+      : '<div style="color:var(--muted);font-size:12.5px">还没有。点上面「从此文档抽取 SOP」试试——文档要写成按步骤查看、核对的形式。</div>';
+  }
+}
+
+$('mnav').addEventListener('click', e => {
+  const b = e.target.closest('[data-tab]'); if (!b) return;
+  mTab = b.dataset.tab; mGroup = null; mItem = null; mSearch = '';
+  tlEditing = null; tlProposing = false; pbEditing = null; pbPicking = false;
+  localStorage.setItem('kb-mtab', mTab); renderManage();
+});
+$('mgroups').addEventListener('click', e => {
+  const g = e.target.closest('[data-mgroup]'); if (!g) return;
+  mGroup = g.dataset.mgroup; mSearch = ''; mItem = null; tlProposing = false; pbEditing = null; pbPicking = false; renderManage();
+});
+$('mlist').addEventListener('click', e => {
+  const row = e.target.closest('[data-mitem]');
+  if (row) {
+    mItem = row.dataset.mitem; tlEditing = null; tlProposing = false; pbEditing = null; pbPicking = false;
+    $('mrows').querySelectorAll('.mrow').forEach(r => r.classList.toggle('on', r === row));
+    renderDetail(); return;
+  }
+  const more = e.target.closest('[data-docmore]');
+  if (more) {
+    const list = $('mrows')._docList || [], from = +more.dataset.docmore;
+    more.insertAdjacentHTML('beforebegin', list.slice(from, from + PAGE).map(docRow).join(''));
+    const left = list.length - from - PAGE;
+    more.outerHTML = left > 0 ? `<button class="more" data-docmore="${from + PAGE}">加载更多（还有 ${left} 条）</button>` : '';
+    return;
+  }
+  if (e.target.id === 'mUpload') return $('files').click();
+  if (e.target.id === 'mNewTool') { tlProposing = true; tlProposeKind = 'command'; mItem = null; return renderDetail(); }
+  if (e.target.id === 'mNewSop') { pbEditing = {steps: []}; pbPicking = false; mItem = null; return renderDetail(); }
+  if (e.target.id === 'mExtract') { pbPicking = true; pbEditing = null; pbDocFilter = ''; mItem = null; return renderDetail(); }
+});
+$('mlist').addEventListener('input', e => {
+  if (e.target.id !== 'mSearch') return;
+  mSearch = e.target.value; mSearchFocus = true;
+  clearTimeout(searchTimer); searchTimer = setTimeout(renderManage, 250);
+});
+$('mdetail').addEventListener('click', async e => {
+  const x = e.target.closest('[data-mextract]');
+  if (x) {
+    x.disabled = true; x.textContent = '抽取中…';
+    try {
+      const r = await fetch('/api/playbooks/extract', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({source: x.dataset.mextract})});
+      const d = await r.json();
+      if (!r.ok) throw new Error(Array.isArray(d.detail) ? d.detail.map(v => v.msg).join('；') : d.detail);
+      toast(d.extracted.length ? `抽取出 ${d.extracted.length} 个 SOP，已默认停用；去 SOP 页核对后启用。${d.note ? '\n' + d.note : ''}`
+                               : `没有抽出 SOP。原因：${d.note || '未知'}`, d.extracted.length ? 'ok' : 'err', 8000);
+      if (d.extracted.length) { mTab = 'sop'; mGroup = x.dataset.mextract; mItem = d.extracted[0].id; localStorage.setItem('kb-mtab', 'sop'); renderManage(); }
+      else renderDetail();
+    } catch (err) { toast('抽取失败：' + err.message, 'err'); renderDetail(); }
+    return;
+  }
+  if (mTab === 'docs') docActions(e);
+});
+// 文档页上传完成后 loadDocs 会触发 renderManage；上传进度条借用侧栏的队列元素，搬到列表栏顶部
 if (MANAGE) {
-  $('backBtn').hidden = false;
-  loadDocs().then(() => manageTab(localStorage.getItem('kb-mtab') || 'tools'));
+  mReady = true;
+  mTab = localStorage.getItem('kb-mtab') || 'tools';
+  loadDocs().then(() => { $('mlist').insertBefore($('queue'), $('mrows')); renderManage(); });
 } else {
   welcome(); loadDocs(); loadConvs(); $('question').focus();
   // 从管理页「▶ 执行」跳过来：带着问题，必要时直接发送
