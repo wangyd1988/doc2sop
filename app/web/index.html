@@ -215,21 +215,37 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .step.running { border-left-color: #f59e0b; }
 .step.running .cmd { color: #f59e0b; }
 
-/* Playbooks */
+/* Playbooks / Tools：右侧抽屉，分组可折叠（菜单形态），条目多了也翻得动 */
 .pb-wrap { position: static; }
-.pb-panel { position: absolute; top: calc(100% + 6px); right: 12px; width: 540px; max-width: calc(100vw - 24px);
-            max-height: 72vh; overflow-y: auto;
-            background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px;
-            box-shadow: var(--shadow); z-index: 40; }
-.pb-head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 10px; }
+.pb-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 520px; max-width: 100vw;
+            overflow-y: auto; background: var(--panel); border-left: 1px solid var(--border);
+            padding: 12px 14px 20px; box-shadow: -8px 0 30px rgba(0,0,0,.12); z-index: 60;
+            animation: drawer-in .18s ease-out; }
+.pb-panel.tl-wrap, .pb-panel.pb-wrap { position: fixed; }
+@keyframes drawer-in { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.pb-head { display: flex; align-items: center; gap: 8px; padding: 2px 0 10px; position: sticky; top: -12px;
+           background: var(--panel); z-index: 2; margin: -12px -14px 0; padding: 12px 14px 10px; }
 .pb-head .t { flex: 1; font-weight: 600; font-size: 14px; }
+.pb-head .x { width: 28px; height: 28px; border-radius: 8px; font-size: 15px; color: var(--muted); background: var(--panel-2); }
+.pb-head .x:hover { color: var(--text); }
 .pb-search { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
 .pb-search input { flex: 1; font: inherit; font-size: 12.5px; padding: 6px 9px; border-radius: 7px;
                    border: 1px solid var(--border); background: var(--panel-2); color: var(--text); outline: none; }
 .pb-search input:focus { border-color: var(--accent); }
 .pb-search .n { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .pb-nomatch { font-size: 12.5px; color: var(--muted); text-align: center; padding: 14px 0; }
-.tl-group[hidden], .pb[hidden] { display: none; }
+.grp { margin-bottom: 4px; }
+.grp[hidden], .pb[hidden] { display: none; }
+.grp > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 7px; user-select: none;
+                 font-size: 12.5px; font-weight: 600; color: var(--text); padding: 8px 6px; border-radius: 8px; }
+.grp > summary::-webkit-details-marker { display: none; }
+.grp > summary:hover { background: var(--panel-2); }
+.grp > summary .chev { width: 14px; color: var(--muted); transition: transform .15s; font-size: 11px; }
+.grp[open] > summary .chev { transform: rotate(90deg); }
+.grp > summary .gl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grp > summary .gc { font-weight: 400; font-size: 11.5px; color: var(--muted); }
+.grp > summary .gc b { color: #059669; font-weight: 600; }
+.grp > .body { padding: 2px 0 4px 8px; }
 .pb { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; }
 .pb.off { opacity: .55; }
 .pb.bad { border-color: var(--danger); }
@@ -282,9 +298,7 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .tl-wait .cmd { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px;
                 color: var(--muted); margin-top: 3px; }
 .tl-pick input { margin-bottom: 6px; }
-.tl-group { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600;
-            color: var(--muted); padding: 8px 4px 5px; letter-spacing: .5px; }
-.tl-group span { font-weight: 400; }
+.tl-group { display: none; }
 .tl-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
 .tl-tab { font-size: 12.5px; padding: 4px 14px; border-radius: 7px; border: 1px solid var(--border);
           background: var(--panel); color: var(--muted); }
@@ -399,6 +413,9 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
   <div class="foot">单个 ≤ 50MB · 同名覆盖 · 图片自动识别<br>鼠标移到文档上可改分类、下载或删除</div>
 </aside>
 <div class="scrim" id="scrim"></div>
+<!-- 抽屉放在 body 层级：header 的 backdrop-filter 会把 fixed 元素剪在自己里面 -->
+<div class="pb-panel tl-wrap" id="tlPanel" hidden></div>
+<div class="pb-panel pb-wrap" id="pbPanel" hidden></div>
 <div id="toasts"></div>
 
 <main>
@@ -416,13 +433,11 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
       <button class="nav-btn" id="tlBtn" title="工具：Agent 能查询的真实数据，全部只读">
         <svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/></svg>
         <span class="lbl">工具</span><span class="badge" id="tlBadge"></span></button>
-      <div class="pb-panel" id="tlPanel" hidden></div>
     </div>
     <div class="pb-wrap">
       <button class="nav-btn" id="pbBtn" title="SOP（标准作业流程）：从文档整理出的操作步骤，按顺序调用已有工具">
         <svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3h6v1M9 10h6M9 14h6M9 18h3"/></svg>
         <span class="lbl">SOP</span><span class="badge" id="pbBadge"></span></button>
-      <div class="pb-panel" id="pbPanel" hidden></div>
     </div>
     <div class="hist-wrap">
       <button class="nav-btn" id="histBtn" title="历史对话">
@@ -900,12 +915,26 @@ document.addEventListener('click', e => {
 let pbTools = {}, pbEditing = null, pbPicking = false, pbDocFilter = '', pbSearch = '';
 
 // 面板内搜索：只在已渲染的卡片上显隐，不重新请求，输入框焦点不丢。
-// 卡片把可搜索文字放在 data-search 里；分组标题下面没有可见卡片时一起藏起来。
+// 卡片把可搜索文字放在 data-search 里；分组（.grp）下面没有可见卡片时整组藏起来，有搜索词时命中的组强制展开。
 function searchBox(id, value, placeholder) {
   return `<div class="pb-search"><input type="search" id="${id}" data-search-box
             placeholder="${placeholder}" value="${esc(value)}" autocomplete="off">
           <span class="n" id="${id}N"></span></div>`;
 }
+/* 可折叠分组：折叠状态按「面板:分组名」记在浏览器里，下次打开还是那样 */
+const collapsed = new Set(JSON.parse(localStorage.getItem('kb-collapsed') || '[]'));
+function groupHtml(panel, label, live, total, inner) {
+  const key = panel + ':' + label;
+  return `<details class="grp" data-grp="${esc(key)}" ${collapsed.has(key) ? '' : 'open'}>
+    <summary><span class="chev">▶</span><span class="gl">${esc(label)}</span>
+      <span class="gc"><b>${live}</b> / ${total}</span></summary>
+    <div class="body">${inner}</div></details>`;
+}
+document.addEventListener('toggle', e => {
+  const g = e.target.closest?.('.grp'); if (!g || g.dataset.searching) return;
+  if (g.open) collapsed.delete(g.dataset.grp); else collapsed.add(g.dataset.grp);
+  localStorage.setItem('kb-collapsed', JSON.stringify([...collapsed]));
+}, true);
 function applySearch(panel, id, query) {
   const q = query.trim().toLowerCase();
   const cards = [...panel.querySelectorAll('.pb[data-search]')];
@@ -915,10 +944,11 @@ function applySearch(panel, id, query) {
     card.hidden = !hit;
     hits += hit;
   }
-  for (const group of panel.querySelectorAll('.tl-group')) {
-    let el = group.nextElementSibling, any = false;
-    while (el && el.classList.contains('pb')) { any ||= !el.hidden; el = el.nextElementSibling; }
+  for (const group of panel.querySelectorAll('.grp')) {
+    const any = [...group.querySelectorAll('.pb[data-search]')].some(c => !c.hidden);
     group.hidden = !any;
+    if (q) { group.dataset.searching = '1'; group.open = true; }
+    else { group.open = !collapsed.has(group.dataset.grp); delete group.dataset.searching; }
   }
   const n = $(id + 'N');
   if (n) n.textContent = q ? `匹配 ${hits} / ${cards.length}` : '';
@@ -971,7 +1001,6 @@ function pbCard(p) {
        data-search="${searchable(p.name, p.source, p.trigger, p.steps.map(s => [s.tool, s.checkpoint, s.evidence]))}">
     <div class="pb-top">
       <span class="nm" title="${esc(p.name)}">${esc(p.name)}</span>
-      <span class="src">${esc(p.source)}</span>
       ${live ? `<button class="run" data-run="${p.id}" title="按这个 SOP 的步骤调用工具并给出结论">▶ 执行</button>` : ''}
       <button data-toggle="${p.id}">${p.enabled ? '已启用' : '已停用'}</button>
       <button data-edit="${p.id}">编辑</button>
@@ -1039,6 +1068,17 @@ function pbPicker() {
   </div>`;
 }
 
+/* SOP 按来源文档分组：同一份手册抽出的几个 SOP 挨在一起，手工建的单独一组 */
+function pbGrouped(list) {
+  const groups = {};
+  for (const p of list) (groups[p.source || '手工创建'] ||= []).push(p);
+  const order = Object.keys(groups).sort((a, b) => (a === '手工创建') - (b === '手工创建') || a.localeCompare(b, 'zh'));
+  return order.map(g => {
+    const live = groups[g].filter(p => p.enabled && !(p.missing_tools || []).length).length;
+    return groupHtml('pb', g, live, groups[g].length, groups[g].map(pbCard).join(''));
+  }).join('');
+}
+
 async function loadPlaybooks() {
   const d = await (await fetch('/api/playbooks')).json();
   pbTools = d.tools || {};
@@ -1048,13 +1088,14 @@ async function loadPlaybooks() {
   $('pbPanel').innerHTML =
     `<div class="pb-head"><span class="t">SOP · 标准作业流程<small>${sc.live} 个生效 · 共 ${sc.total} 个</small></span>
        <button class="icon-btn" id="pbNew">＋ 新建</button>
-       <button class="icon-btn" id="pbFromDoc">从文档抽取</button></div>
+       <button class="icon-btn" id="pbFromDoc">从文档抽取</button>
+       <button class="x" data-close title="关闭">✕</button></div>
      <div class="tl-note">📄 文档写了怎么做 → 📋 SOP 定好按什么顺序做 → 🔧 工具去执行。<br>
        适用于故障排查、日常巡检、上线前检查、上线后验收。SOP 只能调用已有工具，不能新增执行能力。</div>` +
     (list.length > 3 ? searchBox('pbSearch', pbSearch, '搜索 SOP：名称、来源文档、触发条件、工具、检查点…') : '') +
     (pbPicking ? pbPicker() : '') +
     (pbEditing !== null ? pbEditor(pbEditing) : '') +
-    (list.length ? list.map(pbCard).join('')
+    (list.length ? pbGrouped(list)
                  : '<div class="empty">还没有 SOP。点「从文档抽取」，让 Agent 从你的排查手册、巡检规范里整理出操作步骤。</div>');
   applySearch($('pbPanel'), 'pbSearch', pbSearch);
   if (pbPicking) {
@@ -1072,6 +1113,7 @@ $('pbPanel').addEventListener('input', e => {
   if (e.target.id === 'pbSearch') { pbSearch = e.target.value; applySearch($('pbPanel'), 'pbSearch', pbSearch); }
 });
 document.addEventListener('click', e => {
+  if (e.target.closest('[data-close]')) { e.target.closest('.pb-panel').hidden = true; return; }
   if (!e.target.closest('.pb-wrap')) $('pbPanel').hidden = true;
 });
 
@@ -1272,8 +1314,7 @@ function tlGrouped(names, tools) {
   const order = Object.keys(groups).sort((a, b) => (a === '其他') - (b === '其他') || a.localeCompare(b, 'zh'));
   return order.map(g => {
     const live = groups[g].filter(n => tools[n].enabled && tools[n].runnable).length;
-    return `<div class="tl-group">${esc(g)}<span>${live}/${groups[g].length}</span></div>`
-         + groups[g].map(n => tlCard(n, tools[n])).join('');
+    return groupHtml('tl', g, live, groups[g].length, groups[g].map(n => tlCard(n, tools[n])).join(''));
   }).join('');
 }
 
@@ -1358,7 +1399,8 @@ async function loadTools() {
   }
   $('tlPanel').innerHTML =
     `<div class="pb-head"><span class="t">工具<small>${tc.live} 个可用 · 共 ${tc.total} 个</small></span>
-       <button class="icon-btn" id="tlNew">＋ 申请新工具</button></div>` +
+       <button class="icon-btn" id="tlNew">＋ 申请新工具</button>
+       <button class="x" data-close title="关闭">✕</button></div>` +
     (d.error ? `<div class="pb-warn">工具接口不可用：${esc(d.error)}</div>` : '') +
     (tlProposing ? tlProposeForm() : tlWaiting(waiting)) +
     (names.length > 3 ? searchBox('tlSearch', tlSearch, '搜索工具：名称、显示名、说明、命令、分组、参数…') : '') +
@@ -1384,6 +1426,9 @@ document.addEventListener('click', e => {
   if (!e.target.closest('.tl-wrap')) $('tlPanel').hidden = true;
 });
 
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { $('tlPanel').hidden = true; $('pbPanel').hidden = true; $('histPanel').hidden = true; }
+});
 async function tlSend(path, body) {
   const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
                               body: JSON.stringify(body)});
