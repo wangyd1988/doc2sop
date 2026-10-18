@@ -81,6 +81,14 @@ def usable_tools() -> dict:
             for name, meta in ops_client.available_tools().items()}
 
 
+def tool_specs() -> dict:
+    """工具名 -> {desc, params}。SOP 抽取要把参数名告诉模型，args 才填得对。"""
+    if AGENT_MODE == "off":
+        return {}
+    return {name: {"desc": meta.get("desc", ""), "params": meta.get("params") or {}}
+            for name, meta in ops_client.available_tools().items() if isinstance(meta, dict)}
+
+
 @app.get("/api/documents")
 def documents():
     tools = usable_tools()
@@ -351,9 +359,16 @@ def extract_from_document(body: ExtractBody):
     chunks = store.collection.get(where={"source": name}, include=["documents"])
     if not chunks["documents"]:
         raise HTTPException(404, "文档不存在")
-    text = "\n".join(chunks["documents"][:30])
+    # Chroma 不保证返回顺序；按入库序号排回原文顺序，否则截断后可能只剩目录和声明页
+    def _position(pair):
+        tail = pair[0].rsplit(":", 1)[-1]
+        return int(tail) if tail.isdigit() else 0
+    ordered = sorted(zip(chunks["ids"], chunks["documents"]), key=_position)
+    text = "\n".join(doc for _, doc in ordered[:30])
 
-    candidates, note = extract_playbooks(name, text, tools)
+    specs = tool_specs()
+    candidates, note = extract_playbooks(
+        name, text, {n: specs.get(n) or {"desc": d, "params": {}} for n, d in tools.items()})
     saved = []
     for item in candidates:
         try:

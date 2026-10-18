@@ -9,6 +9,7 @@ playbooks.validate 校验，引用了不存在工具的步骤直接被拒绝。�
 """
 import json
 import re
+import unicodedata
 
 from langsmith import traceable
 
@@ -28,6 +29,7 @@ SOP = 做某件事时，按顺序调用哪些工具、每一步看什么、怎�
 
 **你只能使用下面列出的工具，不能发明新工具、不能写命令行。**
 这些工具都是只读的，所以只整理"查看与核对"的步骤；文档里修改、重启、删除之类的操作不要放进来。
+每个工具后面括号里列出了它接受的参数名，args 的键只能从中选，不要自己起名。
 
 可用工具：
 {tools}
@@ -72,12 +74,58 @@ def _parse(text):
     return parsed if isinstance(parsed, list) else None
 
 
+def _flat(text):
+    """比对用的归一化：去空白，并把兼容字形折叠成常规字。
+
+    PDF 抽出来的文本常常每个词一行，而且会把「行」「网」写成康熙部首字形
+    （⾏ U+2F8F、⽹ U+2F7F），人眼看不出差别，字符串比对却对不上。NFKC 能把
+    这些折回常规汉字，全角英数也一并折成半角。
+    """
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text or ""))
+
+
+def _spec(meta):
+    """工具条目既可能只是说明文字，也可能带参数定义；统一成 (desc, params)。"""
+    if isinstance(meta, dict):
+        return str(meta.get("desc") or ""), dict(meta.get("params") or {})
+    return str(meta or ""), {}
+
+
+def _listing(known_tools):
+    lines = []
+    for name, meta in sorted(known_tools.items()):
+        desc, params = _spec(meta)
+        line = f"- {name}：{desc}"
+        if params:
+            shown = []
+            for key, spec in params.items():
+                hint = str((spec or {}).get("desc") or "") if isinstance(spec, dict) else ""
+                shown.append(f"{key}={hint}" if hint else key)
+            line += f"（参数：{'；'.join(shown)}）"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _clean_args(args, params):
+    """只保留工具真有的参数。模型猜错键名（kind/pod）时丢掉，不让它带到执行期。"""
+    if not isinstance(args, dict):
+        return {}, []
+    if not params:
+        return args, []
+    kept = {k: v for k, v in args.items() if k in params}
+    return kept, sorted(k for k in args if k not in params)
+
+
 @traceable(name="SOP 抽取", run_type="chain")
 def extract(document_name: str, text: str, known_tools: dict):
-    """返回 (候选 SOP 列表, 说明)。失败时返回空列表，绝不抛异常。"""
+    """返回 (候选 SOP 列表, 说明)。失败时返回空列表，绝不抛异常。
+
+    known_tools：工具名 -> 说明文字，或 -> {"desc", "params"}。带参数定义时
+    模型才知道 args 的键该叫什么，抽出来的步骤才真能执行。
+    """
     if not known_tools:
         return [], "当前没有可用的工具"
-    listing = "\n".join(f"- {name}：{desc}" for name, desc in sorted(known_tools.items()))
+    listing = _listing(known_tools)
     # 推理型模型会先输出一段思考，长度不稳定。预算给够，并对空返回重试一次——
     # 实测同一份文档同样的预算，有时能正常输出，有时思考就把预算吃光了。
     model = chat_model(timeout=150, max_retries=0, max_tokens=MAX_OUTPUT_TOKENS)
@@ -104,8 +152,8 @@ def extract(document_name: str, text: str, known_tools: dict):
         # 模型明确返回空数组：这篇文档确实没有可编排的流程。
         return [], "这篇文档里没有能用现有工具按步骤查看、核对的做法"
 
-    candidates, dropped = [], set()
-    flat = re.sub(r"\s+", "", text)
+    candidates, dropped, bad_keys = [], set(), set()
+    flat = _flat(text)
     for item in parsed[:3]:
         if not isinstance(item, dict):
             continue
@@ -118,9 +166,12 @@ def extract(document_name: str, text: str, known_tools: dict):
                 continue
             tool = step.get("tool")
             if tool in known_tools:
+                _, params = _spec(known_tools[tool])
+                step["args"], unknown = _clean_args(step.get("args"), params)
+                bad_keys.update(f"{tool}.{k}" for k in unknown)
                 # 原句必须真的在文档里；模型编的一律标出来，让人核对时一眼看到
                 quote = str(step.get("evidence") or "").strip()
-                if quote and re.sub(r"\s+", "", quote) not in flat:
+                if quote and _flat(quote) not in flat:
                     step["evidence"] = f"⚠ 未在文档中找到：{quote}"
                 kept.append(step)
             elif tool:
@@ -131,8 +182,9 @@ def extract(document_name: str, text: str, known_tools: dict):
                            "trigger": str(item.get("trigger") or "")[:200],
                            "steps": kept})
 
-    log.info("extracted %d playbook(s) from %s, dropped tools: %s",
-             len(candidates), document_name, sorted(dropped) or "none")
+    log.info("extracted %d playbook(s) from %s, dropped tools: %s, dropped args: %s",
+             len(candidates), document_name, sorted(dropped) or "none",
+             sorted(bad_keys) or "none")
     if not candidates:
         if dropped:
             return [], ("这篇文档里的步骤需要当前没有的工具："

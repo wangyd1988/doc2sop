@@ -206,6 +206,31 @@ class ExtractionTests(unittest.TestCase):
             got, _ = extract_mod.extract("巡检.md", "真实正文只有这些", TOOL_DESCS)
         self.assertTrue(got[0]["steps"][0]["evidence"].startswith("⚠ 未在文档中找到"))
 
+    def test_evidence_matches_across_pdf_line_breaks_and_kangxi_glyphs(self):
+        """PDF 抽出的文本一词一行，且「行」「网」常是康熙部首字形；原句比对不能被这些骗过。"""
+        text = "登录\n OPS \n服务器，执\u2f8f\n \nkubectl get pod -n csb-cop\n \n命令，查看\u2f79关管控组件"
+        with patch.object(extract_mod, "chat_model") as factory:
+            factory.return_value.invoke.return_value = FakeReply(
+                '[{"name":"巡检","trigger":"","steps":[{"tool":"host_resources","args":{},'
+                '"checkpoint":"Pod 终态","evidence":"执行 kubectl get pod -n csb-cop 命令，查看网关管控组件"}]}]')
+            got, _ = extract_mod.extract("指南.pdf", text, TOOL_DESCS)
+        self.assertEqual(got[0]["steps"][0]["evidence"],
+                         "执行 kubectl get pod -n csb-cop 命令，查看网关管控组件")
+
+    def test_tool_params_are_shown_to_model_and_unknown_arg_keys_dropped(self):
+        """模型得知道参数叫什么；猜错的键名（kind/pod）不能带到执行期。"""
+        specs = {"kube_list": {"desc": "列资源",
+                               "params": {"resource": {"desc": "资源类型"}, "namespace": {}}}}
+        with patch.object(extract_mod, "chat_model") as factory:
+            factory.return_value.invoke.return_value = FakeReply(
+                '[{"name":"巡检","trigger":"","steps":[{"tool":"kube_list",'
+                '"args":{"kind":"pod","namespace":"csb-cop"},"checkpoint":"终态"}]}]')
+            got, _ = extract_mod.extract("指南.pdf", "正文", specs)
+            prompt = factory.return_value.invoke.call_args[0][0][0][1]
+        self.assertIn("resource=资源类型", prompt)
+        self.assertIn("namespace", prompt)
+        self.assertEqual(got[0]["steps"][0]["args"], {"namespace": "csb-cop"})
+
     def test_evidence_survives_save_and_api(self):
         with playbooks.lock:
             playbooks.db.execute("DELETE FROM steps")
@@ -333,6 +358,24 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(len(extracted), 1)
         self.assertFalse(extracted[0]["enabled"])
         self.assertEqual(extracted[0]["source"], "a.txt")
+
+    def test_extract_reads_chunks_in_document_order_with_param_specs(self):
+        """Chroma 返回顺序不定；要按入库序号排回去，并把参数定义一起交给抽取。"""
+        class FakeCollection:
+            def get(self, **kwargs):
+                return {"documents": ["第三段", "第一段", "第二段"],
+                        "ids": ["k:2", "k:0", "k:1"], "metadatas": [{}, {}, {}]}
+
+        specs = {"container_stats": {"desc": "说明", "params": {"name": {"desc": "容器名"}}}}
+        with patch("app.main.store.collection", FakeCollection()), \
+             patch("app.main.tool_specs", return_value=specs), \
+             patch("app.main.extract_playbooks", return_value=([], "")) as extractor:
+            self.client.post("/api/playbooks/extract", json={"source": "a.txt"}, auth=self.auth)
+        _, text, tools = extractor.call_args[0]
+        self.assertEqual(text, "第一段\n第二段\n第三段")
+        self.assertEqual(tools["container_stats"], specs["container_stats"])
+        # 宿主机没给参数定义的工具也要带上，只是参数为空
+        self.assertEqual(tools["host_resources"], {"desc": "说明", "params": {}})
 
     def test_deleting_document_removes_its_playbooks(self):
         playbooks.save(None, "来自文档", "", [step("container_stats")], TOOLS,

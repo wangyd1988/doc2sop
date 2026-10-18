@@ -146,6 +146,13 @@ OPS_TOKEN=<同一个令牌>
 不配置 `OPS_URL` 时工具自动关闭，退化为纯知识库问答。注入防护与轮次上限均有测试覆盖
 （`tests/test_agent.py`）。
 
+**K8s 工具**（`kube_list / kube_yaml / kube_describe / kube_logs / kube_events`）要求宿主机有 `kubectl`
+并能连到集群：把 kubeconfig 放到工具服务读得到的地方，并在它的环境里设 `KUBECONFIG`。用 systemd 跑且开了
+`ProtectHome=yes` 时，`/root/.kube` 对服务是不可见的，放 `/etc/ops-readonly/kubeconfig`（0600）这类路径。
+没装 kubectl 或连不上集群时这 5 个工具自动标为不可用，不影响其他工具。
+[`deploy/demo-cluster/`](deploy/demo-cluster/) 里有一套按《API 网关运维指南》布置的 k3s 演示集群清单，
+含两个埋好的故障，用来验证「文档抽成 SOP → 对着真集群跑」这条链路。
+
 ### 加一个工具
 
 工具定义只有一份，就是宿主机上的 [`deploy/ops_tools.yaml`](deploy/ops_tools.yaml)。

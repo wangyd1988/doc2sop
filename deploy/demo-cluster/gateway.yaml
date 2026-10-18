@@ -1,0 +1,224 @@
+# 按《阿里云专有云 API 网关运维指南》布置的模拟集群（演示用）
+apiVersion: v1
+kind: Namespace
+metadata: {name: csb-cop}
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: higress-system}
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: apigateway-system}
+---
+# ---------- csb-cop：网关管控面 ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: cop-console, namespace: csb-cop}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: cop-console}}
+  template:
+    metadata: {labels: {app: cop-console}}
+    spec:
+      containers:
+      - name: cop-console
+        image: busybox:1.36
+        command: ["sh","-c"]
+        args:
+        - |
+          mkdir -p /home/admin/cop-console/logs && cd /home/admin/cop-console/logs
+          touch debug.log error.log import.log remoting.log scheduler_task.log sync.log
+          while true; do
+            echo "$(date -u +%FT%TZ) INFO  [scheduler] sync route config ok, routes=11" | tee -a debug.log
+            sleep 60
+          done
+        resources: {requests: {cpu: 5m, memory: 8Mi}, limits: {memory: 32Mi}}
+---
+apiVersion: batch/v1
+kind: Job
+metadata: {name: cop-init, namespace: csb-cop}
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: init
+        image: busybox:1.36
+        command: ["sh","-c","echo init cop schema done"]
+---
+apiVersion: batch/v1
+kind: Job
+metadata: {name: csb-cop-ascm-ui-and-config-init, namespace: csb-cop}
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: init
+        image: busybox:1.36
+        command: ["sh","-c","echo ascm ui config imported"]
+---
+# ---------- higress-system：AI 网关数据面 ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: higress-controller, namespace: higress-system}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: higress-controller}}
+  template:
+    metadata: {labels: {app: higress-controller}}
+    spec:
+      containers:
+      - name: controller
+        image: busybox:1.36
+        command: ["sh","-c","while true; do echo \"$(date -u +%FT%TZ) info watching ingress/wasmplugin, pushed xDS to 2 gateways\"; sleep 90; done"]
+        resources: {requests: {cpu: 5m, memory: 8Mi}, limits: {memory: 32Mi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: higress-gateway, namespace: higress-system}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: higress-gateway}}
+  template:
+    metadata: {labels: {app: higress-gateway}}
+    spec:
+      containers:
+      - name: gateway
+        image: busybox:1.36
+        command: ["sh","-c"]
+        args:
+        - |
+          i=0
+          while true; do
+            i=$((i+1)); T=$(date -u +%FT%T.000Z)
+            if [ $((i % 7)) -eq 0 ]; then
+              echo "{\"authority\":\"-\",\"bytes_received\":\"0\",\"bytes_sent\":\"11\",\"downstream_remote_address\":\"12.20.2.120:37510\",\"duration\":\"75\",\"method\":\"-\",\"path\":\"-\",\"protocol\":\"HTTP/1.1\",\"response_code\":\"400\",\"response_flags\":\"DPE\",\"route_name\":\"-\",\"start_time\":\"$T\",\"upstream_cluster\":\"-\",\"response_code_details\":\"http1.codec_error\"}"
+            elif [ $((i % 5)) -eq 0 ]; then
+              echo "{\"authority\":\"api.example.com\",\"bytes_received\":\"0\",\"bytes_sent\":\"0\",\"downstream_remote_address\":\"10.2.0.9:51022\",\"duration\":\"0\",\"method\":\"GET\",\"path\":\"/\",\"protocol\":\"HTTP/1.1\",\"response_code\":\"404\",\"response_flags\":\"NR\",\"route_name\":\"-\",\"start_time\":\"$T\",\"upstream_cluster\":\"-\",\"response_code_details\":\"route not found\"}"
+            else
+              echo "{\"authority\":\"chat.example.com\",\"bytes_received\":\"812\",\"bytes_sent\":\"2048\",\"downstream_remote_address\":\"10.2.0.9:51$((1000+i))\",\"duration\":\"$((120+i%80))\",\"method\":\"POST\",\"path\":\"/v1/chat/completions\",\"protocol\":\"HTTP/1.1\",\"response_code\":\"200\",\"response_flags\":\"-\",\"route_name\":\"ai-chat\",\"start_time\":\"$T\",\"upstream_cluster\":\"outbound|8080||llm-backend.default.svc.cluster.local\",\"response_code_details\":\"via_upstream\"}"
+            fi
+            sleep 20
+          done
+        resources: {requests: {cpu: 5m, memory: 8Mi}, limits: {memory: 32Mi}}
+---
+# 故障 1：插件服务器反复崩溃（巡检应发现：非终态 / 重启次数升高）
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: higress-plugin-server, namespace: higress-system}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: higress-plugin-server}}
+  template:
+    metadata: {labels: {app: higress-plugin-server}}
+    spec:
+      containers:
+      - name: plugin-server
+        image: busybox:1.36
+        command: ["sh","-c","echo 'loading plugins from /opt/plugins'; sleep 45; echo 'fatal: plugin ai-security v1.2.0 checksum mismatch, exiting'; exit 1"]
+        resources: {requests: {cpu: 5m, memory: 8Mi}, limits: {memory: 32Mi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: redis-builtin, namespace: higress-system}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: redis-builtin}}
+  template:
+    metadata: {labels: {app: redis-builtin}}
+    spec:
+      containers:
+      - name: redis
+        image: busybox:1.36
+        command: ["sh","-c","while true; do echo 'redis ready to accept connections on 6379'; sleep 300; done"]
+        resources: {requests: {cpu: 5m, memory: 8Mi}, limits: {memory: 32Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: higress-gateway, namespace: higress-system}
+spec:
+  selector: {app: higress-gateway}
+  ports: [{name: http, port: 80, targetPort: 80}, {name: https, port: 443, targetPort: 443}]
+---
+# 路由（运维指南：kubectl get ingress -n higress-system）
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: 0bbff10f, namespace: higress-system}
+spec:
+  ingressClassName: higress
+  rules: [{host: b01b95ac.ai-platform.com, http: {paths: [{path: /, pathType: Prefix, backend: {service: {name: higress-gateway, port: {number: 80}}}}]}}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: 7021d1ec, namespace: higress-system}
+spec:
+  ingressClassName: higress
+  rules: [{host: 1f3979e0.ai-platform.com, http: {paths: [{path: /v1, pathType: Prefix, backend: {service: {name: higress-gateway, port: {number: 80}}}}]}}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: ls-test, namespace: higress-system}
+spec:
+  ingressClassName: higress
+  rules: [{http: {paths: [{path: /, pathType: Prefix, backend: {service: {name: higress-gateway, port: {number: 80}}}}]}}]
+---
+# WasmPlugin CRD（运维指南：kubectl get wasmplugin -n higress-system）
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata: {name: wasmplugins.extensions.higress.io}
+spec:
+  group: extensions.higress.io
+  scope: Namespaced
+  names: {plural: wasmplugins, singular: wasmplugin, kind: WasmPlugin, shortNames: [wp]}
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    schema: {openAPIV3Schema: {type: object, properties: {spec: {type: object, x-kubernetes-preserve-unknown-fields: true}}}}
+    additionalPrinterColumns:
+    - {name: Url, type: string, jsonPath: .spec.url}
+    - {name: Phase, type: string, jsonPath: .spec.phase}
+    - {name: Age, type: date, jsonPath: .metadata.creationTimestamp}
+---
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata: {name: ai-token-ratelimit, namespace: higress-system}
+spec: {url: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/ai-token-ratelimit:1.0.0, phase: UNSPECIFIED_PHASE, priority: 600}
+---
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata: {name: ai-security-guard, namespace: higress-system}
+spec: {url: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/ai-security-guard:1.2.0, phase: AUTHN, priority: 300}
+---
+# ---------- apigateway-system：API 网关 ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: cop-gateway, namespace: apigateway-system}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: cop-gateway}}
+  template:
+    metadata: {labels: {app: cop-gateway}}
+    spec:
+      containers:
+      - name: gateway
+        image: busybox:1.36
+        command: ["sh","-c","while true; do echo \"$(date -u +%FT%TZ) GET /api/orders 200 34ms\"; sleep 30; done"]
+        resources: {requests: {cpu: 5m, memory: 8Mi}, limits: {memory: 32Mi}}
+---
+# 故障 2：凭证加载组件卡在镜像拉取（巡检应发现：ImagePullBackOff）
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: rrsa-info-server, namespace: apigateway-system}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: rrsa-info-server}}
+  template:
+    metadata: {labels: {app: rrsa-info-server}}
+    spec:
+      containers:
+      - name: rrsa
+        image: registry.internal.example.com/csb/rrsa-info-server:3.20.0
+        resources: {requests: {cpu: 5m, memory: 8Mi}, limits: {memory: 32Mi}}
