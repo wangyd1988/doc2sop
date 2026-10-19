@@ -591,7 +591,8 @@ def list_models():
 class Question(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     conversation_id: str | None = Field(default=None, max_length=64)
-    # 页面上的「🌐 联网」开关，默认关（与页面一致）；服务端没配置搜索时这个值不起作用。
+    # 联网搜索。页面上的「🌐 联网」开关默认开、每次请求显式传值；程序直接调 API 时默认关（不该默认外发任何东西）。
+    # 服务端没配置搜索时这个值不起作用。
     web: bool = False
     # 页面选的模型；必须在网关返回的可用列表里，留空用默认。
     model: str | None = Field(default=None, max_length=120)

@@ -777,6 +777,7 @@ async function loadDocs() {
   refreshBadges();
   $('webBtn').hidden = !d.web_search;
   paintWeb();
+  if (d.web_search && !MANAGE) webNotice();
   const chunks = allDocs.reduce((a, x) => a + x.chunks, 0);
   $('summary').textContent = `${allDocs.length} 个文档 · ${chunks} 个片段`;
   $('docCount').textContent = allDocs.length;
@@ -2031,20 +2032,22 @@ document.addEventListener('click', () => setTimeout(() => {
   $('histBtn').classList.toggle('open', !$('histPanel').hidden);
 }, 0));
 
-/* 联网开关：默认关闭（内部环境第一次用时不该默认外发任何东西），记在浏览器里。服务端没配置搜索时按钮不显示。 */
-let webOn = localStorage.getItem('kb-web') === 'on';
+/* 联网开关：默认开启，记在浏览器里（关掉后下次打开仍是关）。首次见到开着的开关弹一次说明，
+   让人知道哪些问题会上网、哪些永远不会外发。服务端没配置搜索时按钮不显示。 */
+let webOn = localStorage.getItem('kb-web') !== 'off';
 function paintWeb() {
   $('webBtn').classList.toggle('on', webOn);
   $('webBtn').querySelector('.state').textContent = webOn ? '开' : '关';
   $('webBtn').title = webOn ? '联网已开启：知识库答不了时会上网搜索公开资料（内部问题不会外发）。点击关闭'
                             : '联网已关闭：只用知识库和工具回答。点击开启';
 }
+function webNotice() {
+  if (!webOn || localStorage.getItem('kb-web-seen')) return;
+  localStorage.setItem('kb-web-seen', '1');
+  toast('联网已开启。只有知识库答不了、且问题不涉及内部信息时才会搜索；搜索词里出现 IP、密钥、内网域名或内部名词会被拦下。网络结果会单独标注 [W]，可经您确认后存入知识库。不需要时点「联网」关闭。', '', 9000);
+}
 $('webBtn').onclick = () => {
-  webOn = !webOn; localStorage.setItem('kb-web', webOn ? 'on' : 'off'); paintWeb();
-  if (webOn && !localStorage.getItem('kb-web-seen')) {
-    localStorage.setItem('kb-web-seen', '1');
-    toast('已开启联网。只有知识库答不了、且问题不涉及内部信息时才会搜索；搜索词里出现 IP、密钥、内网域名或内部名词会被拦下。网络结果会单独标注 [W]，可经您确认后存入知识库。', '', 9000);
-  }
+  webOn = !webOn; localStorage.setItem('kb-web', webOn ? 'on' : 'off'); paintWeb(); webNotice();
 };
 $('question').addEventListener('input', autosize);
 $('question').addEventListener('keydown', e => {
