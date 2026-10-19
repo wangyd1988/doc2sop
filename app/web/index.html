@@ -303,6 +303,15 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .tl-wait .cmd { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px;
                 color: var(--muted); margin-top: 3px; }
 .tl-pick input { margin-bottom: 6px; }
+.tl-pform { border: 1px dashed var(--border); border-radius: 10px; padding: 8px 10px 4px; margin-bottom: 8px; }
+.tl-param { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px; align-items: center; margin-bottom: 6px;
+            padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.tl-param:last-child { border-bottom: 0; margin-bottom: 0; }
+.tl-param code { font-size: 12px; color: var(--accent); }
+.tl-param select { font-size: 12px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); min-width: 0; }
+.tl-param label { font-size: 12px; color: var(--muted); white-space: nowrap; display: flex; align-items: center; gap: 4px; }
+.tl-param input[data-pf] { grid-column: 2 / 4; margin: 0; font-size: 12px; padding: 5px 8px; }
+.tl-param input[data-pf]:disabled { opacity: .45; }
 .tl-group { display: none; }
 .tl-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
 .tl-tab { font-size: 12.5px; padding: 4px 14px; border-radius: 7px; border: 1px solid var(--border);
@@ -1595,6 +1604,44 @@ function tlCard(name, t) {
   </div>`;
 }
 
+/* 申请表单里的参数：命令 / 地址里每出现一个 {xxx}，就对应一行类型设置。
+   类型只能从宿主机预置的几种校验里选——页面不能自带正则，一个 ".*" 就能把白名单废掉。 */
+const TL_PARAM_TYPES = [
+  ['name', '名称（容器名、文件名：字母数字 . _ -）'],
+  ['k8s_name', 'K8s 名（小写字母数字 . -，如命名空间、Pod 名）'],
+  ['resource', '资源类型（如 pod、svc、ingress）'],
+  ['date', '日期（YYYY-MM-DD）'],
+  ['int', '整数'],
+];
+let tlParamState = {};
+function tlPlaceholders(text) {
+  return [...new Set([...(text || '').matchAll(/\{([a-z][a-z0-9_]*)\}/g)].map(m => m[1]))];
+}
+function tlParamRows(text) {
+  const names = tlPlaceholders(text);
+  if (!names.length) return '';
+  return `<div class="tl-pform"><div class="tl-note" style="padding:0 0 4px">参数（模型填值，宿主机按类型校验）</div>` + names.map(n => {
+    const st = tlParamState[n] || (tlParamState[n] = {type: 'name', required: true, def: '', desc: ''});
+    return `<div class="tl-param" data-tlparam="${esc(n)}">
+      <code>{${esc(n)}}</code>
+      <select data-pf="type">${TL_PARAM_TYPES.map(([v, t]) => `<option value="${v}" ${st.type === v ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
+      <label><input type="checkbox" data-pf="required" ${st.required ? 'checked' : ''}> 必填</label>
+      <input data-pf="def" placeholder="默认值（非必填时要给）" value="${esc(st.def)}" maxlength="60" ${st.required ? 'disabled' : ''}>
+      <input data-pf="desc" placeholder="给模型看的说明，如：命名空间" value="${esc(st.desc)}" maxlength="120">
+    </div>`;
+  }).join('') + `</div>`;
+}
+function tlParamsPayload(text) {
+  const out = {};
+  for (const n of tlPlaceholders(text)) {
+    const st = tlParamState[n] || {type: 'name', required: true, def: '', desc: ''};
+    const spec = {desc: st.desc, required: !!st.required};
+    if (st.type === 'int') { spec.type = 'int'; if (st.def.trim()) spec.default = Number(st.def); }
+    else { spec.type = 'str'; spec.pattern = st.type; if (!st.required) spec.default = st.def; }
+    out[n] = spec;
+  }
+  return out;
+}
 function tlProposeForm() {
   const common =
     `<input id="tlNewName" placeholder="工具名，如 host_time（小写字母、数字、下划线）" maxlength="40">
@@ -1622,14 +1669,18 @@ function tlProposeForm() {
             这和「上传文档自动变工具」不同，不是上传代码。<br>
             批准后，脚本内容一旦被改动，工具会自动停用，直到在宿主机上重新确认。`;
   } else if (tlProposeKind === 'http') {
-    body = `<input id="tlNewUrl" placeholder="接口地址，如 https://api.example.com/v1/status（只允许 GET）" maxlength="300">`;
-    note = `适合查询公开或内网的<b>只读接口</b>，例如天气、汇率、状态页、工单查询。<br>
+    body = `<input id="tlNewUrl" placeholder="接口地址，如 https://api.example.com/v1/status?city={city}（只允许 GET）" maxlength="300">
+            <div id="tlParams">${tlParamRows('')}</div>`;
+    note = `适合查询公开或内网的<b>只读接口</b>，例如天气、汇率、状态页、工单查询。
+            地址里可以用 <code>{参数名}</code> 占位，下面会出现对应的参数设置。<br>
             页面申请的接口<b>不能带请求头和凭据</b>；需要登录鉴权的接口，请管理员在宿主机配置文件里添加，
             密钥只放在宿主机环境变量中，模型和页面都看不到。`;
   } else {
-    body = `<input id="tlNewCmd" placeholder="完整命令，如 date +%H:%M" maxlength="200">`;
+    body = `<input id="tlNewCmd" placeholder="完整命令，如 kubectl get pod -n {namespace} -o wide" maxlength="200">
+            <div id="tlParams">${tlParamRows('')}</div>`;
     note = `工具名会作为函数名发给模型，按 function calling 规范<b>只能用英文</b>；中文写在「显示名」里。<br>
-            只能申请<b>固定命令</b>（不带参数、不含管道和重定向）。要跑一段逻辑，请改用「脚本」。`;
+            命令里用 <code>{参数名}</code> 表示由模型填的参数，每个参数要选类型：模型填进来的值会按类型校验，不合法就拒绝执行。
+            不能含管道、重定向和写操作动词。要跑一段逻辑，请改用「脚本」。`;
   }
 
   return `<div class="pb-pick tl-pick">
@@ -1697,6 +1748,10 @@ $('tlBtn').onclick = () => {
 };
 $('tlPanel').addEventListener('input', e => {
   if (e.target.id === 'tlSearch') { tlSearch = e.target.value; onSearchInput('tl', tlSearch); }
+  // 命令 / 地址一变，参数行跟着增减；只重画参数区，不打断正在输入的框
+  if (e.target.id === 'tlNewCmd' || e.target.id === 'tlNewUrl') { const box = $('tlParams'); if (box) box.innerHTML = tlParamRows(e.target.value); }
+  const pf = e.target.dataset.pf, row = e.target.closest('[data-tlparam]');
+  if (pf && row && pf !== 'required') (tlParamState[row.dataset.tlparam] ||= {type: 'name', required: true, def: '', desc: ''})[pf] = e.target.value;
 });
 document.addEventListener('click', e => {
   if (MANAGE) return;
@@ -1719,7 +1774,7 @@ $('tlPanel').addEventListener('click', async e => {
   const pick = key => e.target.closest(`[data-${key}]`)?.dataset[key];
 
   if (e.target.id === 'tlNew') {
-    tlEditing = null; tlProposing = true; tlProposeKind = 'command'; return loadTools();
+    tlEditing = null; tlProposing = true; tlProposeKind = 'command'; tlParamState = {}; return loadTools();
   }
   if (e.target.id === 'tlCancelPropose') { tlProposing = false; return loadTools(); }
 
@@ -1785,11 +1840,12 @@ $('tlPanel').addEventListener('click', async e => {
     } else if (tlProposeKind === 'http') {
       const url = $('tlNewUrl').value.trim();
       if (!/^https?:\/\//.test(url)) return fail('接口地址要以 http:// 或 https:// 开头');
-      payload = {...base, http: {url}};
+      payload = {...base, http: {url}, params: tlParamsPayload(url)};
     } else {
-      const parts = $('tlNewCmd').value.trim().split(/\s+/).filter(Boolean);
+      const cmd = $('tlNewCmd').value.trim();
+      const parts = cmd.split(/\s+/).filter(Boolean);
       if (!parts.length) return fail('请填写完整命令');
-      payload = {...base, binary: parts[0], argv: parts};
+      payload = {...base, binary: parts[0], argv: parts, params: tlParamsPayload(cmd)};
     }
     try {
       const d = await tlSend('/api/tools/propose', payload);
@@ -1809,6 +1865,11 @@ $('tlPanel').addEventListener('click', async e => {
 
 $('tlPanel').addEventListener('change', e => {
   if (e.target.id === 'tlNewScript') { tlScriptSel = e.target.value; loadTools(); }
+  const pf = e.target.dataset.pf, row = e.target.closest('[data-tlparam]');
+  if (!pf || !row) return;
+  const st = (tlParamState[row.dataset.tlparam] ||= {type: 'name', required: true, def: '', desc: ''});
+  if (pf === 'required') { st.required = e.target.checked; const d = row.querySelector('[data-pf="def"]'); if (d) d.disabled = st.required; }
+  else st[pf] = e.target.value;
 });
 
 async function ask() {
@@ -2271,7 +2332,7 @@ $('mlist').addEventListener('click', e => {
     return;
   }
   if (e.target.id === 'mUpload') return $('files').click();
-  if (e.target.id === 'mNewTool') { tlProposing = true; tlProposeKind = 'command'; mItem = null; return renderDetail(); }
+  if (e.target.id === 'mNewTool') { tlProposing = true; tlProposeKind = 'command'; tlParamState = {}; mItem = null; return renderDetail(); }
   if (e.target.id === 'mNewSop') { pbEditing = {steps: []}; pbPicking = false; mItem = null; return renderDetail(); }
   if (e.target.id === 'mExtract') { pbPicking = true; pbEditing = null; pbDocFilter = ''; mItem = null; return renderDetail(); }
 });

@@ -764,11 +764,36 @@ class ManagementTests(unittest.TestCase):
             ({"name": "x", "binary": "docker", "argv": ["docker", "rm", "a"], "params": {}},
              "写操作"),
             ({"name": "x", "binary": "cat", "argv": ["cat", "{p}"], "params": {}},
-             "未声明的参数"),
+             "参数 {p}"),
         ]:
             with self.subTest(bad=bad), self.assertRaises(ops.ConfigError) as caught:
                 ops.propose_tool(bad)
             self.assertIn(expected, str(caught.exception))
+
+    def test_proposal_errors_use_form_wording_not_config_field_names(self):
+        """页面上没有 argv / params.x.pattern 这些字段名，报错不能让人去猜。"""
+        with self.assertRaises(ops.ConfigError) as caught:
+            ops.propose_tool({"name": "x", "binary": "cat", "argv": ["cat", "{p}"], "params": {}})
+        self.assertNotIn("argv", str(caught.exception))
+        self.assertIn("「参数」", str(caught.exception))
+        with self.assertRaises(ops.ConfigError) as caught:
+            ops.propose_tool({"name": "x", "binary": "who", "argv": ["who", "{p}"],
+                              "params": {"p": {"type": "str", "pattern": "name"}}})
+        self.assertNotIn("params.", str(caught.exception))
+        self.assertIn("默认值", str(caught.exception))
+
+    def test_proposals_may_declare_parameters(self):
+        """页面申请的工具可以带参数——参数定义和正式配置走同一套校验，批准后能跑。"""
+        item = ops.propose_tool({"name": "greet", "desc": "x", "binary": "echo",
+                                 "argv": ["echo", "{who}", "{n}"],
+                                 "params": {"who": {"type": "str", "pattern": "name", "required": True,
+                                                    "desc": "名字"},
+                                            "n": {"type": "int", "default": 3, "min": 1, "max": 9}}})
+        self.assertEqual(sorted(item["tool"]["params"]), ["n", "who"])
+        ops.approve_pending(item["id"])
+        self.assertIn("greet", ops.available_tools())
+        self.assertEqual(ops.run_tool("greet", {"who": "bob"})["output"].strip(), "bob 3")
+        self.assertIn("error", ops.run_tool("greet", {"who": "bob; id"}))
 
     def test_duplicate_names_are_refused(self):
         with self.assertRaises(ops.ConfigError):

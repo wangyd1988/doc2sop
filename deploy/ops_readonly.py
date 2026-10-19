@@ -648,6 +648,28 @@ def _missing_binary(binary):
             + (f"（相近的还有：{'、'.join(hint[1:])}）" if len(hint) > 1 else ""))
 
 
+def _form_wording(message, name):
+    """校验器的措辞面向配置文件（argv、params.x.pattern）；页面上没有这些字段名，换成栏目名。"""
+    swaps = [
+        (re.compile(rf"^{re.escape(name)}\.argv 用到了未声明的参数 (\S+)$"),
+         r"命令里用了参数 {\1}，请在下方「参数」里把它的类型填好"),
+        (re.compile(rf"^{re.escape(name)}\.http\.(?:url|query) 用到了未声明的参数 (\S+)$"),
+         r"接口地址里用了参数 {\1}，请在下方「参数」里把它的类型填好"),
+        (re.compile(rf"^{re.escape(name)}\.argv 含写操作动词 (\S+)$"),
+         r"命令含写操作动词 \1：页面只能申请只读命令，写操作不开放给模型"),
+        (re.compile(rf"^{re.escape(name)}\.params\.(\S+?) 非必填，就必须给一个合法的 default$"),
+         r"参数 \1 没勾「必填」，就要给一个合法的默认值"),
+        (re.compile(rf"^{re.escape(name)}\.params\.(\S+?)\.pattern 必须是 (.+) 之一$"),
+         r"参数 \1 的类型只能是：\2"),
+        (re.compile(rf"^{re.escape(name)} 的参数名不合法：(.+)$"),
+         r"参数名 \1 不合法：只能用小写字母、数字、下划线"),
+    ]
+    for pattern, repl in swaps:
+        if pattern.match(message):
+            return pattern.sub(repl, message)
+    return message.replace(f"{name}.argv", "命令").replace(f"{name}.params.", "参数 ")
+
+
 def propose_tool(raw, author="web"):
     """Queue a new tool for review. Proposals are never loaded as usable tools."""
     # 页面上最常见的两类错误一次说全，别让人改一处、提交、再撞下一处。
@@ -678,7 +700,10 @@ def propose_tool(raw, author="web"):
         if "${" in json.dumps(http, ensure_ascii=False):
             raise ConfigError("页面申请的接口工具不能引用宿主机环境变量")
 
-    spec = _check_tool(raw)  # 其余规则（argv 首项、写动词、占位符）与正式配置一致
+    try:
+        spec = _check_tool(raw)  # 其余规则（argv 首项、写动词、占位符）与正式配置一致
+    except ConfigError as exc:
+        raise ConfigError(_form_wording(str(exc), name)) from None
     if spec["name"] in all_tools():
         raise ConfigError(f"已存在同名工具：{spec['name']}")
     entries = list_pending()
