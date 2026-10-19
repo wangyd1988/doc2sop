@@ -29,6 +29,8 @@ button:disabled { opacity: .5; cursor: default; }
 aside { width: 300px; flex-shrink: 0; background: var(--panel); border-right: 1px solid var(--border);
         display: flex; flex-direction: column; transition: transform .25s; z-index: 20; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 18px 18px 12px; }
+.brand[data-home] { cursor: pointer; border-radius: 12px; }
+.brand[data-home]:hover h1 { color: var(--accent); }
 .logo { width: 34px; height: 34px; border-radius: 10px; background: var(--user-bg); display: grid;
         place-items: center; color: #fff; font-size: 18px; box-shadow: var(--shadow); }
 .brand h1 { font-size: 17px; margin: 0; }
@@ -558,7 +560,7 @@ body.manage.settings #mgroups, body.manage.settings #mlist, body.manage.settings
 </head>
 <body>
 <aside>
-  <div class="brand"><div class="logo">📚</div><div><h1>个人知识库</h1><small id="summary">加载中…</small></div></div>
+  <div class="brand" data-home title="回到主页"><div class="logo">📚</div><div><h1>个人知识库</h1><small id="summary">加载中…</small></div></div>
   <div class="drop" id="drop"><b>＋ 上传文档</b>点击或拖拽文件到这里<br>PDF · Word · PPT · TXT · MD · 图片</div>
   <input type="file" id="files" multiple hidden accept=".md,.markdown,.txt,.pdf,.docx,.pptx,.png,.jpg,.jpeg,.webp,.bmp,.gif">
   <div class="search"><input id="newCat" list="catList" placeholder="分类（留空则自动识别）" maxlength="12"></div>
@@ -611,7 +613,7 @@ body.manage.settings #mgroups, body.manage.settings #mlist, body.manage.settings
   </header>
   <div id="manage" hidden>
     <nav id="mnav">
-      <div class="brand"><div class="logo">📚</div><div><h1>个人知识库</h1><small>管理后台</small></div></div>
+      <div class="brand" data-home title="回到对话主页"><div class="logo">📚</div><div><h1>个人知识库</h1><small>管理后台</small></div></div>
       <button data-tab="tools">
         <svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/></svg>
         工具<span class="badge" id="mTlBadge"></span></button>
@@ -1147,6 +1149,12 @@ async function openConv(id) {
   toBottom();
 }
 function newConv() { convId = null; welcome(); $('question').focus(); }
+// 品牌区当主页按钮：对话页回到首屏，管理页跳回对话页
+document.querySelectorAll('.brand[data-home]').forEach(b => b.addEventListener('click', () => {
+  if (MANAGE) { location.href = '/'; return; }
+  newConv(); $('tlPanel').hidden = true; $('pbPanel').hidden = true; $('histPanel').hidden = true;
+  document.querySelector('main')?.scrollTo?.(0, 0);
+}));
 $('histPanel').addEventListener('click', async e => {
   const del = e.target.closest('[data-del]');
   if (del) {
