@@ -24,7 +24,7 @@ from app.rag import store
 from app.rag.answer import build_messages, rewrite_question, stream_answer, suggest_category
 from app.rag.chunking import chunk_pages
 from app.rag.embedding import EmbeddingError, embed_documents
-from app.rag.retrieval import as_context, catalog_context, is_overview, retrieve
+from app.rag.retrieval import as_context, catalog_context, is_continuation, is_overview, retrieve
 from app.tracing import finish_root_run, start_root_run, traced_under
 
 FILES_DIR.mkdir(parents=True, exist_ok=True)
@@ -591,8 +591,8 @@ def list_models():
 class Question(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     conversation_id: str | None = Field(default=None, max_length=64)
-    # 页面上的「🌐 联网」开关；服务端没配置搜索时这个值不起作用。
-    web: bool = True
+    # 页面上的「🌐 联网」开关，默认关（与页面一致）；服务端没配置搜索时这个值不起作用。
+    web: bool = False
     # 页面选的模型；必须在网关返回的可用列表里，留空用默认。
     model: str | None = Field(default=None, max_length=120)
 
@@ -625,10 +625,11 @@ def ask(payload: Question):
 
     root = start_root_run(question, conversation_id)
     overview = is_overview(question)
+    continuation = is_continuation(question, history)
     try:
         with traced_under(root):
-            if overview:
-                # 「知识库里有什么」答案来自文档目录，不用向量化和重排，省 3～4 秒
+            if overview or continuation:
+                # 「知识库里有什么」答案来自文档目录；「继续」是在回应上一轮——两者都不用检索
                 search_query, hits = question, []
             else:
                 search_query = rewrite_question(question, history)
@@ -652,7 +653,9 @@ def ask(payload: Question):
             yield json.dumps({"conversation": conversation, "model": model_name},
                              ensure_ascii=False) + "\n"
             yield json.dumps({"sources": hits}, ensure_ascii=False) + "\n"
-            context = catalog_context() if overview else as_context(hits)
+            context = (catalog_context() if overview
+                       else "（本轮是对上一轮的确认，没有重新检索；沿用上一轮的知识库依据和编号）" if continuation
+                       else as_context(hits))
 
             if use_agent:
                 # The agent decides for itself whether the live environment is

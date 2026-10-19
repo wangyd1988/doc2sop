@@ -93,6 +93,16 @@ class RetrievalTests(unittest.TestCase):
         for q in ["容器内存上限怎么设", "年假有几天", "mem_limit 是什么", "总结一下这篇文档的要点"]:
             self.assertFalse(retrieval.is_overview(q), q)
 
+    def test_short_confirmations_with_history_skip_retrieval(self):
+        """「继续」是在回应上一轮的提问，拿去检索只会召回无关片段。"""
+        history = [("user", "巡检一下"), ("assistant", "……需要我继续拉日志吗？")]
+        for q in ["继续", "好的", "继续吧", "都查", "第一个", "可以，继续", "OK", "请继续！", "两个都要"]:
+            self.assertTrue(retrieval.is_continuation(q, history), q)
+        # 没有上文时「继续」不算确认；带实质内容的短句也不是
+        self.assertFalse(retrieval.is_continuation("继续", []))
+        for q in ["继续查 redis 的日志", "年假有几天", "好的，那 Ingress 呢", "OOMKilled"]:
+            self.assertFalse(retrieval.is_continuation(q, history), q)
+
     def test_catalog_groups_documents_by_category(self):
         docs = [{"source": "巡检.md", "chunks": 5, "category": "运维"},
                 {"source": "休假.md", "chunks": 3, "category": "制度"},

@@ -145,6 +145,21 @@ def is_overview(question: str) -> bool:
     return bool(OVERVIEW.search(question or ""))
 
 
+# 「继续」「好的」「都查」这类确认语：用户是在回应上一轮的提问，不是新问题。
+# 拿它去检索只会召回一堆无关片段，还会让页面上的来源和正文引用对不上。
+CONTINUATION = re.compile(
+    r"^(?:(?:请|麻烦|那就|那|好|好的|行|嗯|是|是的|对|可以|ok|okay|yes|y|go|继续|继续吧|继续查|接着查|接着来|"
+    r"查吧|查一下|都查|都要|两个都|全部|全都|第[一二三四五12345]个|前者|后者|要|需要|帮我|来吧|"
+    r"看看|看一下|拉一下|拉吧|试试|开始)[吧呢啊呀哦嘛的了！!。.，,、～~\s]*)+$",
+    re.IGNORECASE)
+
+
+def is_continuation(question: str, history) -> bool:
+    """短确认语 + 有上文 → 不检索，让 Agent 凭线程记忆接着上一轮做。"""
+    q = (question or "").strip()
+    return bool(history) and len(q) <= 12 and bool(CONTINUATION.match(q))
+
+
 def catalog_context() -> str:
     """The whole catalogue, grouped by category, for overview questions."""
     docs = store.list_documents()
