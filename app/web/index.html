@@ -906,8 +906,9 @@ document.addEventListener('dragover', e => e.preventDefault());
 document.addEventListener('drop', e => { e.preventDefault(); if (e.target.closest('#drop')) return; enqueue([...e.dataTransfer.files]); });
 
 /* ---------- Chat ---------- */
-const EXAMPLES = ['总结一下知识库里有哪些主要内容', '帮我做一次日常巡检',
-                  '我的模型 key 能用哪些模型，额度还剩多少？', '2026 年国庆想连休到 10 月 11 日，要请几天年假？'];
+const EXAMPLES = ['总结一下知识库里有哪些主要内容', '按运维指南巡检一下 API 网关的各组件 Pod',
+                  'biz 命名空间的 order.biz.example.com 通过 Ingress 访问超时，帮我查一下',
+                  '我 9 月 29 日提交了住院理赔材料，大概什么时候能到账？'];
 let convId = null, botName = '小知';
 function welcome() {
   const o = onboard;
@@ -926,7 +927,7 @@ function welcome() {
           : '当前没有可用工具，SOP 无法生效；先在宿主机配置 OPS_URL 和工具定义。'}</p>
       ${(o.docs && !o.sops && o.tools) ? '<button data-go="sop">去抽取</button>' : ''}</div>
     <div class="st"><div class="k"><i>3</i>问一句</div>
-      <p>「帮我做一次日常巡检」「国庆想连休到 11 号要请几天」——它会按 SOP 调工具、对照文档给结论。只问规则时不调工具。</p></div>
+      <p>「按运维指南巡检一下网关」「理赔材料什么时候到账」——它会按 SOP 调工具、对照文档给结论。只问规则时不调工具。</p></div>
   </div>`;
   $('thread').innerHTML = `<div class="welcome"><div class="logo">📚</div><h2>您好，我是${esc(botName)}</h2>
     <p>📄 读您上传的文档 · 📋 照文档里的做法 · 🔧 用批准过的工具查真实数据</p>${guide}
