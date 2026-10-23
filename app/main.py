@@ -13,6 +13,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
 from app import catalog, conversations, graph, jobs, models, playbooks, settings
+from app.agent import grow
 from app.agent import loop as agent_loop
 from app.agent import ops_client, web_search
 from app.agent.extract import extract as extract_playbooks
@@ -98,6 +99,7 @@ def documents():
             "configured": settings.configured(),
             "tools": sorted(tools),
             "web_search": AGENT_MODE != "off" and web_search.enabled(),
+            "sop_growth": AGENT_MODE != "off" and grow.enabled(),
             "playbooks": len(playbooks.list_all(only_enabled=True))}
 
 
@@ -296,9 +298,15 @@ def list_playbooks(q: str = "", source: str = "", offset: int = 0, limit: int = 
     for g in groups:
         g["live"] = live_by_source.get(g["name"], 0)
     count = sum(g["total"] for g in groups)
+    # 面板标题的「来源：文档 x / 实践 y」——文档抽取、从实践沉淀、手工三类各多少
+    origins = {"doc": 0, "practice": 0, "manual": 0}
+    for g in groups:
+        key = ("practice" if g["name"] == grow.SOURCE else "manual" if g["name"] == "手工创建" else "doc")
+        origins[key] += g["total"]
     return {"playbooks": items, "tools": tools, "groups": groups,
             "total": count if total is None else total, "offset": offset, "limit": limit,
-            "count": count, "live": sum(live_by_source.values())}
+            "count": count, "live": sum(live_by_source.values()),
+            "origins": origins, "pending": graph.count_proposals("pending")}
 
 
 @app.get("/api/playbooks/{playbook_id}")
@@ -382,6 +390,77 @@ def extract_from_document(body: ExtractBody):
         saved.append(playbooks.get(playbook_id))
     # 抽取结果默认停用，确认无误后再启用，避免自动生成的流程直接上线。
     return {"source": name, "extracted": saved, "note": note}
+
+
+# --- Proposals: SOP grown from practice ---------------------------------------
+#
+# 一次自由排查结束后，后台可能提出「把这次沉淀为 SOP」。提议只是一条待确认记录，
+# 批准时才真正写成 SOP——仍然经过 playbooks.validate，默认停用，和文档抽取同一条线。
+
+def proposal_view(proposal):
+    """给页面看的提议：payload 展开，证据换成对应那次调用的参数与返回预览。"""
+    payload = proposal["payload"]
+    ids = [int(ref.split(":", 1)[1]) for ref in proposal["evidence_refs"] if ref.startswith("tool_call:")]
+    calls = graph.tool_calls_by_ids(ids)
+    evidence = []
+    for index, call_id in enumerate(ids, 1):
+        call = calls.get(call_id)
+        if call:
+            # 序号按运维工具调用的先后排，和模型写的「第 n 次调用」一致
+            evidence.append({"n": index, "tool": call["tool"], "args": call["args"], "ok": call["ok"],
+                             "preview": call["output"][:300]})
+    return {"id": proposal["id"], "kind": proposal["kind"], "status": proposal["status"],
+            "created_at": proposal["created_at"], "execution_id": proposal["execution_id"],
+            "name": payload.get("name", ""), "trigger": payload.get("trigger", ""),
+            "steps": payload.get("steps", []), "summary": payload.get("summary", {}),
+            "target": payload.get("target"), "evidence": evidence}
+
+
+@app.get("/api/proposals")
+def list_proposals(execution_id: str = "", status: str = "pending"):
+    items = graph.list_proposals(status=status or None, execution_id=execution_id or None)
+    return {"proposals": [proposal_view(p) for p in items], "pending": graph.count_proposals("pending")}
+
+
+def _pending_proposal(proposal_id):
+    proposal = graph.get_proposal(proposal_id)
+    if not proposal:
+        raise HTTPException(404, "提议不存在")
+    if proposal["status"] != "pending":
+        raise HTTPException(409, "这条提议已经处理过了")
+    return proposal
+
+
+@app.post("/api/proposals/{proposal_id}/approve")
+def approve_proposal(proposal_id: str):
+    """批准：新建 SOP（来源「从实践沉淀」、默认停用），或把多出的步骤补到目标 SOP 末尾。"""
+    proposal = _pending_proposal(proposal_id)
+    payload, tools = proposal["payload"], set(usable_tools())
+    try:
+        if proposal["kind"] == "extend_sop":
+            target = playbooks.get((payload.get("target") or {}).get("id", ""))
+            if not target:
+                raise HTTPException(404, "目标 SOP 已不存在")
+            have = {s["tool"] for s in target["steps"]}
+            merged = target["steps"] + [s for s in payload["steps"] if s["tool"] not in have]
+            playbook_id = playbooks.save(target["id"], target["name"], target["trigger"], merged,
+                                         tools, enabled=target["enabled"])
+        elif proposal["kind"] == "new_sop":
+            playbook_id = playbooks.save(None, payload["name"], payload.get("trigger", ""),
+                                         payload["steps"], tools, source=grow.SOURCE, enabled=False)
+        else:
+            raise HTTPException(400, "这类提议还不能自动执行")
+    except playbooks.InvalidPlaybook as exc:
+        raise HTTPException(400, str(exc))
+    graph.decide_proposal(proposal_id, "approved")
+    return {"proposal": proposal_id, "playbook": playbooks.get(playbook_id)}
+
+
+@app.post("/api/proposals/{proposal_id}/reject")
+def reject_proposal(proposal_id: str):
+    _pending_proposal(proposal_id)
+    graph.decide_proposal(proposal_id, "rejected")
+    return {"proposal": proposal_id, "status": "rejected"}
 
 
 # --- Tools -------------------------------------------------------------------
@@ -473,12 +552,15 @@ def conversation_messages(conversation_id: str):
     if not conversations.exists(conversation_id):
         raise HTTPException(404, "对话不存在")
     messages = conversations.messages_of(conversation_id)
-    # 助手消息挂上图谱里的执行身份，页面回放后仍能对这条回答打反馈
+    # 助手消息挂上图谱里的执行身份，页面回放后仍能对这条回答打反馈；还没处理的沉淀提议也一起带回
     runs = graph.executions_by_message(conversation_id)
+    pending = graph.pending_by_execution([run["execution_id"] for run in runs.values()])
     for message in messages:
         run = runs.get(message["id"])
         if run:
             message["execution_id"] = run["execution_id"]
+            if run["execution_id"] in pending:
+                message["proposal"] = proposal_view(pending[run["execution_id"]])
     return {"id": conversation_id, "messages": messages}
 
 
@@ -737,6 +819,10 @@ def ask(payload: Question):
             try:
                 graph.finish_execution(execution_id, answer, failed=failure is not None,
                                        message_id=message_id)
+                # 自由排查用了工具并答完了：后台看看值不值得沉淀为 SOP，不占这个请求
+                if use_agent and message_id is not None and any(c["tool"] != web_search.TOOL_NAME
+                                                                 for c in tool_calls):
+                    grow.schedule(execution_id, answer, tool_specs)
             except Exception:
                 log.warning("failed to finish execution %s", execution_id, exc_info=True)
             finish_root_run(root, outputs={"answer": answer, "search_query": search_query,
