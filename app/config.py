@@ -90,6 +90,13 @@ WEB_SEARCH_BLOCKLIST = [w.strip() for w in
 AUTO_SOP_PROPOSALS = os.environ.get("AUTO_SOP_PROPOSALS", "true").strip().lower() in ("true", "1", "yes")
 SOP_PROPOSALS_PER_DAY = int(os.environ.get("SOP_PROPOSALS_PER_DAY", "10"))
 
+# --- Scenario packs ----------------------------------------------------------
+# 场景包 = 文档 + 工具定义 + SOP 的目录（docs/场景包.md）。镜像里 app/ 和 packs/ 是兄弟目录，
+# 源码检出时也是，所以默认值两边都对。
+PACKS_DIR = Path(os.environ.get("PACKS_DIR", "") or Path(__file__).resolve().parent.parent / "packs")
+# 模型配好、工具在线后自动导入的包 id，逗号分隔；留空不自动导入（接口手动导入不受影响）。
+DEMO_PACKS = [p.strip() for p in os.environ.get("DEMO_PACKS", "").split(",") if p.strip()]
+
 log = logging.getLogger("kb")
 
 

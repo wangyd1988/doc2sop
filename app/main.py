@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
-from app import catalog, conversations, graph, jobs, models, playbooks, settings
+from app import catalog, conversations, graph, jobs, models, packs, playbooks, settings
 from app.agent import grow
 from app.agent import loop as agent_loop
 from app.agent import ops_client, web_search
@@ -100,7 +100,10 @@ def documents():
             "tools": sorted(tools),
             "web_search": AGENT_MODE != "off" and web_search.enabled(),
             "sop_growth": AGENT_MODE != "off" and grow.enabled(),
-            "playbooks": len(playbooks.list_all(only_enabled=True))}
+            "playbooks": len(playbooks.list_all(only_enabled=True)),
+            # 欢迎页：已导入场景包的示例问题当 chips；自动导入进行中时引导卡显示进度
+            "examples": packs.examples(),
+            "packs": packs.progress()}
 
 
 @app.post("/api/documents")
@@ -392,6 +395,34 @@ def extract_from_document(body: ExtractBody):
     return {"source": name, "extracted": saved, "note": note}
 
 
+# --- Scenario packs -----------------------------------------------------------
+#
+# 场景包 = 文档 + 工具定义 + SOP 的目录（docs/场景包.md）。这里只能导入文档和 SOP；
+# 工具定义由宿主机（或演示 sidecar）include，应用永远不往宿主机送工具。
+
+@app.get("/api/packs")
+def list_packs():
+    return packs.overview(set(usable_tools()))
+
+
+@app.post("/api/packs/{pack_id}/import")
+def import_pack(pack_id: str, force: bool = False):
+    """同步导入一个包（文档入库 + SOP 入库），幂等；force=1 重导同版本。"""
+    try:
+        result = packs.import_pack(pack_id, ingest, set(usable_tools()), force=force)
+    except packs.PackWaiting as exc:
+        raise HTTPException(409, str(exc))
+    except packs.PackError as exc:
+        raise HTTPException(400, str(exc))
+    return {"pack": pack_id, **result}
+
+
+@app.get("/api/packs/export")
+def export_pack_sops(source: str = ""):
+    """按 sops.json 的格式导出库里的 SOP：现场长出来、核对过的 SOP 就这样放进场景包。"""
+    return {"sops": packs.export_sops(source)}
+
+
 # --- Proposals: SOP grown from practice ---------------------------------------
 #
 # 一次自由排查结束后，后台可能提出「把这次沉淀为 SOP」。提议只是一条待确认记录，
@@ -663,6 +694,8 @@ def put_settings(body: SettingsBody):
         raise HTTPException(409, f"换向量模型会让现有 {docs} 个文档的索引失效，请勾选「同时重建索引」再保存")
     settings.save(body.model_dump(exclude={"reindex"}))
     models._cache.update(at=0.0, models=[])
+    # 模型刚配好：演示场景包不用等下一轮退避，马上开始导入
+    packs.poke()
     result = {"saved": True, **settings.public()}
     if (embed_changed or (url_changed and body.reindex)) and docs:
         _reindex_job = jobs.submit("重建索引", lambda report: reindex_all(report))
@@ -832,3 +865,7 @@ def ask(payload: Question):
                             error=failure)
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
+# 演示场景包：DEMO_PACKS 非空时，模型一配好就在后台把文档和 SOP 导进来（docs/场景包.md）。
+packs.start_autoimport(ingest, lambda: set(usable_tools()))

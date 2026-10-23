@@ -16,6 +16,8 @@ os.environ["LANGSMITH_TRACING"] = "false"
 os.environ["AGENT_MODE"] = "off"
 os.environ["OPS_URL"] = ""
 os.environ["OPS_TOKEN"] = ""
+# 场景包自动导入是后台线程，测试里必须关掉，要导入就在用例里显式调 packs.import_pack。
+os.environ["DEMO_PACKS"] = ""
 
 Path(_TEMP.name, "files").mkdir(parents=True, exist_ok=True)
 
