@@ -287,6 +287,80 @@ class ConfigTests(unittest.TestCase):
             os.utime(path, (later, later))
             self.assertEqual(sorted(ops.all_tools()), ["one"])
 
+    # ---- include：一行启用一个场景包 ------------------------------------------
+
+    def test_include_merges_tools_from_other_files(self):
+        """主文件 include 别的定义文件：相对路径相对主文件目录，也支持 glob。"""
+        Path(self.tmp.name, "packs", "a").mkdir(parents=True)
+        Path(self.tmp.name, "packs", "b").mkdir(parents=True)
+        Path(self.tmp.name, "packs", "a", "tools.yaml").write_text(
+            "tools:\n  - {name: aa, binary: free, argv: [free, -m], params: {}}\n", encoding="utf-8")
+        Path(self.tmp.name, "packs", "b", "tools.yaml").write_text(
+            "tools:\n  - {name: bb, binary: df, argv: [df, -h], params: {}}\n", encoding="utf-8")
+        Path(self.tmp.name, "extra.yaml").write_text(
+            "tools:\n  - {name: cc, binary: uptime, argv: [uptime], params: {}}\n", encoding="utf-8")
+        tools, problems = self.load(
+            "include:\n"
+            "  - packs/*/tools.yaml\n"
+            f"  - {Path(self.tmp.name, 'extra.yaml').as_posix()}\n"
+            "tools:\n"
+            "  - {name: main, binary: who, argv: [who, -H], params: {}}\n")
+        self.assertEqual(sorted(tools), ["aa", "bb", "cc", "main"])
+        self.assertEqual(problems, [])
+
+    def test_include_without_matches_is_reported_not_fatal(self):
+        """场景包目录没挂上时要说清楚，而不是静默给一个空列表。"""
+        tools, problems = self.load(
+            "include: [missing/*/tools.yaml]\n"
+            "tools:\n  - {name: main, binary: free, argv: [free, -m], params: {}}\n")
+        self.assertEqual(sorted(tools), ["main"])
+        self.assertTrue(any("没有匹配到文件" in p for p in problems), problems)
+
+    def test_included_file_cannot_include_again(self):
+        nested = Path(self.tmp.name, "nested.yaml")
+        nested.write_text(
+            "include: [other.yaml]\n"
+            "tools:\n  - {name: nn, binary: free, argv: [free, -m], params: {}}\n", encoding="utf-8")
+        tools, problems = self.load("include: [nested.yaml]\ntools: []\n")
+        self.assertEqual(sorted(tools), ["nn"])
+        self.assertTrue(any("不能再包含" in p for p in problems), problems)
+
+    def test_main_file_wins_on_duplicate_names(self):
+        Path(self.tmp.name, "dup.yaml").write_text(
+            "tools:\n  - {name: one, binary: df, argv: [df, -h], params: {}}\n", encoding="utf-8")
+        tools, problems = self.load(
+            "include: [dup.yaml]\n"
+            "tools:\n  - {name: one, binary: free, argv: [free, -m], params: {}}\n")
+        self.assertEqual(tools["one"]["binary"], "free")
+        self.assertTrue(any("工具名重复" in p for p in problems), problems)
+
+    def test_bad_entry_in_included_file_names_the_file(self):
+        Path(self.tmp.name, "bad.yaml").write_text(
+            "tools:\n  - {name: evil, binary: bash, argv: [bash, -c, id], params: {}}\n", encoding="utf-8")
+        tools, problems = self.load("include: [bad.yaml]\ntools: []\n")
+        self.assertEqual(tools, {})
+        self.assertIn("bad.yaml", problems[0])
+
+    def test_changes_in_included_files_take_effect_without_a_restart(self):
+        """改场景包的 tools.yaml、或新放进来一个包，下一次请求就该看见。"""
+        packs = Path(self.tmp.name, "packs")
+        (packs / "a").mkdir(parents=True)
+        (packs / "a" / "tools.yaml").write_text(
+            "tools:\n  - {name: aa, binary: free, argv: [free, -m], params: {}}\n", encoding="utf-8")
+        path = self.write("include: [packs/*/tools.yaml]\ntools: []\n")
+        with patch.dict(ops._state, {"path": path, "mtime": None, "imtime": None, "includes": [],
+                                     "tools": {}}):
+            self.assertEqual(sorted(ops.all_tools()), ["aa"])
+            later = time.time() + 2
+            (packs / "a" / "tools.yaml").write_text(
+                "tools:\n  - {name: aa2, binary: free, argv: [free, -m], params: {}}\n", encoding="utf-8")
+            os.utime(packs / "a" / "tools.yaml", (later, later))
+            self.assertEqual(sorted(ops.all_tools()), ["aa2"])
+            (packs / "b").mkdir()
+            (packs / "b" / "tools.yaml").write_text(
+                "tools:\n  - {name: bb, binary: df, argv: [df, -h], params: {}}\n", encoding="utf-8")
+            self.assertEqual(sorted(ops.all_tools()), ["aa2", "bb"])
+
 
 class ToolLayerTests(unittest.TestCase):
     def test_no_tools_when_endpoint_not_configured(self):
@@ -931,6 +1005,19 @@ class ManagementTests(unittest.TestCase):
         ops.approve_pending("three")
         self.assertIn("three", ops.all_tools())
 
+    def test_approval_into_an_empty_main_file_keeps_its_include_list(self):
+        """演示 sidecar 的主文件只有 include 没有 tools；批准第一个申请不能把 include 抹掉。"""
+        pack = Path(self.tmp.name) / "pack.yaml"
+        pack.write_text("tools:\n  - {name: pk, binary: df, argv: [df, -h], params: {}}\n", encoding="utf-8")
+        self.main.write_text("include: [pack.yaml]\ntools: []\n", encoding="utf-8")
+        ops.refresh(force=True)
+        self.assertEqual(sorted(ops.all_tools()), ["pk"])
+        ops.approve_pending(ops.propose_tool(self.GOOD)["id"])
+        self.assertEqual(sorted(ops.all_tools()), ["pk", "three"])
+        import yaml
+        document = yaml.safe_load(self.main.read_text(encoding="utf-8"))
+        self.assertEqual(document["include"], ["pack.yaml"])
+
 
 class ScriptToolTests(unittest.TestCase):
     """脚本型工具：页面只能引用已有脚本，内容由哈希锁定，改了就停用。"""
@@ -1146,6 +1233,18 @@ class HttpToolTests(unittest.TestCase):
             result = ops.run_tool("item", {"item_id": "a1"})
         self.assertFalse(result["ok"])
         self.assertIn("跳转", result["output"])
+
+    def test_error_responses_keep_the_vendor_message_instead_of_picked_nulls(self):
+        """401/404 时模型要看到厂商的报错正文和状态码，才解释得了「为什么失败」。"""
+        self._write(self.GOOD)
+        for status, body in [(401, b'{"message": "Invalid token"}'), (404, b"404 page not found")]:
+            with self.subTest(status=status), patch.object(ops, "_http_get", return_value=(status, body)):
+                result = ops.run_tool("item", {"item_id": "a1"})
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["status"], status)
+            self.assertIn(f"接口返回 {status}", result["output"])
+            self.assertIn(body.decode(), result["output"])
+            self.assertNotIn("null", result["output"])
 
     def test_missing_secret_makes_the_call_fail_cleanly(self):
         self._write(self.GOOD)

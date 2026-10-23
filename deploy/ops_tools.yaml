@@ -28,6 +28,14 @@
 #   group     界面上的分组，例如「容器」「模型网关」「日历」
 #   enabled   设为 false 则完全下线（不出现在列表里，也不能执行）
 #   params    留空表示该工具不接受任何参数
+#
+# 引入别的定义文件（例如一个场景包的 tools.yaml，见 docs/场景包.md）：顶层 include 列表，
+# 每项是路径或 glob，相对路径相对本文件所在目录。被包含的文件与本文件同等可信，同样只能由
+# 宿主机 root 维护；它们自己不能再 include。改动被包含的文件同样即时生效。
+#
+# include:
+#   - ../packs/leave-planning/tools.yaml
+#   - /opt/personal-kb/packs/*/tools.yaml
 
 tools:
   - name: list_containers

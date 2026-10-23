@@ -12,6 +12,7 @@ shared token. Standard library only, so it runs on any box with Python 3.9+.
 """
 import argparse
 import difflib
+import glob
 import hashlib
 import json
 import os
@@ -374,28 +375,77 @@ def _script_untrusted_reason(spec):
     return None
 
 
+def _include_patterns(document):
+    """主文件顶层 `include:` 列表里的路径或 glob，原样返回字符串。"""
+    entries = document.get("include") or []
+    if not isinstance(entries, list):
+        raise ConfigError("include 必须是列表")
+    return [str(e).strip() for e in entries if str(e).strip()]
+
+
+def _expand_includes(patterns, base):
+    """把 include 模式展开成实际文件：相对路径相对主文件所在目录，支持 glob，按名排序。
+
+    零匹配不致命，只作为 problem 报出来——演示容器里最常见的原因是场景包目录没挂上，
+    这句话比「工具列表为空」有用得多。
+    """
+    files, problems = [], []
+    for pattern in patterns:
+        full = pattern if os.path.isabs(pattern) else os.path.join(base, pattern)
+        matched = sorted(p for p in glob.glob(full) if os.path.isfile(p))
+        if not matched:
+            problems.append(f"include 没有匹配到文件：{pattern}")
+        files.extend(matched)
+    return files, problems
+
+
 def load_tools(path):
-    """Parse the definition file. A bad entry is skipped; a bad file raises."""
-    entries = _read_yaml(path).get("tools")
+    """Parse the definition file. A bad entry is skipped; a bad file raises.
+
+    除了自己的 `tools:`，主文件还可以用顶层 `include:` 引入别的定义文件（例如一个场景包的
+    tools.yaml）。被包含的文件和主文件同等可信——它们是管理员亲手写进主文件的路径，所以同样
+    只能由宿主机 root 维护；它们自己不能再 include，避免链条越拉越长看不清。
+    """
+    document = _read_yaml(path)
+    entries = document.get("tools")
     if not isinstance(entries, list):
         raise ConfigError("配置里缺少 tools 列表")
+    patterns = _include_patterns(document)
+    files, problems = _expand_includes(patterns, os.path.dirname(os.path.abspath(str(path))))
 
-    tools, problems = {}, []
-    for entry in entries:
+    sources = [(str(path), entries)]
+    for included in files:
         try:
-            spec = _check_tool(entry)
+            sub = _read_yaml(included)
         except ConfigError as exc:
             problems.append(str(exc))
             continue
-        if spec["name"] in tools:
-            problems.append(f"工具名重复：{spec['name']}")
+        if sub.get("include"):
+            problems.append(f"{included} 里的 include 已忽略：被包含的文件不能再包含别的文件")
+        sub_entries = sub.get("tools")
+        if not isinstance(sub_entries, list):
+            problems.append(f"{included} 缺少 tools 列表")
             continue
-        if spec.get("type") == "script":
-            reason = _script_untrusted_reason(spec)
-            if reason:
-                problems.append(reason)
+        sources.append((included, sub_entries))
+
+    tools = {}
+    for origin, items in sources:
+        for entry in items:
+            try:
+                spec = _check_tool(entry)
+            except ConfigError as exc:
+                problems.append(str(exc) if origin == str(path) else f"{exc}（{origin}）")
                 continue
-        tools[spec["name"]] = spec
+            if spec["name"] in tools:
+                problems.append(f"工具名重复：{spec['name']}"
+                                + ("" if origin == str(path) else f"（{origin}，已忽略）"))
+                continue
+            if spec.get("type") == "script":
+                reason = _script_untrusted_reason(spec)
+                if reason:
+                    problems.append(reason)
+                    continue
+            tools[spec["name"]] = spec
     return tools, problems
 
 
@@ -435,8 +485,8 @@ def _apply_overrides(tools, overrides):
     return tools
 
 
-_state = {"path": DEFAULT_CONFIG, "mtime": None, "omtime": None, "tmtime": None,
-          "tools": {}, "problems": []}
+_state = {"path": DEFAULT_CONFIG, "mtime": None, "omtime": None, "tmtime": None, "imtime": None,
+          "includes": [], "tools": {}, "problems": []}
 
 
 def _mtimes():
@@ -446,8 +496,10 @@ def _mtimes():
         except OSError:
             return None
 
+    # 被包含的文件按上一次加载记下的模式重新展开：新增一个匹配文件、改动任何一个，都算变化。
+    files, _ = _expand_includes(_state["includes"], os.path.dirname(os.path.abspath(str(_state["path"]))))
     return (stamp(_state["path"]), stamp(_sibling("overrides")),
-            stamp(_trust_file()))
+            stamp(_trust_file()), tuple((f, stamp(f)) for f in files))
 
 
 def refresh(force=False):
@@ -455,17 +507,18 @@ def refresh(force=False):
 
     A broken edit must not take the service down: we keep the last good set.
     """
-    mtime, omtime, tmtime = _mtimes()
+    mtime, omtime, tmtime, imtime = _mtimes()
     if mtime is None:
         if not _state["tools"]:
             _state["problems"] = [f"读不到配置文件 {_state['path']}"]
         return _state["tools"]
-    if not force and (mtime, omtime, tmtime) == (
-            _state["mtime"], _state["omtime"], _state["tmtime"]):
+    if not force and (mtime, omtime, tmtime, imtime) == (
+            _state["mtime"], _state["omtime"], _state["tmtime"], _state["imtime"]):
         return _state["tools"]
 
     try:
         tools, problems = load_tools(_state["path"])
+        includes = _include_patterns(_read_yaml(_state["path"]))
     except ConfigError as exc:
         _state["problems"] = [str(exc)]
         print(f"[config] 加载失败，沿用上一版（{len(_state['tools'])} 个）：{exc}", flush=True)
@@ -476,8 +529,10 @@ def refresh(force=False):
         overrides = {}
         problems = problems + [f"覆盖层已忽略：{exc}"]
 
-    _state.update(mtime=mtime, omtime=omtime, tmtime=tmtime, problems=problems,
+    _state.update(mtime=mtime, omtime=omtime, tmtime=tmtime, includes=includes, problems=problems,
                   tools=_apply_overrides(tools, overrides))
+    # 模式列表可能刚变，用它重新算一次被包含文件的印章，下一次请求才不会白白重载
+    _state["imtime"] = _mtimes()[3]
     for problem in problems:
         print(f"[config] {problem}", flush=True)
     print(f"[config] 已加载 {len(tools)} 个工具定义，"
@@ -743,7 +798,8 @@ def approve_pending(ident):
     if spec.get("type") == "script":
         # 批准脚本 = 认可此刻的脚本内容，把它的哈希登记为可信。
         trust_script(spec["script"])
-    current = _read_yaml(_state["path"]).get("tools")
+    document = _read_yaml(_state["path"])
+    current = document.get("tools")
     if isinstance(current, list) and current:
         # 文件里已有条目：直接在末尾追加，保留手写的注释与格式。
         block = _yaml().safe_dump([item["tool"]], allow_unicode=True,
@@ -751,8 +807,8 @@ def approve_pending(ident):
         with open(_state["path"], "a", encoding="utf-8") as handle:
             handle.write("\n" + textwrap.indent(block, "  "))
     else:
-        # 空列表（没有可追加的锚点）：整体重写一份。
-        _write_yaml(_state["path"], {"tools": (current or []) + [item["tool"]]})
+        # 空列表（没有可追加的锚点）：整体重写一份，其他顶层键（如 include）原样保留。
+        _write_yaml(_state["path"], {**document, "tools": (current or []) + [item["tool"]]})
     drop_pending(item["id"])
     refresh(force=True)
     return spec
@@ -899,7 +955,10 @@ def _run_http(spec, args):
                                              secrets_used), "command": "GET " + shown}
 
     text = body[:MAX_HTTP_BYTES].decode("utf-8", errors="replace")
-    if spec["http"]["pick"]:
+    ok = 200 <= status < 300
+    # 只在成功时摘字段；出错时原样保留厂商的报错正文（Invalid token、404 page not found……），
+    # 否则模型看到的是一串 null，解释不了为什么失败。
+    if ok and spec["http"]["pick"]:
         try:
             data = json.loads(text)
             text = json.dumps({path: _pick(data, path) for path in spec["http"]["pick"]},
@@ -907,10 +966,12 @@ def _run_http(spec, args):
         except ValueError:
             pass
     text = _scrub(text.strip(), secrets_used)
+    if not ok:
+        text = f"接口返回 {status}：{text or '（无正文）'}"
     truncated = len(text) > MAX_OUTPUT
     if 300 <= status < 400:
         text = f"接口返回 {status} 跳转，已拒绝跟随（只允许访问配置里写明的主机）"
-    return {"ok": 200 <= status < 300, "command": "GET " + shown, "status": status,
+    return {"ok": ok, "command": "GET " + shown, "status": status,
             "output": text[:MAX_OUTPUT] + ("\n…（输出已截断）" if truncated else "")}
 
 
