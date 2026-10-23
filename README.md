@@ -21,13 +21,14 @@
 
 ## 三个示例场景
 
-| 场景 | 知识库里放 | 工具查什么 | 一句话提问 |
-|---|---|---|---|
-| 运维 | 《日常巡检规范》 | 磁盘、内存、负载、容器状态 | 「帮我做一次日常巡检」 |
-| 研发 / 任何调模型的人 | 《大模型网关使用说明》 | 网关健康、可用模型、key 额度与限流 | 「我调 gpt-4o 报 404 是怎么回事」 |
-| 行政 / 人事 / 全员 | 《休假管理制度》 | 法定节假日与补班安排、日期是星期几 | 「国庆想连休到 10 月 11 日要请几天年假」 |
+| 场景 | 知识库里放 | 工具查什么 | 一句话提问 | 场景包 |
+|---|---|---|---|---|
+| 行政 / 人事 / 全员 | 《休假管理制度》 | 法定节假日与补班安排、日期是星期几 | 「2026 年国庆想连休到 10 月 11 日要请几天年假」 | [`packs/leave-planning`](packs/leave-planning/) |
+| 研发 / 任何调模型的人 | 《模型服务自查手册》 | 这把 key 能用哪些模型、账户余额与状态 | 「我这把 key 能用哪些模型？余额还剩多少？」 | [`packs/model-selfcheck`](packs/model-selfcheck/) |
+| 运维 | 《日常巡检规范》 | 磁盘、内存、负载、容器状态 | 「帮我做一次日常巡检」 | [`packs/ops-inspection`](packs/ops-inspection/)（需宿主机 docker） |
 
-三份文档都在 [`sample_kb/`](sample_kb/)，均为通用示例内容。
+每个场景是一个**场景包**：文档 + 工具定义 + SOP 放在同一个目录里，拿走就用、改了就能贡献（格式见 [`docs/场景包.md`](docs/场景包.md)）。
+前两个不需要任何基础设施，是下面「快速开始」里自动导入的内容；[`sample_kb/`](sample_kb/) 里还有另外几篇通用示例文档。
 
 ## 功能
 
@@ -145,7 +146,9 @@ OPS_TOKEN=<同一个令牌>
 ```
 
 不配置 `OPS_URL` 时工具自动关闭，退化为纯知识库问答。注入防护与轮次上限均有测试覆盖
-（`tests/test_agent.py`）。
+（`tests/test_agent.py`）。一键演示（`--profile demo`）用的是同一个程序，只是跑在一个 128 MB 的
+sidecar 容器里，工具定义通过顶层 `include:` 来自 [`packs/`](packs/) 里的场景包——宿主机上启用一个场景包也是加一行
+`include`（见 [`docs/场景包.md`](docs/场景包.md)）。
 
 **K8s 工具**（`kube_list / kube_yaml / kube_describe / kube_logs / kube_events`）要求宿主机有 `kubectl`
 并能连到集群：把 kubeconfig 放到工具服务读得到的地方，并在它的环境里设 `KUBECONFIG`。用 systemd 跑且开了
@@ -422,22 +425,39 @@ WEB_SEARCH_BLOCKLIST=内部项目名,内部系统名      # 这些词永远不�
 
 ## 快速开始
 
+五分钟看到「照着 SOP 办事」和「SOP 从实践里长出来」两条效果，不需要 k8s、docker socket 或自托管模型，
+只要 Docker 和一把模型 key。推荐[硅基流动](https://cloud.siliconflow.cn)：同一把 key 同时有对话模型和向量模型（`BAAI/bge-m3`）。
+
 ```bash
 cp .env.example .env
-# 只需要改 WEB_PASSWORD；模型可以现在填，也可以启动后在页面上填
+# 只改两处：WEB_PASSWORD（登录密码）、LLM_API_KEY（你的 key）。文件保持 LF 换行、无 BOM。
 docker compose up -d --build
 ```
 
-打开 http://127.0.0.1:8765 ，用 `.env` 里的账号密码登录。首次打开会提示「先配置模型」，点进 **管理 → 模型设置**：
+这会起两个容器：应用 `kb-app`，加一个 128 MB 的只读工具 sidecar `kb-ops`（`.env.example` 预置了 `COMPOSE_PROFILES=demo`，
+等价于 `docker compose --profile demo up -d`）。打开 http://127.0.0.1:8765 登录，引导卡会显示「正在导入演示场景包…」——
+应用在后台把 [`packs/`](packs/) 里的两个场景包导进来：文档入库，随包附带的 SOP 直接加载，工具由 sidecar 提供。几十秒后：
 
-- **有网关**（LiteLLM / OneAPI）：填网关地址和 key，模型名用网关上的别名（样例见 [`litellm/config.yaml`](litellm/config.yaml)）
-- **没有网关**：对话模型填一家（如 DeepSeek `https://api.deepseek.com/v1` + `deepseek-chat`），向量模型填另一家（如硅基流动 `https://api.siliconflow.cn/v1` + `BAAI/bge-m3`）；页面有「填入示例」按钮
+1. 点示例问题「2026 年国庆想连休到 10 月 11 日要请几天年假」→ 回答第一行「按 SOP《请假拼假核对》执行」，查节假日、逐日核对星期，
+   结论是请 3 天（10 月 10 日是补班日）。
+2. 问「我这把 key 能用哪些模型？余额还剩多少？」→ Agent 自由排查、调两个工具给出结论，回答末尾出现 💡「沉淀为 SOP」卡片；
+   保存并启用后再问同类问题，就是「按 SOP 执行」。
 
-点「测试连接」确认两边都通，保存即生效。然后上传 `sample_kb/` 下的示例文档（九篇，其中《日常巡检规范》《大模型网关使用说明》《休假管理制度》能抽出 SOP）。
+精确到点哪里、问什么、预期看到什么的步骤表（也是录 GIF 的脚本）：[`docs/五分钟演示.md`](docs/五分钟演示.md)。
+`DEMO_PACKS=` 留空即不自动导入；`docker compose down -v` 清空重来。
 
-> 工具（查真实数据）和联网搜索是可选能力：前者要在宿主机部署 `deploy/ops_readonly.py`，后者依赖 LiteLLM 的 `/v1/search`。都不配，就是一个带 SOP 抽取的知识库问答。
-> `.env` 必须是 LF 换行且无 BOM；多余的 `\r` 会让容器里的每个值都悄悄出错。
-> 另外改完 `.env` 要重建容器，`docker restart` 不会重新读取 `--env-file`。
+> 改完 `.env` 要重建容器（`docker compose up -d`），`docker restart` 不会重新读取它。
+
+### 进阶：正式部署
+
+- **模型在页面上填**：`.env` 里模型项留空也能启动，首次打开会提示「先配置模型」，到 **管理 → 模型设置** 填，保存即生效。
+  有「填入示例」按钮：硅基流动一家搞定 / 有网关（LiteLLM、OneAPI，模型名用网关别名，样例见 [`litellm/config.yaml`](litellm/config.yaml)）/
+  对话和向量各一家。页面上填的 key **不会**传给工具容器——工具凭据永远不经过页面，所以演示里「模型网关」组的工具会提示未配置；要用它们就把地址和 key 写进 `.env`。
+- **工具跑在宿主机上**（查容器、K8s、内网接口）：`.env` 里 `COMPOSE_PROFILES` 留空，在宿主机部署 `deploy/ops_readonly.py`，
+  `OPS_URL` 指向它，场景包的工具用一行 `include` 启用——见下文「查询真实数据」和 [`docs/场景包.md`](docs/场景包.md)。
+  `OPS_URL` 留空则不启用工具，退化为纯知识库问答。
+- **三台小主机的生产拓扑**（应用 / LiteLLM 网关 / 自托管向量与重排模型）：见 [`docs/architecture.md`](docs/architecture.md)。
+- 联网搜索依赖 LiteLLM 网关的 `/v1/search`，直连厂商时不可用。
 
 ### 本地跑测试
 
@@ -456,6 +476,7 @@ app/
 ├── conversations.py   会话列表与界面回放（SQLite）
 ├── jobs.py            后台入库任务与进度
 ├── playbooks.py       SOP：存储与校验（只能引用已有工具）
+├── packs.py           场景包：发现、校验、导入（文档 + SOP）、导出、首次运行自动导入
 ├── graph.py           组织运行图谱：执行、工具完整返回、实体与带出处的事实、提议、反馈（SQLite）
 ├── models.py          网关可用模型列表与校验
 ├── tracing.py         LangSmith 追踪
@@ -479,12 +500,18 @@ app/
     └── vision.py      多模态 OCR
 
 deploy/
-├── ops_readonly.py    宿主机上的只读运维接口（白名单 + 令牌）
+├── ops_readonly.py    宿主机上的只读运维接口（白名单 + 令牌），支持 include 场景包的工具定义
 ├── ops_tools.yaml     工具定义的唯一真相源，改完即时生效
+├── demo/              一键演示用的工具 sidecar：Dockerfile.ops + entrypoint.py（按 DEMO_PACKS 生成 include）
 ├── backup.sh          每日备份
 └── embedding/
     ├── server.py          向量服务（FastEmbed ONNX，OpenAI 兼容 /v1/embeddings）
     └── rerank_server.py   重排服务（onnxruntime，Infinity/Cohere 兼容 /rerank），LiteLLM 用 infinity/ 接
+
+packs/                 场景包：每个目录 = pack.yaml + docs/ + tools.yaml + sops.json（docs/场景包.md）
+├── leave-planning     行政-请假拼假
+├── model-selfcheck    研发-模型调用自查
+└── ops-inspection     运维-日常巡检（需宿主机 docker）
 ```
 
 ## 设计决策

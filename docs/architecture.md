@@ -45,6 +45,34 @@ flowchart LR
 | 跨主机走 SSH 隧道 | 向量服务只监听 `127.0.0.1`，不暴露公网；密钥限制为仅允许单端口转发 |
 | 向量库和原文件留在应用机 | 文档和索引不出自己的服务器，只有待识别图片和检索片段会发给模型 |
 
+## 单机演示拓扑（compose `demo` profile）
+
+上面是生产拓扑；给陌生人五分钟跑通用的是同一份代码的单机形态（`docs/五分钟演示.md`）：
+
+```mermaid
+flowchart LR
+    U([浏览器]) -->|127.0.0.1:8765| APP
+    subgraph H["一台机器 · docker compose"]
+        APP[kb-app<br/>应用 · 900 MB]
+        OPS[kb-ops<br/>ops_readonly.py · 128 MB<br/>端口不发布]
+        PK[(packs/<br/>场景包)]
+        APP -->|OPS_URL + 令牌| OPS
+        OPS -. include tools.yaml .-> PK
+        APP -. 导入 docs/ 与 sops.json .-> PK
+    end
+    V([模型服务商<br/>对话 + 向量，一把 key]):::ext
+    CDN([节假日数据 CDN]):::ext
+    APP -->|OpenAI 兼容| V
+    OPS -->|/v1/models /v1/user/info| V
+    OPS --> CDN
+    classDef ext fill:#f3f4f6,stroke:#9ca3af,stroke-dasharray:4 3
+```
+
+- 没有网关、没有自托管模型：对话和向量都走一家 OpenAI 兼容服务商（推荐硅基流动，一把 key）。
+- 工具不是另一套实现：sidecar 跑的就是宿主机上那个 `ops_readonly.py`，只是工具定义通过 `include:` 来自场景包，
+  凭据（`OPS_TOKEN`、`OPS_SECRET_GATEWAY_*`）由 compose 从同一个 `.env` 映射进去，页面依旧碰不到。
+- 应用启动后在后台导入 `DEMO_PACKS` 列出的场景包：文档走入库链路，SOP 走 `playbooks.validate`——和手工操作完全相同的两条路径。
+
 ## 问答链路
 
 ```
