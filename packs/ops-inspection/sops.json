@@ -1,0 +1,40 @@
+[
+  {
+    "name": "日常巡检",
+    "trigger": "每天一次的例行巡检，或想整体看一眼这台机器和上面的容器是否正常",
+    "source": "日常巡检规范.md",
+    "enabled": true,
+    "steps": [
+      {
+        "tool": "host_disk",
+        "args": {},
+        "checkpoint": "根分区使用率超过 80% 记为告警，超过 90% 记为严重；Docker 数据目录所在分区同样看",
+        "evidence": "根分区使用率超过 80% 记为告警，超过 90% 记为严重。"
+      },
+      {
+        "tool": "host_resources",
+        "args": {},
+        "checkpoint": "可用内存低于总量 15% 记为告警；swap 使用量明显不为零说明内存长期不够",
+        "evidence": "可用内存低于总量 15% 记为告警。swap 使用量持续增长，说明内存长期不够。"
+      },
+      {
+        "tool": "host_uptime",
+        "args": {},
+        "checkpoint": "开机时长只有几小时说明夜间重启过，要追查；15 分钟负载持续高于 CPU 核数记为告警",
+        "evidence": "开机时长明显短于预期（例如只有几小时），说明机器夜间发生过重启；15 分钟负载持续高于 CPU 核数，记为告警。"
+      },
+      {
+        "tool": "list_containers",
+        "args": {},
+        "checkpoint": "状态不是 running 的业务容器记为严重；状态里出现 Restarting 说明在反复重启",
+        "evidence": "状态不是 running 的业务容器，记为严重。状态里出现 Restarting，说明容器在反复重启。"
+      },
+      {
+        "tool": "container_stats",
+        "args": {},
+        "checkpoint": "内存占用超过其上限的 80% 记为告警，存在被 OOM 杀掉的风险",
+        "evidence": "内存占用超过其上限的 80%，记为告警，存在被 OOM 杀掉的风险。"
+      }
+    ]
+  }
+]

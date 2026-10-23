@@ -1,0 +1,15 @@
+# 场景包：研发-模型调用自查。格式说明见 docs/场景包.md
+id: model-selfcheck
+name: 研发-模型调用自查
+version: 1
+summary: 调模型报错时，用自己的 key 核对能用哪些模型、余额与状态，再对照手册定位原因。
+roles: [研发, 任何直接调用大模型接口的人]
+requires:
+  - .env 里填了 LLM_BASE_URL 和 LLM_API_KEY（演示 sidecar 用它们作为网关组工具的地址与 key；页面上填的不会传过去）
+  - gateway_models 对任何 OpenAI 兼容端点都可用；gateway_balance 查的是硅基流动的 /v1/user/info，其他厂商会返回 404，Agent 会如实说明
+category: 研发规范
+# 本包故意不带 SOP：它用来演示「SOP 从实践里长出来」——第一次问下面的问题时 Agent 自由排查，
+# 回答末尾会提议沉淀为 SOP；保存并启用后，再问同类问题就是「按 SOP 执行」。
+examples:
+  - 我这把 key 能用哪些模型？余额还剩多少？
+  - 我调 deepseek-ai/DeepSeek-V4 报 404 模型不存在，怎么回事？

@@ -1,0 +1,14 @@
+# 场景包：运维-日常巡检。格式说明见 docs/场景包.md
+id: ops-inspection
+name: 运维-日常巡检
+version: 1
+summary: 按《日常巡检规范》依次看磁盘、内存、负载、容器状态与资源占用，按「正常 / 告警 / 严重」给结论。
+roles: [运维, 单机 Docker 服务的负责人]
+requires:
+  - 工具必须跑在被巡检的宿主机上：用 deploy/ops_readonly.py 部署，并在它的 ops_tools.yaml 里 include 本包的 tools.yaml
+  - 宿主机有 docker CLI 且工具服务能读 /var/run/docker.sock；free / df / uptime 来自 procps 与 coreutils
+  - 随附的演示 sidecar 跑在容器里，查到的只是容器自己，所以本包不在 DEMO_PACKS 默认列表里
+category: 运维规范
+examples:
+  - 帮我做一次日常巡检
+  - 现在机器内存和磁盘还够吗？

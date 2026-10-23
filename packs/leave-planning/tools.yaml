@@ -1,0 +1,30 @@
+# 行政-请假拼假 用到的工具。格式与 deploy/ops_tools.yaml 完全一致（见其头部注释），
+# 这里只是它的一个子集：两个只读工具，都不需要宿主机有任何基础设施。
+tools:
+  - name: holiday_calendar
+    label: 法定节假日
+    group: 日历
+    desc: 查询某一年国务院公布的法定节假日安排，包括放假日期和周末补班日期（isOffDay=false 表示补班，要上班）。问放假、调休、拼假时用它。若返回的 days 为空，说明当年安排尚未公布。
+    http:
+      url: "https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/{year}.json"
+      pick: [year, days]
+    params:
+      year:
+        type: int
+        default: 2026
+        min: 2007
+        max: 2035
+        desc: 年份，例如 2027
+
+  - name: date_info
+    label: 日期是星期几
+    group: 日历
+    desc: 查某个日期是星期几、当年第几周。推算请假天数、跨周末时用它，不要自己心算星期。
+    binary: date
+    argv: [date, -d, "{day}", "+%Y-%m-%d %A 第%V周"]
+    params:
+      day:
+        type: str
+        pattern: date
+        required: true
+        desc: 日期，格式 YYYY-MM-DD

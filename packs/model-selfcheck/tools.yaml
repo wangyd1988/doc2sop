@@ -1,0 +1,27 @@
+# 研发-模型调用自查 用到的工具。格式与 deploy/ops_tools.yaml 完全一致（见其头部注释）。
+#
+# 地址和 key 来自宿主机环境变量 OPS_SECRET_GATEWAY_URL / OPS_SECRET_GATEWAY_KEY（根地址，不带 /v1）。
+# 随附的演示 sidecar 会把 .env 里的 LLM_BASE_URL / LLM_API_KEY 映射过来；自己在宿主机跑
+# ops_readonly.py 时，在它的 EnvironmentFile 里设这两个变量。页面、模型、日志都看不到 key。
+tools:
+  - name: gateway_models
+    label: 可用模型
+    group: 模型网关
+    desc: 查看当前这把 key 实际能调用哪些对话模型。遇到「模型不存在」「无权访问该模型」时先用它核对，模型名要和列表完全一致（含组织前缀和大小写）。
+    http:
+      url: "${OPS_SECRET_GATEWAY_URL}/v1/models"
+      # 硅基流动支持按子类型筛选，只列对话模型；其他厂商会忽略这个参数、返回全部模型
+      query: {sub_type: chat}
+      headers: {Authorization: "Bearer ${OPS_SECRET_GATEWAY_KEY}"}
+      pick: ["data[].id"]
+    params: {}
+
+  - name: gateway_balance
+    label: 账户余额
+    group: 模型网关
+    desc: 查看这把 key 所属账户的状态与余额（硅基流动 /v1/user/info：status、balance 赠送余额、chargeBalance 充值余额、totalBalance 总余额）。调用被拒、怀疑欠费或账号受限时用它。其他厂商没有这个接口时会返回 404，改看该厂商的控制台。
+    http:
+      url: "${OPS_SECRET_GATEWAY_URL}/v1/user/info"
+      headers: {Authorization: "Bearer ${OPS_SECRET_GATEWAY_KEY}"}
+      pick: [data.status, data.balance, data.chargeBalance, data.totalBalance]
+    params: {}

@@ -1,0 +1,44 @@
+# 运维-日常巡检 用到的工具。格式与 deploy/ops_tools.yaml 完全一致（见其头部注释），
+# 都是命令型只读工具，要求工具服务跑在被巡检的宿主机上。
+tools:
+  - name: host_disk
+    label: 磁盘用量
+    group: 宿主机
+    desc: 查看宿主机各挂载点的磁盘使用率。容器写日志失败、镜像拉不下来时先看这个。
+    binary: df
+    argv: [df, -h]
+    params: {}
+
+  - name: host_resources
+    label: 宿主机内存
+    group: 宿主机
+    desc: 查看宿主机剩余内存与 swap 使用情况。怀疑内存不足、容器被 OOM 杀掉时用它。
+    binary: free
+    argv: [free, -m]
+    params: {}
+
+  - name: host_uptime
+    label: 开机时长与负载
+    group: 宿主机
+    desc: 查看宿主机已经开机多久、当前 1/5/15 分钟平均负载。怀疑系统过载或刚重启过时用它。
+    binary: uptime
+    argv: [uptime]
+    params: {}
+
+  - name: list_containers
+    label: 容器清单
+    group: 容器
+    desc: 列出宿主机上所有容器及其运行状态。想知道某个服务是否在跑、是否反复重启时先用它。
+    binary: docker
+    argv: [docker, ps, -a, --no-trunc, --format,
+           "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"]
+    params: {}
+
+  - name: container_stats
+    label: 容器资源占用
+    group: 容器
+    desc: 查看所有容器当前的 CPU 与内存占用，用于判断是否资源不足。
+    binary: docker
+    argv: [docker, stats, --no-stream, --format,
+           "{{.Name}}\tCPU={{.CPUPerc}}\tMEM={{.MemUsage}} ({{.MemPerc}})"]
+    params: {}
