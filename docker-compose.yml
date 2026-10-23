@@ -1,5 +1,9 @@
-# Knowledge base web app. The model gateway and embedding server run elsewhere
-# (see docs/architecture.md); this compose file only starts the app itself.
+# 知识库应用。默认只起应用本身；模型网关、向量服务另行部署（见 docs/architecture.md）。
+#
+# 一键演示：.env 里 COMPOSE_PROFILES=demo（.env.example 已预置），或者命令行 --profile demo，
+# 会多起一个极小的只读工具 sidecar（kb-ops）。它的工具全部来自 packs/ 下 DEMO_PACKS 列出的场景包，
+# 不需要 docker socket、k8s 或任何自托管模型。正式部署把 COMPOSE_PROFILES 留空、
+# OPS_URL 指向宿主机上的 deploy/ops_readonly.py 即可。步骤见 docs/五分钟演示.md。
 services:
   kb-app:
     build: .
@@ -11,6 +15,8 @@ services:
       - "127.0.0.1:8765:8765"
     volumes:
       - ./data:/data
+      # 场景包只读挂进来：改包里的文档 / SOP 不用重建镜像（镜像里也有一份，挂载会盖住它）
+      - ./packs:/srv/packs:ro
     # Sized for a 2 vCPU / 2 GB host that also runs other services.
     mem_limit: 900m
     cpus: 1.5
@@ -19,3 +25,36 @@ services:
       interval: 60s
       timeout: 10s
       retries: 3
+
+  kb-ops:
+    profiles: [demo]
+    build:
+      context: deploy
+      dockerfile: demo/Dockerfile.ops
+    image: kb-ops:latest
+    container_name: kb-ops
+    restart: unless-stopped
+    environment:
+      # 和 kb-app 读同一个 .env 值，用户不用两边对齐；留空时 up 直接报错，而不是起一个连不上的服务
+      OPS_TOKEN: ${OPS_TOKEN:?请在 .env 里给 OPS_TOKEN 填一串随机字符}
+      # 导入哪些包，sidecar 就只提供哪些包的工具（入口脚本据此生成 include）
+      DEMO_PACKS: ${DEMO_PACKS:-}
+      # 「模型网关」组工具复用 .env 里的模型地址与 key（入口脚本会去掉结尾的 /v1）。
+      # 页面上填的模型不会传到这里——工具凭据永远不经过页面，这是既定边界。
+      OPS_SECRET_GATEWAY_URL: ${LLM_BASE_URL:-}
+      OPS_SECRET_GATEWAY_KEY: ${LLM_API_KEY:-}
+    volumes:
+      - ./packs:/packs:ro
+      # 生成的工具定义及其旁路文件（页面上的启停、待审申请）放在卷里，重启不丢
+      - ops-state:/ops
+    # 故意不发布端口：只有同一 compose 网络里的 kb-app 能访问它，令牌是第二道保险
+    mem_limit: 128m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8799/health',timeout=5)\""]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  ops-state:
