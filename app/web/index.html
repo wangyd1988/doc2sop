@@ -924,6 +924,9 @@ const EXAMPLES = ['总结一下知识库里有哪些主要内容', '按运维指
                   'biz 命名空间的 order.biz.example.com 通过 Ingress 访问超时，帮我查一下',
                   '我 9 月 29 日提交了住院理赔材料，大概什么时候能到账？'];
 let convId = null, botName = '小知';
+// 「▶ 执行」刚填进输入框的 SOP：发送时只要问题还是以它的「执行 SOP《…》」开头，就带上 id，
+// 这一轮在图谱里才算一次 SOP 执行；用户改成别的问题就不带。
+let pendingPlaybook = null;
 function welcome() {
   const o = onboard;
   // 数据没回来前不画引导卡，否则会先按「0 文档 0 工具」画一版再闪成另一版
@@ -1141,6 +1144,7 @@ async function openConv(id) {
     if (m.role === 'user') { addUser(m.content); lastQuestion = m.content; continue; }
     const bot = addBot(`<div class="answer">${md(m.content)}</div>`);
     if (m.model) bot.dataset.model = m.model;
+    if (m.execution_id) bot.dataset.exec = m.execution_id;
     bot.querySelector('.steps').innerHTML = (m.tools || []).map(t => stepHtml(t, false)).join('');
     bot.querySelector('.sources').innerHTML = sourcesHtml(m.sources);
     arrangeSources(bot, m.content, true);
@@ -1501,20 +1505,23 @@ $('pbPanel').addEventListener('click', async e => {
     return loadPlaybooks().then(loadDocs);
   }
 
-  // ▶ 执行：把「按 SOP 执行」的问题填进输入框并发送。本质还是一次提问，Agent 照 SOP 调工具。
+  // ▶ 执行：把「按 SOP 执行」的问题填进输入框并发送。本质还是一次提问，Agent 照 SOP 调工具；
+  // 发送时带上 SOP 的 id，图谱里这一轮才记得清是按哪个 SOP 跑的。
   const runId = id('run');
   if (runId) {
     const p = await pbGet(runId);
     if (!p) return;
     const blanks = [...new Set(p.steps.flatMap(s => Object.entries(s.args || {}).filter(([, v]) => !v).map(([k]) => k)))];
-    const text = `执行 SOP《${p.name}》` + (blanks.length ? `（${blanks.join('、')}：）` : '');
+    const prefix = `执行 SOP《${p.name}》`;
+    const text = prefix + (blanks.length ? `（${blanks.join('、')}：）` : '');
     if (MANAGE) {
       // 管理页没有对话框：带着问题跳回对话页，没有待填参数就直接发送
-      location.href = '/?q=' + encodeURIComponent(text) + (blanks.length ? '' : '&send=1');
+      location.href = '/?q=' + encodeURIComponent(text) + '&pb=' + encodeURIComponent(p.id) + (blanks.length ? '' : '&send=1');
       return;
     }
     $('pbPanel').hidden = true;
     $('question').value = text;
+    pendingPlaybook = {id: p.id, prefix};
     autosize();
     if (blanks.length) {
       // 有要填的参数时不直接发送，让用户补上冒号后面的值
@@ -1884,6 +1891,8 @@ $('tlPanel').addEventListener('change', e => {
 async function ask() {
   const q = $('question').value.trim();
   if (!q || $('askBtn').disabled) return;
+  const playbookId = pendingPlaybook && q.startsWith(pendingPlaybook.prefix) ? pendingPlaybook.id : undefined;
+  pendingPlaybook = null;
   $('question').value = ''; autosize();
   if ($('thread').querySelector('.welcome')) $('thread').innerHTML = '';
   addUser(q);
@@ -1899,7 +1908,8 @@ async function ask() {
   try {
     const r = await fetch('/api/ask', {method: 'POST', headers: {'Content-Type': 'application/json'},
                                        body: JSON.stringify({question: q, conversation_id: convId, web: webOn,
-                                                             model: modelPick || undefined})});
+                                                             model: modelPick || undefined,
+                                                             playbook_id: playbookId})});
     if (r.status === 503) { const d = await r.json().catch(() => ({})); throw new Error((d.detail || '服务未就绪') + '（点右上角「管理」）'); }
     if (!r.ok) { const d = await r.json().catch(() => ({detail: r.status})); throw new Error(d.detail); }
     const reader = r.body.getReader(), dec = new TextDecoder(); let buf = '';
@@ -1911,6 +1921,7 @@ async function ask() {
         if (msg.conversation) {
           convId = msg.conversation.id;
           if (msg.model) bot.dataset.model = msg.model;
+          if (msg.execution_id) bot.dataset.exec = msg.execution_id;
         } else if (msg.sources) {
           bot.dataset.retr = ((performance.now() - t0) / 1000).toFixed(1);
           const st = card.querySelector('.status');
@@ -2405,10 +2416,11 @@ if (MANAGE) {
 } else {
   applySplit();
   welcome(); loadDocs(); loadConvs(); $('question').focus();
-  // 从管理页「▶ 执行」跳过来：带着问题，必要时直接发送
+  // 从管理页「▶ 执行」跳过来：带着问题（和 SOP id），必要时直接发送
   const params = new URLSearchParams(location.search);
   if (params.get('q')) {
     $('question').value = params.get('q'); autosize();
+    if (params.get('pb')) pendingPlaybook = {id: params.get('pb'), prefix: params.get('q').split('（')[0]};
     history.replaceState(null, '', '/');
     if (params.get('send')) ask();
     else { const v = $('question').value; $('question').setSelectionRange(v.length - 1, v.length - 1); }

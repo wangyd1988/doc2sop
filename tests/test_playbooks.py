@@ -7,9 +7,9 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from tests.support import FakeReply
+from tests.support import FakeReply, clear_graph
 
-from app import playbooks
+from app import graph, playbooks
 from app.agent import extract as extract_mod
 from app import clients
 from app.config import WEB_PASSWORD, WEB_USER
@@ -93,6 +93,43 @@ class StoreTests(unittest.TestCase):
     def test_prompt_is_empty_without_tools(self):
         playbooks.save(None, "某 SOP", "", [step("container_stats")], TOOLS)
         self.assertEqual(playbooks.as_prompt(set()), "")
+
+    def test_saving_seeds_the_graph_and_deleting_retracts_it(self):
+        """SOP 查什么、来自哪篇文档、用了什么阈值——保存时就进图谱；删除后事实撤回而不是消失。"""
+        clear_graph()
+        pid = playbooks.save(None, "重启排查", "服务反复重启",
+                             [step("container_stats"),
+                              {"tool": "container_logs", "args": {"name": ""},
+                               "checkpoint": "日志里出现 OOMKilled 或重启次数超过 3 次"}],
+                             TOOLS, source="运维手册.docx")
+        facts = graph.facts_of("sop", pid)
+        self.assertEqual(sorted(f["object"][1] for f in facts if f["predicate"] == "checks"),
+                         ["container_logs", "container_stats"])
+        self.assertEqual([f["object"] for f in facts if f["predicate"] == "defined_in"],
+                         [("doc", "运维手册.docx")])
+        self.assertEqual([f["object"] for f in facts if f["predicate"] == "threshold"],
+                         [("threshold", "container_logs:3次")])
+
+        # 覆盖保存：来源沿用库里的，事实按新步骤重写
+        playbooks.save(pid, "重启排查（改）", "", [step("host_resources")], TOOLS)
+        self.assertEqual([f["object"][1] for f in graph.facts_of("sop", pid, "checks")], ["host_resources"])
+        self.assertEqual([f["object"] for f in graph.facts_of("sop", pid, "defined_in")],
+                         [("doc", "运维手册.docx")])
+
+        playbooks.delete(pid)
+        self.assertEqual(graph.facts_of("sop", pid), [])
+        self.assertTrue(graph.facts_of("sop", pid, include_retracted=True))
+
+    def test_delete_by_source_retracts_too(self):
+        clear_graph()
+        pid = playbooks.save(None, "甲", "", [step("container_stats")], TOOLS, source="a.docx")
+        playbooks.delete_by_source("a.docx")
+        self.assertEqual(graph.facts_of("sop", pid), [])
+
+    def test_a_graph_failure_does_not_block_saving(self):
+        with patch.object(playbooks.graph, "seed_playbook", side_effect=RuntimeError("磁盘满")):
+            pid = playbooks.save(None, "照存", "", [step("container_stats")], TOOLS)
+        self.assertIsNotNone(playbooks.get(pid))
 
 
 class ExtractionTests(unittest.TestCase):

@@ -5,13 +5,14 @@ import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
-from app import catalog, conversations, jobs, models, playbooks, settings
+from app import catalog, conversations, graph, jobs, models, playbooks, settings
 from app.agent import loop as agent_loop
 from app.agent import ops_client, web_search
 from app.agent.extract import extract as extract_playbooks
@@ -471,7 +472,14 @@ def list_conversations():
 def conversation_messages(conversation_id: str):
     if not conversations.exists(conversation_id):
         raise HTTPException(404, "对话不存在")
-    return {"id": conversation_id, "messages": conversations.messages_of(conversation_id)}
+    messages = conversations.messages_of(conversation_id)
+    # 助手消息挂上图谱里的执行身份，页面回放后仍能对这条回答打反馈
+    runs = graph.executions_by_message(conversation_id)
+    for message in messages:
+        run = runs.get(message["id"])
+        if run:
+            message["execution_id"] = run["execution_id"]
+    return {"id": conversation_id, "messages": messages}
 
 
 @app.delete("/api/conversations/{conversation_id}")
@@ -479,6 +487,22 @@ def delete_conversation(conversation_id: str):
     conversations.delete(conversation_id)
     agent_loop.forget(conversation_id)  # Agent 的完整记忆也一起删掉
     return {"deleted": conversation_id}
+
+
+class FeedbackBody(BaseModel):
+    execution_id: str = Field(min_length=1, max_length=64)
+    verdict: Literal["correct", "false_alarm", "wrong_threshold", "missing_step"]
+    note: str = Field(default="", max_length=300)
+
+
+@app.post("/api/feedback")
+def give_feedback(body: FeedbackBody):
+    """人对一次回答/执行的判断，作为 human 来源的事实进图谱。"""
+    try:
+        feedback_id = graph.record_feedback(body.execution_id, body.verdict, body.note)
+    except graph.UnknownExecution:
+        raise HTTPException(404, "执行记录不存在")
+    return {"id": feedback_id, "execution_id": body.execution_id, "verdict": body.verdict}
 
 
 # --- Model settings ----------------------------------------------------------
@@ -596,6 +620,8 @@ class Question(BaseModel):
     web: bool = False
     # 页面选的模型；必须在网关返回的可用列表里，留空用默认。
     model: str | None = Field(default=None, max_length=120)
+    # 「▶ 执行」发起的提问带上 SOP 的 id：这一轮在图谱里就记为一次 SOP 执行，而不只是一次提问。
+    playbook_id: str | None = Field(default=None, max_length=64)
 
 
 @app.post("/api/retrieve")
@@ -616,6 +642,8 @@ def ask(payload: Question):
         model_name = models.resolve(payload.model)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    if payload.playbook_id and not playbooks.get(payload.playbook_id):
+        raise HTTPException(404, "SOP 不存在")
 
     history = conversations.recent_history(conversation_id) if conversation_id else []
     # Create the conversation first so the trace carries its real id from the very first turn.
@@ -646,13 +674,15 @@ def ask(payload: Question):
     use_agent = AGENT_MODE != "off" and (ops_client.enabled() or allow_web)
 
     conversations.add_message(conversation_id, "user", question)
+    # 图谱里的这一轮：工具的完整返回、最终结论质量、人工反馈都挂在它下面
+    execution_id = graph.start_execution(conversation_id, question, payload.playbook_id)
 
     def stream():
         """NDJSON: conversation, sources, tool activity, then answer fragments."""
-        answer, failure, tool_calls, web_hits = "", None, [], []
+        answer, failure, tool_calls, web_hits, message_id = "", None, [], [], None
         try:
-            yield json.dumps({"conversation": conversation, "model": model_name},
-                             ensure_ascii=False) + "\n"
+            yield json.dumps({"conversation": conversation, "model": model_name,
+                              "execution_id": execution_id}, ensure_ascii=False) + "\n"
             yield json.dumps({"sources": hits}, ensure_ascii=False) + "\n"
             context = (catalog_context() if overview
                        else "（本轮是对上一轮的确认，没有重新检索；沿用上一轮的知识库依据和编号）" if continuation
@@ -666,7 +696,8 @@ def ask(payload: Question):
                         for kind, payload in agent_loop.run(question, context, history,
                                                             allow_web=allow_web,
                                                             thread_id=conversation_id,
-                                                            model=model_name):
+                                                            model=model_name,
+                                                            execution_id=execution_id):
                             if kind == "delta":
                                 answer += payload
                             elif kind == "error":
@@ -699,9 +730,15 @@ def ask(payload: Question):
                     yield json.dumps({"error": failure}, ensure_ascii=False) + "\n"
 
             if answer.strip():
-                conversations.add_message(conversation_id, "assistant", answer, hits + web_hits,
-                                          model=model_name, tools=tool_calls)
+                message_id = conversations.add_message(conversation_id, "assistant", answer,
+                                                       hits + web_hits, model=model_name,
+                                                       tools=tool_calls)
         finally:
+            try:
+                graph.finish_execution(execution_id, answer, failed=failure is not None,
+                                       message_id=message_id)
+            except Exception:
+                log.warning("failed to finish execution %s", execution_id, exc_info=True)
             finish_root_run(root, outputs={"answer": answer, "search_query": search_query,
                                            "sources": len(hits), "web_sources": len(web_hits),
                                            "model": model_name,

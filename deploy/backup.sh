@@ -1,5 +1,5 @@
 #!/bin/bash
-# 每日备份：把向量库、会话、SOP、Agent 记忆和上传原件打成一个包，保留最近 N 天。
+# 每日备份：把向量库、会话、SOP、组织运行图谱、Agent 记忆和上传原件打成一个包，保留最近 N 天。
 #
 # 用法：  bash backup.sh                 # 备份到 /opt/kb-app/backups
 #        bash backup.sh /mnt/nas/kb     # 指定目录
@@ -33,7 +33,7 @@ src.backup(dst); dst.close(); src.close()
 PY
   fi
 }
-for db in chat.db playbooks.db agent_memory.db; do
+for db in chat.db playbooks.db graph.db agent_memory.db; do
   [ -f "$DATA/$db" ] && sqlite_copy "$DATA/$db" "$WORK/data/$db"
 done
 # 其余目录与文件直接复制

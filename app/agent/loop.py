@@ -16,6 +16,7 @@ thread，**整轮过程**（工具调用、工具结果、搜索结果、最终�
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, TypedDict
@@ -28,6 +29,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
+from app import graph as org_graph
 from app import playbooks
 from app.agent import ops_client, web_search
 from app.agent.tools import TOOL_LIMIT, build_tools, select_tools
@@ -36,7 +38,9 @@ from app.config import BOT_NAME, DATA_DIR, HISTORY_CHARS, log, why
 
 MAX_ROUNDS = 4  # 最多几轮工具调用，防止模型来回绕
 MAX_WEB_SEARCHES = 2
-WEB_TOOL = "web_search"
+WEB_TOOL = web_search.TOOL_NAME
+# 工具层和搜索层用这些前缀报告失败（tools.py / web_search.py）；图谱据此记 ok 标志
+FAILURE_MARKS = ("[执行失败]", "[搜索失败]", "[未搜索]")
 CHINA = timezone(timedelta(hours=8))
 WEEKDAYS = "一二三四五六日"
 
@@ -327,11 +331,13 @@ def _call(bound, view, emit):
     return AIMessage(content=content, tool_calls=list(acc.tool_calls or []), id=acc.id), streamed
 
 
-def _build_graph(bound, system, current_prompt, by_name, allow_web):
+def _build_graph(bound, system, current_prompt, by_name, allow_web, record=None):
     """Compile a model ⇄ tools loop for this turn.
 
     The graph is rebuilt per request because the tool set and the knowledge-base
     context change every turn; the checkpointer is shared, so memory persists.
+    `record(tool, args, output, ok, duration_ms)`, when given, receives every tool
+    call in full so the organisation graph can keep what the preview drops.
     """
 
     def agent(state: TurnState):
@@ -356,6 +362,7 @@ def _build_graph(bound, system, current_prompt, by_name, allow_web):
         for call in call_msg.tool_calls:
             name, args = call["name"], call.get("args") or {}
             emit(("tool_call", {"tool": name, "args": args}))
+            started = time.monotonic()
             if name == WEB_TOOL and allow_web:
                 if web_searches >= MAX_WEB_SEARCHES:
                     output = f"[未搜索] 本轮已搜索 {MAX_WEB_SEARCHES} 次，请基于已有结果作答"
@@ -381,7 +388,15 @@ def _build_graph(bound, system, current_prompt, by_name, allow_web):
                         output = tool.invoke(args)
                     except Exception as exc:
                         output = f"[执行失败] {why(exc)}"
-            emit(("tool_result", {"tool": name, **_preview(str(output))}))
+            output = str(output)
+            if record is not None:
+                # 落盘失败不能影响回答：图谱是旁路，不是主链路。
+                try:
+                    record(name, args, output, not output.startswith(FAILURE_MARKS),
+                           int((time.monotonic() - started) * 1000))
+                except Exception:
+                    log.warning("failed to record tool call %s", name, exc_info=True)
+            emit(("tool_result", {"tool": name, **_preview(output)}))
             results.append(ToolMessage(content=_clip(_condense(output), STORE_TOOL_CHARS),
                                        tool_call_id=call["id"], name=name))
         return {"messages": results, "rounds": state["rounds"] + 1,
@@ -401,7 +416,8 @@ def _build_graph(bound, system, current_prompt, by_name, allow_web):
 
 
 def run(question: str, context: str, history, allow_web: bool = False,
-        thread_id: str | None = None, model: str | None = None):
+        thread_id: str | None = None, model: str | None = None,
+        execution_id: str | None = None):
     """跑一轮对话，边跑边产出事件。
 
     产出 (kind, payload)：
@@ -413,6 +429,9 @@ def run(question: str, context: str, history, allow_web: bool = False,
 
     thread_id 一般就是会话 ID；记忆里还没有这个会话时（例如升级前的老会话），
     用 history 里的文字历史补种，之后就以完整记忆为准。
+
+    execution_id 是图谱里这一轮的记录：给了就把每次工具调用的完整返回记进去
+    （对外事件仍只带预览），不给则这一轮不进图谱。
     """
     available = ops_client.available_tools()
     if len(available) > TOOL_LIMIT:
@@ -426,6 +445,16 @@ def run(question: str, context: str, history, allow_web: bool = False,
     client = chat_model(timeout=120, max_retries=1, **({"model": model} if model else {}))
     bound = client.bind_tools(bindable) if bindable else client
 
+    record = None
+    if execution_id:
+        # 参数声明（含 pattern）来自宿主机，图谱靠它判断哪些实参是对象名。
+        specs = {name: (meta.get("params") or {}) for name, meta in available.items()
+                 if isinstance(meta, dict)}
+
+        def record(name, args, output, ok, duration_ms):
+            org_graph.record_tool_call(execution_id, name, args, output, ok, duration_ms,
+                                       params=specs.get(name))
+
     system = AGENT_PROMPT + (WEB_RULES if allow_web else NO_WEB_RULES)
     # SOP 只在确实有工具可用时注入，否则模型会照着 SOP 去调不存在的工具。
     book = playbooks.as_prompt(set(by_name)) if by_name else ""
@@ -437,7 +466,7 @@ def run(question: str, context: str, history, allow_web: bool = False,
 
     thread_id = thread_id or uuid.uuid4().hex
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 2 * MAX_ROUNDS + 4}
-    graph = _build_graph(bound, system, prompt, by_name, allow_web)
+    graph = _build_graph(bound, system, prompt, by_name, allow_web, record)
 
     seed = []
     try:

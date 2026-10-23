@@ -58,6 +58,35 @@ flowchart LR
 
 每一步都是 LangSmith 里的一个节点，耗时自动拆分。
 
+## 组织运行图谱（graph.db）
+
+文档 → SOP → 工具 原本是一条单向流，工具查到的真实数据和人对一次回答的判断答完就丢。
+图谱把它们留下来，SOP 和文档从「源头」变成图谱的「生成物」；模块在 `app/graph.py`，
+一个 SQLite 文件、六张表，不引入图数据库：
+
+| 表 | 存什么 |
+|---|---|
+| `executions` | 一次提问 / 一次「▶ 执行」：会话、对应的回答消息、按哪个 SOP 跑的、结论质量（ok / anomaly / failed / unknown） |
+| `tool_calls` | 每次工具调用的参数、**完整返回**（页面和模型看到的都是截断 / 压缩过的）、成功与否、耗时 |
+| `entities` | 容器、命名空间、K8s 对象、工具、SOP、文档、阈值、执行……`(kind, name)` 唯一，记首次 / 最近见到的时间 |
+| `facts` | 主语 → 谓语 → 宾语（实体或字面量），带 `source_kind`（tool / doc / human / sop）和 `source_ref`（`tool_call:<id>` / `sop:<id>` / `feedback:<id>`） |
+| `proposals` | 图谱提出的建议（长出 SOP、补充 SOP、调阈值……），`evidence_refs` 指向工具调用，状态 pending / approved / rejected |
+| `feedback` | 人对一次执行的判断：correct / false_alarm / wrong_threshold / missing_step |
+
+两条铁律：**没有出处的事实、没有证据的提议不进图谱**（Python 层校验 + 表上 CHECK）；
+**事实只追加不覆盖**，同一主语同一谓语的多条记录就是时间线，撤回只把状态改成 retracted。
+
+第一期不用模型抽实体，只在三处零成本播种：
+
+```
+保存 SOP      sop —checks→ tool；sop —defined_in→ doc；检查点里可靠解析出的「80%」「3 次」→ threshold 实体
+调用工具      execution —called→ tool；调用成功时，pattern 为 name / k8s_name 的实参成为实体并刷新 last_seen
+人工反馈      execution —judged→ verdict（按 SOP 执行的，SOP 也记一笔）
+```
+
+工具调用在 `loop.py` 的 `tools` 节点里落盘（`run(..., execution_id=)`），对外事件仍只发预览，
+前端协议不变；`/api/ask` 首行多一个 `execution_id`，`POST /api/feedback` 用它打反馈。
+
 ## 入库链路
 
 ```

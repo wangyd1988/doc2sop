@@ -19,7 +19,8 @@ import threading
 import uuid
 from datetime import datetime, timezone
 
-from app.config import DATA_DIR
+from app import graph
+from app.config import DATA_DIR, log
 
 NAME_MAX = 60
 TRIGGER_MAX = 200
@@ -123,7 +124,27 @@ def save(playbook_id, name, trigger, steps, known_tools, source="", enabled=True
                         json.dumps(step["args"], ensure_ascii=False), step["checkpoint"],
                         step["evidence"]))
         db.commit()
+        # 覆盖时来源沿用库里的那份（接口不改来源），播种要用实际存下的值
+        stored_source = db.execute("SELECT source FROM playbooks WHERE id = ?",
+                                   (playbook_id,)).fetchone()["source"]
+    _seed(playbook_id, name, stored_source, cleaned)
     return playbook_id
+
+
+def _seed(playbook_id, name, source, steps):
+    """把这个 SOP 查什么、来自哪篇文档、用了哪些阈值播进图谱。播种失败不影响 SOP 本身。"""
+    try:
+        graph.seed_playbook(playbook_id, name, source, steps)
+    except Exception:
+        log.warning("failed to seed graph for playbook %s", playbook_id, exc_info=True)
+
+
+def _unseed(playbook_ids):
+    for playbook_id in playbook_ids:
+        try:
+            graph.retract_source(f"sop:{playbook_id}")
+        except Exception:
+            log.warning("failed to retract graph facts for playbook %s", playbook_id, exc_info=True)
 
 
 def _rows_to_playbook(row, steps):
@@ -211,6 +232,7 @@ def delete(playbook_id):
         db.execute("DELETE FROM steps WHERE playbook_id = ?", (playbook_id,))
         db.execute("DELETE FROM playbooks WHERE id = ?", (playbook_id,))
         db.commit()
+    _unseed([playbook_id])
 
 
 def set_enabled(playbook_id, enabled):
@@ -229,6 +251,7 @@ def delete_by_source(source):
             db.execute("DELETE FROM steps WHERE playbook_id = ?", (playbook_id,))
         db.execute("DELETE FROM playbooks WHERE source = ?", (source,))
         db.commit()
+    _unseed(ids)
     return len(ids)
 
 

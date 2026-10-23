@@ -66,9 +66,10 @@ def create(title: str) -> dict:
 
 
 def add_message(conversation_id: str, role: str, content: str, sources=None, model=None, tools=None):
+    """写一条消息，返回它的 id——图谱里的执行记录靠它指回这条回答。"""
     timestamp = now_iso()
     with lock:
-        db.execute(
+        cur = db.execute(
             "INSERT INTO messages (conversation_id, role, content, sources, model, tools, created_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (conversation_id, role, content,
@@ -77,6 +78,7 @@ def add_message(conversation_id: str, role: str, content: str, sources=None, mod
         db.execute("UPDATE conversations SET updated_at = ? WHERE id = ?",
                    (timestamp, conversation_id))
         db.commit()
+        return cur.lastrowid
 
 
 def recent_history(conversation_id: str):
@@ -100,9 +102,9 @@ def list_conversations(limit: int = 100):
 def messages_of(conversation_id: str):
     with lock:
         rows = db.execute(
-            "SELECT role, content, sources, model, tools FROM messages WHERE conversation_id = ?"
+            "SELECT id, role, content, sources, model, tools FROM messages WHERE conversation_id = ?"
             " ORDER BY id", (conversation_id,)).fetchall()
-    return [{"role": row["role"], "content": row["content"], "model": row["model"],
+    return [{"id": row["id"], "role": row["role"], "content": row["content"], "model": row["model"],
              "sources": json.loads(row["sources"]) if row["sources"] else [],
              "tools": json.loads(row["tools"]) if row["tools"] else []}
             for row in rows]
