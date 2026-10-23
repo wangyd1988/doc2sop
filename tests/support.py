@@ -20,6 +20,15 @@ os.environ["OPS_TOKEN"] = ""
 Path(_TEMP.name, "files").mkdir(parents=True, exist_ok=True)
 
 
+def clear_graph():
+    """清空组织运行图谱（graph.db），让每个用例从空图开始。延迟导入：env 必须先设好。"""
+    from app import graph
+    with graph.lock:
+        for table in ("feedback", "proposals", "facts", "tool_calls", "executions", "entities"):
+            graph.db.execute(f"DELETE FROM {table}")
+        graph.db.commit()
+
+
 class FakeReply:
     """Minimal stand-in for an LLM response object."""
 

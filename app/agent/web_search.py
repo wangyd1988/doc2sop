@@ -22,6 +22,8 @@ from app.config import (WEB_SEARCH_BLOCKLIST,
 MAX_QUERY = 200
 MAX_SNIPPET = 600
 TIMEOUT = 30
+# 模型看到的工具名。loop 用它来识别搜索请求，图谱用它把搜索和运维工具区分开。
+TOOL_NAME = "web_search"
 
 # 发出去之前在代码里拦一道：这些内容一旦进了公共搜索引擎就收不回来了。
 LEAK_PATTERNS = [

@@ -5,9 +5,9 @@ from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
-from tests.support import FakeReply
+from tests.support import FakeReply, clear_graph
 
-from app import clients, conversations, models, tracing
+from app import clients, conversations, graph, models, playbooks, tracing
 from app.config import CHAT_MODEL, WEB_PASSWORD, WEB_USER
 from app.main import app
 from app.rag import answer
@@ -140,6 +140,83 @@ class ChatTests(unittest.TestCase):
         replay = self.client.get(f"/api/conversations/{conversation_id}", auth=self.auth).json()
         tools = replay["messages"][-1]["tools"]
         self.assertEqual(tools, [{"tool": "host_disk", "args": {}, "preview": "/dev/vda1 41%", "lines": 1}])
+
+    # --- organisation graph --------------------------------------------------
+
+    def test_every_turn_gets_an_execution_that_is_closed_with_the_answer(self):
+        """首行带 execution_id；回答落库后执行记录指回那条消息，回放时消息也挂着它。"""
+        clear_graph()
+        events = self.ask("退款期限是多久？")
+        execution_id = events[0]["execution_id"]
+        run = graph.execution(execution_id)
+        conversation_id = events[0]["conversation"]["id"]
+        self.assertEqual(run["conversation_id"], conversation_id)
+        self.assertEqual(run["question"], "退款期限是多久？")
+        self.assertEqual(run["outcome"], "unknown")       # 纯知识库回答，没观察系统
+        self.assertIsNotNone(run["finished_at"])
+        replay = self.client.get(f"/api/conversations/{conversation_id}", auth=self.auth).json()
+        assistant = replay["messages"][-1]
+        self.assertEqual(assistant["execution_id"], execution_id)
+        self.assertEqual(run["message_id"], assistant["id"])
+        self.assertNotIn("execution_id", replay["messages"][0])   # 用户消息没有执行记录
+
+    def test_execute_button_records_the_playbook(self):
+        clear_graph()
+        with playbooks.lock:
+            playbooks.db.execute("DELETE FROM steps")
+            playbooks.db.execute("DELETE FROM playbooks")
+            playbooks.db.commit()
+        pid = playbooks.save(None, "巡检", "", [{"tool": "host_disk", "args": {}}], {"host_disk"})
+
+        def fake_run(question, context, history, **kwargs):
+            graph.record_tool_call(kwargs["execution_id"], "host_disk", {}, "/dev/vda1 41%", True, 2)
+            yield "tool_call", {"tool": "host_disk", "args": {}}
+            yield "tool_result", {"tool": "host_disk", "preview": "/dev/vda1 41%", "lines": 1, "chars": 13}
+            yield "delta", "⚠️ 告警：磁盘 91%"
+
+        with patch("app.main.retrieve", return_value=self.hits), \
+             patch("app.main.rewrite_question", side_effect=lambda q, h: q), \
+             patch("app.main.AGENT_MODE", "auto"), \
+             patch("app.main.ops_client.enabled", return_value=True), \
+             patch("app.main.agent_loop.run", side_effect=fake_run):
+            response = self.client.post("/api/ask", json={"question": "执行 SOP《巡检》", "playbook_id": pid},
+                                        auth=self.auth)
+        events = [json.loads(line) for line in response.text.splitlines() if line]
+        run = graph.execution(events[0]["execution_id"])
+        self.assertEqual((run["playbook_id"], run["outcome"]), (pid, "anomaly"))
+        self.assertEqual(run["tool_calls"][0]["output"], "/dev/vda1 41%")
+
+    def test_unknown_playbook_is_refused_before_anything_runs(self):
+        response = self.client.post("/api/ask", json={"question": "执行", "playbook_id": "nope"},
+                                    auth=self.auth)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(self.client.get("/api/conversations", auth=self.auth).json()["conversations"], [])
+
+    def test_failed_turn_is_closed_as_failed(self):
+        clear_graph()
+        with patch("app.main.retrieve", return_value=self.hits), \
+             patch("app.main.rewrite_question", side_effect=lambda q, h: q), \
+             patch.object(type(clients.llm), "stream", side_effect=RuntimeError("网关超时")):
+            response = self.client.post("/api/ask", json={"question": "会失败"}, auth=self.auth)
+        events = [json.loads(line) for line in response.text.splitlines() if line]
+        run = graph.execution(events[0]["execution_id"])
+        self.assertEqual(run["outcome"], "failed")
+        self.assertIsNone(run["message_id"])
+
+    def test_feedback_is_recorded_against_the_execution(self):
+        clear_graph()
+        execution_id = self.ask("年假有几天？")[0]["execution_id"]
+        response = self.client.post("/api/feedback", json={"execution_id": execution_id,
+                                                           "verdict": "false_alarm", "note": "阈值太低"},
+                                    auth=self.auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["verdict"], "false_alarm")
+        self.assertEqual([f["value"] for f in graph.facts_of("execution", execution_id, "judged")],
+                         ["false_alarm"])
+        self.assertEqual(self.client.post("/api/feedback", json={"execution_id": "nope", "verdict": "correct"},
+                                          auth=self.auth).status_code, 404)
+        self.assertEqual(self.client.post("/api/feedback", json={"execution_id": execution_id, "verdict": "meh"},
+                                          auth=self.auth).status_code, 422)
 
     def test_model_list_falls_back_to_default_when_gateway_is_down(self):
         def down():

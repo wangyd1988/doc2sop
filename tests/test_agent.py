@@ -13,10 +13,11 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.support import FakeReply  # noqa: F401  (sets env before app imports)
+from tests.support import FakeReply, clear_graph  # noqa: F401  (sets env before app imports)
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from app import graph
 from app.agent import loop as agent_loop
 from app.agent import ops_client, tools as agent_tools
 
@@ -528,6 +529,79 @@ class AgentLoopTests(unittest.TestCase):
              patch.object(agent_loop, "chat_model", return_value=self.make_model([([], "好")], seen)):
             list(agent_loop.run("巡检", "片段", []))
         self.assertNotIn("步骤 | 查看 | 实际数据 | 结论", seen[0][-1].content)
+
+
+class GraphRecordingTests(unittest.TestCase):
+    """图谱是旁路：给了 execution_id 就把工具完整返回记下来，对外事件和模型看到的都不变。"""
+
+    def setUp(self):
+        clear_graph()
+
+    def run_agent(self, script, tools, host=None, **kwargs):
+        model = AgentLoopTests.make_model(self, script)
+        with patch.object(agent_loop, "build_tools", return_value=tools), \
+             patch.object(agent_loop.ops_client, "available_tools", return_value=host or {}), \
+             patch.object(agent_loop, "chat_model", return_value=model):
+            return list(agent_loop.run("问题", "知识库片段", [], **kwargs))
+
+    def test_full_output_is_kept_when_an_execution_is_given(self):
+        tool = FakeTool("container_logs", output="\n".join(f"INFO line {i}" for i in range(5000)))
+        run = graph.start_execution("conv", "问题")
+        events = self.run_agent(
+            [([{"name": "container_logs", "args": {"name": "a"}, "id": "1"}], ""), ([], "好")],
+            [tool], execution_id=run)
+        call = graph.execution(run)["tool_calls"][0]
+        self.assertEqual(call["output"], tool.output)
+        self.assertEqual((call["tool"], call["args"], call["ok"]), ("container_logs", {"name": "a"}, True))
+        self.assertGreaterEqual(call["duration_ms"], 0)
+        # 对外仍然只有预览
+        preview = [p for k, p in events if k == "tool_result"][0]
+        self.assertLessEqual(len(preview["preview"]), agent_loop.PREVIEW_CHARS + 1)
+        self.assertNotIn("ok", preview)
+
+    def test_failures_are_recorded_as_not_ok(self):
+        class Broken(FakeTool):
+            def invoke(self, args):
+                raise RuntimeError("接口超时")
+
+        run = graph.start_execution("conv", "问题")
+        self.run_agent(
+            [([{"name": "container_logs", "args": {}, "id": "1"},
+               {"name": "no_such_tool", "args": {}, "id": "2"}], ""), ([], "好")],
+            [Broken("container_logs")], execution_id=run)
+        calls = graph.execution(run)["tool_calls"]
+        self.assertEqual([(c["tool"], c["ok"]) for c in calls],
+                         [("container_logs", False), ("no_such_tool", False)])
+        self.assertIn("[执行失败]", calls[0]["output"])
+
+    def test_nothing_is_recorded_without_an_execution(self):
+        self.run_agent([([{"name": "x", "args": {}, "id": "1"}], ""), ([], "好")], [FakeTool("x")])
+        with graph.lock:
+            self.assertEqual(graph.db.execute("SELECT COUNT(*) FROM tool_calls").fetchone()[0], 0)
+
+    def test_named_arguments_are_seeded_using_the_host_declared_patterns(self):
+        host = {"container_logs": {"desc": "日志", "params": {
+            "name": {"type": "str", "pattern": "name", "required": True},
+            "lines": {"type": "int", "default": 100}}}}
+        run = graph.start_execution("conv", "问题")
+        self.run_agent(
+            [([{"name": "container_logs", "args": {"name": "kb-app", "lines": 50}, "id": "1"}], ""),
+             ([], "好")], [FakeTool("container_logs")], host=host, execution_id=run)
+        self.assertIsNotNone(graph.entity("container", "kb-app"))
+        self.assertEqual([f["object"] for f in graph.facts_of("container", "kb-app")],
+                         [("tool", "container_logs")])
+
+    def test_a_recording_failure_never_breaks_the_turn(self):
+        run = graph.start_execution("conv", "问题")
+        with patch.object(agent_loop.org_graph, "record_tool_call", side_effect=RuntimeError("磁盘满")):
+            events = self.run_agent(
+                [([{"name": "x", "args": {}, "id": "1"}], ""), ([], "结论照常")],
+                [FakeTool("x")], execution_id=run)
+        self.assertEqual([k for k, _ in events], ["tool_call", "tool_result", "delta"])
+        self.assertEqual(events[-1][1], "结论照常")
+
+    def test_old_build_graph_signature_still_works(self):
+        agent_loop._build_graph(None, "", "", {}, False)
 
 
 class MemoryTests(unittest.TestCase):
