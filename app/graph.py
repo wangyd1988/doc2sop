@@ -340,6 +340,17 @@ def execution(execution_id):
     return {**dict(row), "tool_calls": [_call_row(c) for c in calls]}
 
 
+def tool_calls_by_ids(ids):
+    """id -> 调用记录。提议的证据是 tool_call:<id>，页面展示时要换成参数和返回。"""
+    ids = [int(i) for i in ids]
+    if not ids:
+        return {}
+    with lock:
+        rows = db.execute(f"SELECT * FROM tool_calls WHERE id IN ({','.join('?' * len(ids))})",
+                          ids).fetchall()
+    return {r["id"]: _call_row(r) for r in rows}
+
+
 def executions_by_message(conversation_id):
     """message_id -> 执行摘要。回放时给每条助手消息挂上它的执行身份。"""
     with lock:
@@ -477,6 +488,22 @@ def count_proposals_since(since_iso):
     with lock:
         return db.execute("SELECT COUNT(*) FROM proposals WHERE created_at >= ?",
                           (since_iso,)).fetchone()[0]
+
+
+def count_proposals(status="pending"):
+    with lock:
+        return db.execute("SELECT COUNT(*) FROM proposals WHERE status = ?", (status,)).fetchone()[0]
+
+
+def pending_by_execution(execution_ids):
+    """execution_id -> 待确认提议。回放一段对话时一次查完，给每条回答补画卡片。"""
+    ids = [i for i in execution_ids if i]
+    if not ids:
+        return {}
+    with lock:
+        rows = db.execute(f"SELECT * FROM proposals WHERE status = 'pending' AND execution_id IN"
+                          f" ({','.join('?' * len(ids))}) ORDER BY created_at", ids).fetchall()
+    return {r["execution_id"]: _proposal_row(r) for r in rows}
 
 
 def recently_rejected(signature, days):

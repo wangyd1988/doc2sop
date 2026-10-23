@@ -84,6 +84,12 @@ WEB_SEARCH_MAX_RESULTS = int(os.environ.get("WEB_SEARCH_MAX_RESULTS", "5"))
 WEB_SEARCH_BLOCKLIST = [w.strip() for w in
                         os.environ.get("WEB_SEARCH_BLOCKLIST", "").split(",") if w.strip()]
 
+# --- Growing SOPs from practice -----------------------------------------------
+# After a free-form investigation that used several tools and reached a conclusion,
+# the agent may propose turning it into an SOP (saved disabled, pending human review).
+AUTO_SOP_PROPOSALS = os.environ.get("AUTO_SOP_PROPOSALS", "true").strip().lower() in ("true", "1", "yes")
+SOP_PROPOSALS_PER_DAY = int(os.environ.get("SOP_PROPOSALS_PER_DAY", "10"))
+
 log = logging.getLogger("kb")
 
 

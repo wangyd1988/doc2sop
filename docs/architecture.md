@@ -87,6 +87,31 @@ flowchart LR
 工具调用在 `loop.py` 的 `tools` 节点里落盘（`run(..., execution_id=)`），对外事件仍只发预览，
 前端协议不变；`/api/ask` 首行多一个 `execution_id`，`POST /api/feedback` 用它打反馈。
 
+## 自由排查 → 长出 SOP
+
+文档抽取是「人写过的做法 → SOP」；这条链路是「Agent 刚做过的事 → SOP」。模块在 `app/agent/grow.py`，
+回答落库后在后台单线程里跑，不拖慢流式回答：
+
+```
+回答结束
+ └─ 该不该提      自动提议开着 ∧ 当日未达上限 ∧ 不是「▶ 执行」∧ outcome ∈ {ok, anomaly}
+                 ∧ ≥2 个不同运维工具 ∧ 回答有结论（≥40 字且开头不是「没查到 / 请提供…」）
+                 ∧ 没套用启用中的 SOP（回答未写「按 SOP《」、工具序列也不按顺序覆盖某个 SOP 的步骤）
+                 ∧ 同样的轨迹签名 30 天内没被忽略、也没有待确认的提议
+ └─ 生成          把本轮轨迹（问题 + 第 n 次调用 xxx 的参数与返回摘要 + 结论）喂给模型，
+                 复用文档抽取的 JSON 形状：具体对象泛化为空参数，checkpoint 写实际判断依据，
+                 evidence 写「第 n 次调用 xxx 的返回：…」——序号、工具名对不上的加 ⚠ 留给人看
+ └─ 门禁          猜错的参数键丢掉；过 playbooks.validate：只能引用已有工具，否则整条丢弃
+ └─ 去重          候选步骤序列与某个已有 SOP（含停用）相似度 ≥ 0.7 → 改提「补充到《X》」，只带 X 没有的步骤；
+                 X 已全覆盖则不提
+ └─ 入 proposals  evidence_refs 指向本轮的 tool_call，signature 是工具序列签名
+```
+
+页面在回答结束后按 2/4/8…s 退避轮询 `GET /api/proposals?execution_id=`，拿到就在回答末尾画卡片；
+SOP 面板顶部有「待确认提议 N」，回放对话时卡片也会补画。批准（`POST /api/proposals/{id}/approve`）
+新建来源为「从实践沉淀」、默认停用的 SOP，或把步骤追加到目标 SOP 末尾；忽略则同签名 30 天静默。
+开关 `AUTO_SOP_PROPOSALS`，每日上限 `SOP_PROPOSALS_PER_DAY`。
+
 ## 入库链路
 
 ```

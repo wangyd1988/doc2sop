@@ -345,6 +345,34 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .note-edit .cancel { background: var(--panel-2); color: var(--muted); }
 .note-edit .msg { font-size: 12px; color: var(--muted); }
 .note-edit .done { color: #059669; }
+/* 「沉淀为 SOP」提议卡：回答末尾和 SOP 面板「待确认提议」共用 */
+.proposal { margin-top: 8px; border: 1px solid #a78bfa; border-radius: 10px; padding: 10px 12px;
+            background: rgba(139,92,246,.06); font-size: 13px; }
+.proposal .hd { font-weight: 600; line-height: 1.5; }
+.proposal .trig { font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.proposal > details > summary { cursor: pointer; font-size: 12.5px; color: #7c3aed; margin: 6px 0 2px; list-style: none; }
+.proposal > details > summary::before { content: '▸ '; }
+.proposal > details[open] > summary::before { content: '▾ '; }
+.proposal ol { margin: 4px 0 6px; padding-left: 20px; }
+.proposal ol li { margin: 4px 0; }
+.proposal ol b { font-family: ui-monospace, Consolas, monospace; color: var(--accent); font-weight: 600; }
+.proposal ol .a { color: var(--muted); font-size: 12px; margin-left: 4px; }
+.proposal ol .cp { font-size: 12.5px; }
+.proposal ol .ev { font-size: 12px; color: var(--muted); }
+.proposal ol .ev.bad { color: #b45309; }
+.proposal .lbl { font-size: 11.5px; color: var(--muted); margin: 6px 0 2px; }
+.proposal .step { margin: 4px 0; }
+.proposal .row { display: flex; gap: 6px; align-items: center; margin: 8px 0 2px; }
+.proposal .row button { padding: 5px 13px; border-radius: 7px; font-size: 13px; }
+.proposal .ok { background: #7c3aed; color: #fff; }
+.proposal .cancel { background: var(--panel-2); color: var(--muted); }
+.proposal .msg { font-size: 12px; color: var(--muted); }
+.proposal .tip { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+.pb-pending { margin: 0 0 10px; }
+.pb-pending > summary { cursor: pointer; font-size: 13px; font-weight: 600; color: #7c3aed; padding: 6px 4px; list-style: none; }
+.pb-pending > summary::before { content: '▸ '; }
+.pb-pending[open] > summary::before { content: '▾ '; }
+.pb-pending .proposal { margin: 4px 0 8px; }
 
 /* Composer */
 .composer { padding: 10px 20px 18px; }
@@ -776,6 +804,7 @@ async function loadDocs() {
   loadModels(d.chat_model);
   refreshBadges();
   $('webBtn').hidden = !d.web_search;
+  sopGrowth = !!d.sop_growth;
   paintWeb();
   if (d.web_search && !MANAGE) webNotice();
   const chunks = allDocs.reduce((a, x) => a + x.chunks, 0);
@@ -927,6 +956,8 @@ let convId = null, botName = '小知';
 // 「▶ 执行」刚填进输入框的 SOP：发送时只要问题还是以它的「执行 SOP《…》」开头，就带上 id，
 // 这一轮在图谱里才算一次 SOP 执行；用户改成别的问题就不带。
 let pendingPlaybook = null;
+// 服务端是否开着「自由排查 → 沉淀为 SOP」；开着才在回答后轮询提议
+let sopGrowth = false;
 function welcome() {
   const o = onboard;
   // 数据没回来前不画引导卡，否则会先按「0 文档 0 工具」画一版再闪成另一版
@@ -1096,6 +1127,72 @@ async function saveNote(bot, box) {
     box.querySelector('[data-notego]').disabled = false;
   }
 }
+
+/* ---------- 自由排查 → 沉淀为 SOP ----------
+   回答结束后服务端在后台判断这一轮值不值得长成 SOP；提议落库，页面按退避节奏轮询取回。
+   卡片在回答末尾和 SOP 面板「待确认提议」里长一个样：保存 = 存成「从实践沉淀」且默认停用，忽略 = 同样的轨迹 30 天内不再提。 */
+function proposalHtml(p) {
+  const s = p.summary || {};
+  const head = p.kind === 'extend_sop'
+    ? `这次用 ${s.tools || '?'} 个工具得出结论，和 SOP《${esc(p.target?.name || '')}》很像——把多出来的 ${p.steps.length} 步补充进去？`
+    : `这次用 ${s.tools || '?'} 个工具、${p.steps.length} 步得出结论，沉淀为 SOP《${esc(p.name)}》？`;
+  const kv = a => Object.entries(a || {}).map(([k, v]) => `${esc(k)}=${esc(v === '' ? '（使用时填）' : v)}`).join(' ');
+  const steps = p.steps.map(st => `<li><b>${esc(st.tool)}</b><span class="a">${kv(st.args)}</span>
+      <div class="cp">${esc(st.checkpoint || '')}</div>${st.evidence ? `<div class="ev ${st.evidence.startsWith('⚠') ? 'bad' : ''}">依据：${esc(st.evidence)}</div>` : ''}</li>`).join('');
+  const ev = (p.evidence || []).map(e => `<details class="step ${e.ok ? '' : 'running'}"><summary><span class="ico">🔧</span>
+      <span class="cmd">第 ${e.n} 次 ${esc(e.tool)}</span><span class="arg">${kv(e.args)}</span></summary>
+      <div class="out"><pre class="ret">${esc(e.preview || '')}</pre></div></details>`).join('');
+  return `<div class="proposal" data-pid="${esc(p.id)}">
+    <div class="hd">💡 ${head}${p.trigger ? `<div class="trig">适用：${esc(p.trigger)}</div>` : ''}</div>
+    <details><summary>查看步骤</summary><ol>${steps}</ol>${ev ? `<div class="lbl">依据的工具返回</div>${ev}` : ''}</details>
+    <div class="row"><button class="ok" data-papprove="${esc(p.id)}">保存</button><button class="cancel" data-preject="${esc(p.id)}">忽略</button><span class="msg"></span></div>
+    <div class="tip">${p.kind === 'extend_sop' ? '保存后补到那个 SOP 的末尾，启停状态不变。' : '保存后默认停用，去 SOP 页核对每一步后再启用。'}忽略后同样的排查路径 30 天内不再提。</div></div>`;
+}
+function showProposal(bot, p) {
+  if (!bot || bot.querySelector('.proposal')) return;
+  (bot.querySelector('.tools') || bot.querySelector('.card')).insertAdjacentHTML('afterend', proposalHtml(p));
+}
+async function pollProposal(bot) {
+  for (const wait of [2000, 4000, 8000, 8000, 8000, 8000, 8000, 8000]) {
+    await new Promise(r => setTimeout(r, wait));
+    if (!bot.isConnected) return;   // 用户已经换了对话
+    try {
+      const d = await (await fetch('/api/proposals?execution_id=' + encodeURIComponent(bot.dataset.exec))).json();
+      const p = (d.proposals || [])[0];
+      if (p) { showProposal(bot, p); if (nearBottom()) toBottom(); return; }
+    } catch (_) {}
+  }
+}
+async function decideProposal(el, approve) {
+  const box = el.closest('.proposal'), pid = box.dataset.pid, msg = box.querySelector('.msg');
+  box.querySelectorAll('button').forEach(b => b.disabled = true);
+  msg.textContent = approve ? '正在保存…' : '';
+  const r = await fetch(`/api/proposals/${encodeURIComponent(pid)}/${approve ? 'approve' : 'reject'}`, {method: 'POST'});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    msg.textContent = typeof d.detail === 'string' ? d.detail : '失败';
+    box.querySelectorAll('button').forEach(b => b.disabled = false);
+    return;
+  }
+  if (approve) {
+    const name = d.playbook?.name || '';
+    box.innerHTML = `<div class="hd">✅ 已保存到 SOP《${esc(name)}》${d.playbook?.enabled ? '' : '（默认停用，去 SOP 页核对后启用）'}</div>`;
+    toast(`已保存 SOP《${name}》`, 'ok');
+  } else {
+    box.remove();
+  }
+  refreshBadges();
+  if (!$('pbPanel').hidden || MANAGE) loadPlaybooks();
+}
+document.addEventListener('click', e => {
+  const ap = e.target.closest('[data-papprove]'), rj = e.target.closest('[data-preject]');
+  if (ap || rj) decideProposal(ap || rj, !!ap);
+});
+async function pendingHtml() {
+  const d = await (await fetch('/api/proposals?status=pending')).json().catch(() => ({proposals: []}));
+  return (d.proposals || []).map(proposalHtml).join('') || '<div class="empty">没有待确认的提议</div>';
+}
+
 $('thread').addEventListener('click', e => {
   const go = e.target.closest('[data-go]');
   if (go) {
@@ -1149,6 +1246,7 @@ async function openConv(id) {
     bot.querySelector('.sources').innerHTML = sourcesHtml(m.sources);
     arrangeSources(bot, m.content, true);
     addTools(bot, m.content, lastQuestion, m.sources);
+    if (m.proposal) showProposal(bot, m.proposal);
   }
   if (!d.messages.length) welcome();
   toBottom();
@@ -1386,19 +1484,22 @@ async function loadPlaybooks() {
   const d = await (await fetch('/api/playbooks')).json();
   pbTools = d.tools || {};
   const sc = {live: d.live || 0, total: d.count || 0};
+  const o = d.origins || {};
   setBadge('pbBadge', sc, '生效');
   $('pbPanel').innerHTML =
-    `<div class="pb-head"><span class="t">SOP · 标准作业流程<small>${sc.live} 个生效 · 共 ${sc.total} 个</small></span>
+    `<div class="pb-head"><span class="t">SOP · 标准作业流程<small>${sc.live} 个生效 · 共 ${sc.total} 个${sc.total ? `<br>来源：文档 ${o.doc || 0} / 实践 ${o.practice || 0}${o.manual ? ` / 手工 ${o.manual}` : ''}` : ''}</small></span>
        <button class="icon-btn" id="pbNew">＋ 新建</button>
        <button class="icon-btn" id="pbFromDoc">从文档抽取</button>
        <button class="x" data-close title="关闭">✕</button></div>
      <div class="tl-note">📄 文档写了怎么做 → 📋 SOP 定好按什么顺序做 → 🔧 工具去执行。<br>
        适用于故障排查、日常巡检、上线前检查、上线后验收。SOP 只能调用已有工具，不能新增执行能力。</div>` +
+    (d.pending ? `<details class="pb-pending" open><summary>💡 待确认提议 ${d.pending}</summary><div class="plist"><div class="empty">加载中…</div></div></details>` : '') +
     (sc.total > 3 ? searchBox('pbSearch', pbSearch, '搜索 SOP：名称、来源文档、触发条件、工具、检查点、原句…') : '') +
     (pbPicking ? pbPicker() : '') +
     (pbEditing !== null ? pbEditor(pbEditing) : '') +
     (sc.total ? groupsHtml('pb', d.groups || [])
               : '<div class="empty">还没有 SOP。点「从文档抽取」，让 Agent 从你的排查手册、巡检规范里整理出操作步骤。</div>');
+  if (d.pending) pendingHtml().then(html => { const box = $('pbPanel').querySelector('.pb-pending .plist'); if (box) box.innerHTML = html; });
   restorePanel('pb', pbSearch);
   if (pbPicking) {
     const input = $('pbDocFilter');
@@ -1980,6 +2081,8 @@ async function ask() {
     addTools(bot, text, q, webSrc);
     $('askBtn').disabled = false; $('question').focus();
     loadConvs();
+    // 自由排查（没带 SOP）用了 ≥2 个运维工具：服务端可能在后台长出一个 SOP 提议，退避轮询取回
+    if (sopGrowth && !playbookId && bot.dataset.exec && bot.querySelectorAll('.step:not(.web)').length >= 2) pollProposal(bot);
   }
 }
 
@@ -2114,7 +2217,7 @@ async function renderManage() {
   if (mTab === 'settings') return renderSettings();
 
   // 1. 分组栏
-  let groups, live, count, pending = [];
+  let groups, live, count, pending = [], proposals = 0, origins = null;
   if (mTab === 'docs') {
     const by = {};
     for (const d of allDocs) { const k = d.category || '未分类'; by[k] = (by[k] || 0) + 1; }
@@ -2123,21 +2226,23 @@ async function renderManage() {
   } else {
     const d = await (await fetch(LAZY[cfg.panel].url)).json();
     groups = d.groups || []; live = d.live || 0; count = d.count || 0;
-    if (mTab === 'sop') pbTools = d.tools || {};
+    if (mTab === 'sop') { pbTools = d.tools || {}; proposals = d.pending || 0; origins = d.origins || null; }
     setBadge(cfg.panel + 'Badge', {live, total: count}, cfg.unit.slice(1));
     if (mTab === 'tools') pending = await fetch('/api/tools/pending').then(r => r.json()).then(r => r.pending || []).catch(() => []);
     if (d.error) toast('工具接口不可用：' + d.error, 'err');
   }
-  if (!groups.some(g => g.name === mGroup) && mGroup !== '__pending') mGroup = groups[0]?.name || null;
+  if (!groups.some(g => g.name === mGroup) && mGroup !== '__pending' && !(mGroup === '__proposals' && proposals)) mGroup = groups[0]?.name || null;
   $('mgroups').innerHTML = `<div class="mg-head">${mTab === 'docs' ? '分类' : mTab === 'tools' ? '分组' : '来源文档'}</div>`
     + groups.map(g => mgHtml(g.name, g.live, g.total)).join('')
     + (mTab === 'tools' && pending.length ? `<div class="mg-head" style="margin-top:8px">审批</div>${mgHtml('__pending', null, pending.length, true).replace('__pending</span>', '待审申请</span>')}` : '')
+    + (mTab === 'sop' && proposals ? `<div class="mg-head" style="margin-top:8px">沉淀</div>${mgHtml('__proposals', null, proposals, true).replace('__proposals</span>', '待确认提议</span>')}` : '')
     + (!groups.length ? '<div class="empty">空</div>' : '');
 
   // 2. 列表栏：工具栏 + 行
-  const stat = live == null ? `共 ${count} 个` : `${live} ${cfg.unit} · 共 ${count} 个`;
+  const stat = (live == null ? `共 ${count} 个` : `${live} ${cfg.unit} · 共 ${count} 个`)
+             + (origins && count ? ` · 来源：文档 ${origins.doc || 0} / 实践 ${origins.practice || 0}${origins.manual ? ` / 手工 ${origins.manual}` : ''}` : '');
   $('mtool').innerHTML =
-    `<span class="ttl">${esc(mSearch ? '搜索结果' : mGroup === '__pending' ? '待审申请' : mGroup || cfg.title)}<small>${stat}</small></span>
+    `<span class="ttl">${esc(mSearch ? '搜索结果' : mGroup === '__pending' ? '待审申请' : mGroup === '__proposals' ? '待确认提议' : mGroup || cfg.title)}<small>${stat}</small></span>
      <input type="search" id="mSearch" placeholder="搜索${cfg.title}…" value="${esc(mSearch)}" autocomplete="off">
      ${mTab === 'docs' ? '<button class="act" id="mUpload">＋ 上传文档</button>'
        : mTab === 'sop' ? '<button class="act ghost" id="mNewSop">＋ 新建</button><button class="act" id="mExtract">从文档抽取</button>'
@@ -2154,6 +2259,9 @@ async function renderManage() {
     if (mSearch) $('mtool').querySelector('small').textContent = `匹配 ${list.length} 条`;
   } else if (mGroup === '__pending') {
     rows.innerHTML = `<div style="padding:12px 16px">${tlWaiting(pending)}</div>`;
+  } else if (mGroup === '__proposals') {
+    rows.innerHTML = '<div class="empty">加载中…</div>';
+    rows.innerHTML = `<div style="padding:8px 16px 12px">${await pendingHtml()}</div>`;
   } else {
     const params = mSearch.trim() ? {q: mSearch} : mGroup ? {[cfg.key]: mGroup} : null;
     if (!params) rows.innerHTML = '<div class="empty">还没有条目</div>';
