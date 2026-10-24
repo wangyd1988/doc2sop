@@ -574,6 +574,18 @@ class ShapeTests(unittest.TestCase):
                          "[资源 file:///b，二进制内容已省略]", "[资源链接 https://x]", '"k": 1']:
             self.assertIn(expected, text)
 
+    def test_redundant_structured_content_is_not_repeated(self):
+        wrapped = ops._flatten_content({"content": [{"type": "text", "text": "a\nb"}],
+                                        "structuredContent": {"content": "a\nb"}})
+        self.assertEqual(wrapped, "a\nb")
+        same = json.dumps({"x": 1}, ensure_ascii=False, indent=1)
+        self.assertEqual(ops._flatten_content({"content": [{"type": "text", "text": same}],
+                                               "structuredContent": {"x": 1}}), same)
+        extra = ops._flatten_content({"content": [{"type": "text", "text": "summary"}],
+                                      "structuredContent": {"x": 1, "y": 2}})
+        self.assertIn("summary", extra)
+        self.assertIn('"y": 2', extra)
+
 
 if __name__ == "__main__":
     unittest.main()

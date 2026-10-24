@@ -57,6 +57,7 @@ docker compose up -d --build
 
 **SOP 只能引用已有工具，不能定义新命令，所以文档被投毒也变不成执行能力。** Agent 拿不到 shell，也拿不到任何凭据：
 它只能提交工具名和结构化参数，由宿主机上只监听 `127.0.0.1` 的只读接口按固定模板执行。安全约定的全部细节见 [`docs/工具.md`](docs/工具.md)。
+现成的 MCP server 也能接进来，但每个工具都要在宿主机上逐个批准、确认只读后才给模型，见 [`docs/工具.md` 的 MCP 小节](docs/工具.md#mcp-工具接现成的-mcp-server但每个工具都要你批准)。
 
 ## 场景包
 
@@ -127,10 +128,11 @@ docker compose up -d --build
 - [x] 自由排查长出 SOP：提议 → 人批准 → 默认停用的 SOP
 - [x] 场景包：文档 + 工具 + SOP 一个目录，拿走就用
 - [x] 一键演示：`docker compose up` 自动导入两个场景包
+- [x] 工具层接 MCP server（第 1 期：stdio 客户端 + 逐个审批与只读确认）
 
 计划（顺序大致如此，不承诺时间）：
 
-- [ ] 工具层接 MCP server：给 MCP 工具加一层审批与 SOP
+- [ ] MCP 第 2、3 期：Streamable HTTP 传输与真实第三方场景包；doc2sop 自己作为 MCP server
 - [ ] 触发式 SOP：cron / 告警 webhook → 执行 → 结论推企微 / 飞书 / 钉钉
 - [ ] 按角色生成执行报告
 - [ ] 文档漂移检测：文档说 900MB、现实连续三周 12MB → 提议改文档

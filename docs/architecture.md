@@ -167,7 +167,7 @@ app/
 ├── tracing.py         LangSmith 追踪
 ├── agent/
 │   ├── loop.py        LangGraph Agent：模型 ⇄ 工具循环，检查点记住每轮完整过程
-│   ├── tools.py       按宿主机下发的定义动态生成工具签名
+│   ├── tools.py       按宿主机下发的定义动态生成工具签名（MCP 工具按 input_schema 生成嵌套 pydantic）
 │   ├── extract.py     从文档抽取 SOP
 │   ├── grow.py        从一次自由排查长出 SOP 提议（回答后后台判断、生成、去重）
 │   ├── web_search.py  联网搜索（经网关）与泄漏拦截
@@ -185,8 +185,10 @@ app/
     └── vision.py      多模态 OCR
 
 deploy/
-├── ops_readonly.py    宿主机上的只读运维接口（白名单 + 令牌），支持 include 场景包的工具定义
-├── ops_tools.yaml     工具定义的唯一真相源，改完即时生效
+├── ops_readonly.py    宿主机上的只读运维接口（白名单 + 令牌），支持 include 场景包的工具定义；
+│                      内置标准库手写的 MCP stdio 客户端，发现的工具进待审、批准后写 ops_tools.mcp.yaml
+├── ops_tools.yaml     工具定义的唯一真相源，改完即时生效；顶层 mcp_servers 声明 MCP server
+├── mcp/               玩具 MCP server holiday_mcp.py（测试 + 演示）与把拼假工具换成 MCP 来源的 holiday_tools.yaml
 ├── demo/              一键演示用的工具 sidecar：Dockerfile.ops + entrypoint.py（按 DEMO_PACKS 生成 include）
 ├── backup.sh          每日备份
 └── embedding/
@@ -213,3 +215,7 @@ packs/                 场景包：每个目录 = pack.yaml + docs/ + tools.yaml
 
 **对话记忆用 SQLite 而非 LangGraph Checkpointer。** 只需要存消息本身，
 不需要图状态；少一层依赖，在小内存机器上更省。
+
+**MCP 工具不直连应用，仍经宿主机工具服务。** 应用侧只认 `/tools` 和 `/exec`，SOP 校验「只能引用
+当前存在的工具」这条线不用动；审批、只读确认、schema 指纹、输出脱敏也全部复用同一个地方。
+MCP 客户端用标准库手写而不引入 SDK，是为了保住 `ops_readonly.py`「单文件、零依赖、扔到任何主机就能跑」。

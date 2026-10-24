@@ -1,0 +1,33 @@
+# 「行政-请假拼假」两个工具的 MCP 版：同名、同参数，SOP 一个字不用改。
+#
+# 这是手写的 allowlist——不等发现、不走待审，管理员直接声明「允许调用 holiday 这个 server 上的
+# 这两个工具」。名字随便起（这里故意和场景包里的 http/命令版同名），参数形状来自 server 的
+# inputSchema。没写 schema_hash，所以 server 改参数形状时不会自动停用；想锁定就让发现流程
+# 走一遍待审（它会带 schema_hash），或者把 pending 里的 schema_hash 抄过来。
+#
+# 用法（宿主机主文件 ops_tools.yaml）：
+#   mcp_servers:
+#     holiday:
+#       label: 节假日
+#       command: python3
+#       args: [/opt/ops/mcp/holiday_mcp.py]
+#   include:
+#     - mcp/holiday_tools.yaml          # 换掉 ../packs/leave-planning/tools.yaml，避免同名
+#
+# 两个工具 server 都声明了 readOnlyHint，不需要 readonly_attested。
+tools:
+  - name: holiday_calendar
+    label: 法定节假日
+    group: 日历
+    desc: 查询某一年国务院公布的法定节假日安排，包括放假日期和周末补班日期（isOffDay=false 表示补班，要上班）。问放假、调休、拼假时用它。若返回的 days 为空，说明当年安排尚未公布。
+    mcp: {server: holiday, tool: holiday_calendar}
+    restrict:
+      year: {min: 2007, max: 2035}
+
+  - name: date_info
+    label: 日期是星期几
+    group: 日历
+    desc: 查某个日期是星期几、当年第几周。推算请假天数、跨周末时用它，不要自己心算星期。
+    mcp: {server: holiday, tool: date_info}
+    restrict:
+      day: {pattern: date}

@@ -3,10 +3,11 @@
 # 改完这个文件，下一次提问就生效：不需要重启服务，也不需要重建应用镜像。
 # 应用侧会从 /tools 拉取这里的描述与参数，动态生成给模型的函数签名。
 #
-# 工具不限于运维：任何岗位只要有「查得到的数据」，都可以接成工具。三种类型：
+# 工具不限于运维：任何岗位只要有「查得到的数据」，都可以接成工具。四种类型：
 #   命令型  binary + argv     执行宿主机上的只读命令
 #   脚本型  script            执行 scripts/ 目录里经哈希登记的脚本
 #   接口型  http              调用只读 HTTP 接口（只允许 GET）
+#   MCP 型  mcp               调用下面 mcp_servers 里声明的 MCP server 上的某个工具（见 docs/工具.md）
 #
 # 安全约定（加载时会强制校验，不满足则该工具不加载）：
 #   1. 命令型：argv 是固定列表，不经过 shell。参数只能"整个占据"一个元素，写成 "{参数名}"。
@@ -16,6 +17,10 @@
 #      请求头只能由管理员填写，凭据用 ${OPS_SECRET_xxx} 引用宿主机环境变量；不跟随跳转。
 #   3. 字符串参数必须声明 pattern，且只能引用下面的预置正则，不能自己写正则。
 #   4. 只放只读能力。写操作动词另有黑名单兜底，命中直接拒绝执行。
+#   5. MCP 型：server 只能在本文件顶层 mcp_servers 里声明（它是宿主机上跑的任意代码，页面不能申请）。
+#      发现到的工具先进待审，批准后才出现在 /tools；server 没声明 readOnlyHint 的，批准时必须加
+#      --attest-readonly；destructiveHint 的工具不列。批准条目写在旁边的 ops_tools.mcp.yaml，
+#      带 schema 指纹，server 改了参数形状就自动停用、重新待审。
 #
 # pattern 预置值：
 #   name       容器名一类：字母或数字开头，可含 . _ -
@@ -36,6 +41,23 @@
 # include:
 #   - ../packs/leave-planning/tools.yaml
 #   - /opt/doc2sop/packs/*/tools.yaml
+#
+# MCP server（第四种工具类型的来源；只能写在这里，被 include 的文件里写了会被忽略）：
+#
+# mcp_servers:
+#   holiday:
+#     label: 节假日
+#     command: python3
+#     args: [/opt/ops/mcp/holiday_mcp.py]
+#     env: {HOLIDAY_TOKEN: "${OPS_SECRET_HOLIDAY}"}   # 可选；子进程只拿到这里声明的变量和 PATH/HOME/LANG
+#
+# 然后 python3 ops_readonly.py pending 看发现了什么，approve <id> [--attest-readonly] 逐个批准。
+# 也可以不等发现，直接手写一条 mcp 条目（名字自己定）：
+#
+#   - name: holiday_calendar
+#     desc: 查询某一年的法定节假日安排
+#     mcp: {server: holiday, tool: holiday_calendar}
+#     restrict: {year: {min: 2007, max: 2035}}        # 可选：比 server 的 schema 更严
 
 tools:
   - name: list_containers

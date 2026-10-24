@@ -7,6 +7,8 @@ shell involved. Anything not on the allowlist is refused.
 
 Runs on the host (it needs docker/kubectl), binds loopback only, and requires a
 shared token. Standard library only, so it runs on any box with Python 3.9+.
+That includes the MCP client: the host may declare stdio MCP servers, and their
+tools go through the same approve-before-use flow as everything else.
 
     OPS_TOKEN=... python ops_readonly.py --port 8799
 """
@@ -1951,9 +1953,15 @@ def _flatten_content(result):
     structured = result.get("structuredContent")
     if structured is not None:
         try:
-            parts.append(json.dumps(structured, ensure_ascii=False, indent=1))
+            dumped = json.dumps(structured, ensure_ascii=False, indent=1)
         except (TypeError, ValueError):
-            pass
+            dumped = ""
+        # 很多 server 的 structuredContent 只是把文本再包一层（{"content": 同一段话}），重复的不附
+        texts = [p for p in parts if p]
+        duplicate = dumped and ("\n".join(texts) == dumped or
+                                (isinstance(structured, dict) and list(structured.values()) == texts))
+        if dumped and not duplicate:
+            parts.append(dumped)
     return "\n".join(p for p in parts if p).strip()
 
 
