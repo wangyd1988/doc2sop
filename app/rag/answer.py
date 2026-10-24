@@ -85,11 +85,13 @@ def stream_answer(messages, model: str | None = None):
     llm = clients.llm
     client = llm if not model or model == llm.model_name else chat_model(
         model=model, timeout=120, max_retries=1)
-    thinking, reported = 0, 0.0
+    thinking, reported, started = 0, 0.0, False
     for chunk in client.stream(messages):
         if chunk.content:
+            started = True
             yield "delta", chunk.content
-        else:
+        elif not started:
+            # 正文流起来之后的空 chunk 只是收尾元数据，不算思考
             thinking += 1
             if time.monotonic() - reported >= 0.5:
                 reported = time.monotonic()

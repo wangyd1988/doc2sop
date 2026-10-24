@@ -334,7 +334,8 @@ def _call(bound, view, emit):
         if text:
             emit(("delta", text))
             streamed = True
-        else:
+        elif not streamed:
+            # 正文流起来之后的空 chunk 只是收尾元数据（finish_reason / usage），不算思考
             thinking += 1
             if time.monotonic() - reported >= 0.5:
                 reported = time.monotonic()
