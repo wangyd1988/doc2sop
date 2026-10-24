@@ -3,10 +3,11 @@
 #
 # 用法：  bash backup.sh                 # 备份到 /opt/kb-app/backups
 #        bash backup.sh /mnt/nas/kb     # 指定目录
+#        KB_DATA=/srv/kb/data bash backup.sh /srv/kb/backups   # 数据目录不在默认位置
 #        BACKUP_KEEP=14 bash backup.sh  # 保留天数（默认 7）
 #
-# 安装为每日 03:30 的 cron：
-#   echo '30 3 * * * root bash /opt/kb-app/release/backup.sh >> /var/log/kb-backup.log 2>&1' > /etc/cron.d/kb-backup
+# 安装为每日 03:30 的 cron（代码 clone 在 /opt/doc2sop 时；见 docs/正式部署.md）：
+#   echo '30 3 * * * root KB_DATA=/opt/kb-app/data bash /opt/doc2sop/deploy/backup.sh /opt/kb-app/backups >> /var/log/kb-backup.log 2>&1' > /etc/cron.d/kb-backup
 #
 # 恢复：停容器 -> 把包解到 /opt/kb-app/data -> 起容器。SQLite 用 .backup 在线复制，
 # 不会拷到写了一半的页；Chroma 目录直接复制，备份期间若恰好在入库可能不一致，所以 cron 放在凌晨。
@@ -40,8 +41,9 @@ done
 for item in chroma files vision_cache.json; do
   [ -e "$DATA/$item" ] && cp -a "$DATA/$item" "$WORK/data/"
 done
-# 工具配置也带上（宿主机侧，不在 data 里）
-for f in /opt/ops/ops_tools.yaml /opt/ops/ops_tools.overrides.yaml /opt/ops/ops_tools.trust.yaml; do
+# 工具配置也带上（宿主机侧，不在 data 里）：主文件、页面改的开关、脚本信任表、批准过的 MCP 工具、待审申请
+for f in /opt/ops/ops_tools.yaml /opt/ops/ops_tools.overrides.yaml /opt/ops/ops_tools.trust.yaml \
+         /opt/ops/ops_tools.mcp.yaml /opt/ops/ops_tools.pending.yaml; do
   [ -f "$f" ] && { mkdir -p "$WORK/ops"; cp -a "$f" "$WORK/ops/"; }
 done
 

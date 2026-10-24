@@ -1,0 +1,7 @@
+# 正式发版用的应用镜像：只把代码拷进已经装好依赖的 base 镜像（根 Dockerfile 的 base 阶段，
+# 由 deploy/release.sh 按 requirements.txt 哈希打成 kb-app:base-<哈希>）。
+# ENV / WORKDIR / EXPOSE / CMD 都继承自 base，这里不重复。构建上下文是仓库根目录。
+ARG RUNTIME_IMAGE=kb-app:base
+FROM ${RUNTIME_IMAGE}
+COPY app /srv/app
+COPY packs /srv/packs

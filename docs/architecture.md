@@ -185,12 +185,15 @@ app/
     └── vision.py      多模态 OCR
 
 deploy/
+├── release.sh         正式发版：base 镜像按依赖哈希预烘焙 → 只 COPY 代码 → 停旧起新 → 比对片段数 → 不一致回滚（docs/正式部署.md）
+├── Dockerfile.release 发版用的应用镜像：FROM base 只 COPY app/ packs/（根 Dockerfile 的 base 阶段装依赖，app 阶段给 compose）
 ├── ops_readonly.py    宿主机上的只读运维接口（白名单 + 令牌），支持 include 场景包的工具定义；
 │                      内置标准库手写的 MCP stdio 客户端，发现的工具进待审、批准后写 ops_tools.mcp.yaml
 ├── ops_tools.yaml     工具定义的唯一真相源，改完即时生效；顶层 mcp_servers 声明 MCP server
 ├── mcp/               玩具 MCP server holiday_mcp.py（测试 + 演示）与把拼假工具换成 MCP 来源的 holiday_tools.yaml
 ├── demo/              一键演示用的工具 sidecar：Dockerfile.ops + entrypoint.py（按 DEMO_PACKS 生成 include）
 ├── backup.sh          每日备份
+├── container-guard.sh 内存超阈值才重启容器，配 systemd timer 每天跑一次
 └── embedding/
     ├── server.py          向量服务（FastEmbed ONNX，OpenAI 兼容 /v1/embeddings）
     └── rerank_server.py   重排服务（onnxruntime，Infinity/Cohere 兼容 /rerank），LiteLLM 用 infinity/ 接

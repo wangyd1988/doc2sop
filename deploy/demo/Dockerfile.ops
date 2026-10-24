@@ -7,7 +7,8 @@ FROM ${BASE_IMAGE}
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN pip install --no-cache-dir "pyyaml>=6,<7"
+ARG PIP_INDEX_URL=
+RUN pip install --no-cache-dir ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"} "pyyaml>=6,<7"
 
 WORKDIR /srv
 COPY ops_readonly.py demo/entrypoint.py /srv/

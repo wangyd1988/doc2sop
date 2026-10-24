@@ -107,12 +107,12 @@ docker compose up -d --build
 
 ## 正式部署
 
-一键演示是单机形态：应用容器 + 一个 128 MB 的只读工具 sidecar，工具来自场景包。正式用时：
+一键演示是单机 compose 形态：应用容器 + 一个 128 MB 的只读工具 sidecar。正式用时应用跑 host 网络、工具服务和网关都在宿主机 `127.0.0.1` 上，
+用 `deploy/release.sh` 发版：依赖预烘焙成 base 镜像、每次只 COPY 代码；停旧起新后**比对切换前后片段总数**，不一致自动回滚。
+宿主机布局、首次安装、升级（`git pull && bash deploy/release.sh`）、回滚、备份 cron、内存看护：[`docs/正式部署.md`](docs/正式部署.md)。
 
-- **工具跑在宿主机上**（查容器、K8s、内网接口）：`.env` 里 `COMPOSE_PROFILES` 留空，宿主机部署 `deploy/ops_readonly.py`，
-  `OPS_URL` 指向它，场景包的工具用一行 `include` 启用。`OPS_URL` 留空则不启用工具，退化为纯知识库问答。
-- **模型可以在页面上填**：`.env` 里模型项留空也能启动，到「管理 → 模型设置」填，保存即生效。页面上填的 key 不会传给工具容器——
-  工具凭据永远不经过页面，要用「模型网关」组的工具就把地址和 key 写进 `.env`。
+- **工具跑在宿主机上**（查容器、K8s、内网接口）：宿主机部署 `deploy/ops_readonly.py`，`OPS_URL` 指向它，场景包的工具用一行 `include` 启用；`OPS_URL` 留空则退化为纯知识库问答。
+- **模型可以在页面上填**：`.env` 里模型项留空也能启动，到「管理 → 模型设置」填，保存即生效。页面上填的 key 不会传给工具服务——工具凭据永远不经过页面，要用「模型网关」组的工具就把地址和 key 写进工具服务的环境。
 - 联网搜索依赖 LiteLLM 网关的 `/v1/search`，直连厂商时不可用；网关样例见 [`litellm/config.yaml`](litellm/config.yaml)。
 - 部署拓扑（应用 / 网关 / 自托管向量与重排模型）、问答与入库链路、代码结构：[`docs/architecture.md`](docs/architecture.md)。
 
