@@ -99,6 +99,8 @@ header { display: flex; align-items: center; gap: 6px; padding: 10px 18px; borde
               background-size: 12px 12px, 4px 4px, 4px 4px; background-repeat: no-repeat; }
 .model-chip:hover { color: var(--text); border-color: var(--accent); }
 .model-chip option { font-size: 13px; color: var(--text); background: var(--panel); }
+/* 作者样式里的 display 会盖掉 hidden 属性，不加这条，模型列表回来前会先露出一个空「●」 */
+.model-chip[hidden], .web-toggle[hidden] { display: none; }
 .tools .via { margin-left: auto; font-size: 11.5px; color: var(--muted); align-self: center; padding-right: 4px;
               max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9;
@@ -176,7 +178,7 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .answer blockquote { margin: 8px 0; padding: 4px 12px; border-left: 3px solid var(--accent); color: var(--muted); }
 .answer table { border-collapse: collapse; margin: 8px 0; font-size: 13.5px; display: block; overflow-x: auto; }
 .answer th, .answer td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; }
-.answer th { background: var(--panel-2); }
+.answer th { background: var(--panel-2); white-space: nowrap; }
 .answer hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 .cite { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; margin: 0 1px;
         border-radius: 6px; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 700;
@@ -544,6 +546,11 @@ body.manage.settings #mgroups, body.manage.settings #mlist, body.manage.settings
 .toast.err { background: #b91c1c; }
 .toast.ok { background: #047857; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+/* 右侧抽屉开着时，toast 改在剩下的可见区域里居中，不压在抽屉左缘上 */
+@media (min-width: 900px) {
+  body:not(.manage):has(#pbPanel:not([hidden])) #toasts,
+  body:not(.manage):has(#tlPanel:not([hidden])) #toasts { left: calc((100% - 520px) / 2); }
+}
 
 /* 首屏引导：知识库空、或还没有生效的 SOP 时显示 */
 .onboard { max-width: 620px; margin: 0 auto 18px; text-align: left; display: grid; gap: 8px;
