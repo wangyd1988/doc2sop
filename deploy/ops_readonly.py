@@ -11,6 +11,7 @@ shared token. Standard library only, so it runs on any box with Python 3.9+.
     OPS_TOKEN=... python ops_readonly.py --port 8799
 """
 import argparse
+import atexit
 import difflib
 import glob
 import hashlib
@@ -22,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -82,6 +84,25 @@ INTERPRETERS = {
 FORBIDDEN = {"exec", "attach", "cp", "rm", "rmi", "kill", "stop", "start", "restart",
              "run", "create", "delete", "apply", "patch", "edit", "scale", "drain",
              "cordon", "taint", "set", "replace", "port-forward", "proxy"}
+
+# ---- MCP：第四种工具类型 ----------------------------------------------------
+# 工具服务自己当 MCP 客户端（stdio 传输，标准库手写，不引入 SDK——单文件零依赖是这个脚本的卖点）。
+# server 由主文件顶层 mcp_servers 声明，它是跑在宿主机上的任意代码，所以只能由 root 手写，
+# 页面连申请都不能申请。发现到的工具一律先进 pending，批准前不出现在 /tools、不能执行。
+MCP_PROTOCOL = "2025-06-18"     # 本期只用 tools/list、tools/call，各版本一致；接受 server 回复的任何版本
+MCP_REFRESH = 600               # 每隔多久重新 tools/list 一次，看看 schema 有没有变
+MCP_BACKOFF = (5, 30, 120)      # 连接失败后的重试间隔；三次都失败则标离线，等下一次调用再试
+MCP_INIT_TIMEOUT = 30
+MCP_SERVER_ID = re.compile(r"^[a-z][a-z0-9_]{0,30}$")
+MCP_STDERR_KEEP = 20            # 每个 server 最多保留多少行 stderr 供排错
+# 子进程只拿到这些环境变量 + 配置里显式声明的。不继承 OPS_TOKEN 和任何 OPS_SECRET_*：
+# server 是第三方代码，它不该知道工具服务自己的凭据。SYSTEMROOT/PATHEXT 是 Windows 起进程的硬需求。
+MCP_PASS_ENV = ("PATH", "HOME", "USERPROFILE", "LANG", "LC_ALL", "TEMP", "TMP", "TMPDIR",
+                "SYSTEMROOT", "SYSTEMDRIVE", "PATHEXT", "COMSPEC")
+# 名字里出现这些词的 MCP 工具，在 pending 里标「名称疑似写操作」。只是提醒审批人，不是拒绝。
+MCP_WRITE_WORDS = FORBIDDEN | {"write", "update", "remove", "put", "post", "send", "execute",
+                               "insert", "upload", "move", "rename", "modify", "destroy",
+                               "purge", "drop", "truncate", "deploy", "install", "uninstall"}
 
 
 def _scripts_dir():
@@ -973,6 +994,399 @@ def _run_http(spec, args):
         text = f"接口返回 {status} 跳转，已拒绝跟随（只允许访问配置里写明的主机）"
     return {"ok": ok, "command": "GET " + shown, "status": status,
             "output": text[:MAX_OUTPUT] + ("\n…（输出已截断）" if truncated else "")}
+
+
+# ---- MCP 客户端 ------------------------------------------------------------
+
+class McpError(RuntimeError):
+    """和某个 MCP server 打交道失败：没连上、超时、server 返回 JSON-RPC 错误。"""
+
+
+def _check_mcp_servers(document, problems):
+    """主文件顶层 mcp_servers → {id: 配置}。坏条目跳过并记 problem，不拖垮其他 server。
+
+    command 不受 INTERPRETERS 限制：MCP server 本来就是 python/node 跑的一段程序。这不是放宽，
+    而是把「允许宿主机跑哪段代码」这个决定完整交给手写主文件的 root——和脚本型工具的 trust 同一个意思。
+    """
+    raw = document.get("mcp_servers")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        problems.append("mcp_servers 必须是映射：server id → {command, args, env, cwd}")
+        return {}
+    servers = {}
+    for ident, entry in raw.items():
+        ident = str(ident).strip()
+        try:
+            if not MCP_SERVER_ID.match(ident):
+                raise ConfigError(f"MCP server id 不合法：{ident[:40]!r}，只能用小写字母、数字、下划线，"
+                                  f"它会成为工具名的前缀")
+            if not isinstance(entry, dict):
+                raise ConfigError(f"mcp_servers.{ident} 必须是映射")
+            command = str(entry.get("command", "")).strip()
+            if not command:
+                raise ConfigError(f"mcp_servers.{ident} 缺少 command")
+            args = entry.get("args") or []
+            if not isinstance(args, list):
+                raise ConfigError(f"mcp_servers.{ident}.args 必须是列表")
+            env = entry.get("env") or {}
+            if not isinstance(env, dict):
+                raise ConfigError(f"mcp_servers.{ident}.env 必须是映射")
+            for key, value in env.items():
+                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", str(key)):
+                    raise ConfigError(f"mcp_servers.{ident}.env 的变量名不合法：{str(key)[:40]!r}")
+                if str(key) == "OPS_TOKEN" or str(key).startswith(SECRET_PREFIX):
+                    raise ConfigError(f"mcp_servers.{ident}.env 不能把 {key} 交给 server："
+                                      f"那是工具服务自己的凭据")
+                _check_secret_refs(f"mcp_servers.{ident}.env.{key}", str(value))
+            cwd = entry.get("cwd")
+            servers[ident] = {"label": str(entry.get("label", "")).strip()[:GROUP_MAX] or ident,
+                              "command": command, "args": [str(a) for a in args],
+                              "env": {str(k): str(v) for k, v in env.items()},
+                              "cwd": str(cwd).strip() if cwd else ""}
+        except ConfigError as exc:
+            problems.append(str(exc))
+    return servers
+
+
+def _mcp_child_env(config, secrets_used):
+    env = {key: os.environ[key] for key in MCP_PASS_ENV if key in os.environ}
+    for key, raw in config.get("env").items():
+        env[key] = _fill_secrets(raw, secrets_used)
+    return env
+
+
+class McpServer:
+    """一个 MCP server 子进程 + 它上面的 JSON-RPC 会话。
+
+    stdio 传输：每行一条 JSON，stdin 发、stdout 收；stderr 是 server 的日志，单独排水，否则
+    管道一满 server 就卡住。请求串行、id 递增、按 id 对响应；server 发来的通知只认
+    tools/list_changed，发来的请求一律回「不支持」——本期不做 sampling / elicitation。
+    """
+
+    def __init__(self, ident, config):
+        self.id = ident
+        self.config = config
+        self.label = config.get("label") or ident
+        self.proc = None
+        self.online = False
+        self.reason = "尚未连接"
+        self.tools = {}             # server 原名 -> tools/list 里的那条
+        self.failures = 0
+        self.next_retry = 0.0
+        self.list_changed = False
+        self.last_discovery = 0.0
+        self.secrets = []           # env 里解析出来的密钥值，输出脱敏用
+        self.server_info = {}
+        self.protocol = ""
+        self.stderr_tail = []
+        self._send_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._waiting = {}          # 请求 id -> [Event, 响应]
+        self._next_id = 0
+
+    # --- 进程 ---------------------------------------------------------------
+
+    def alive(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def _spawn(self):
+        command = self.config["command"]
+        binary = command if os.path.isabs(command) else shutil.which(command)
+        if not binary:
+            raise McpError(f"本机没有 {command} 这个命令")
+        self._kill()   # 上一个进程哪怕已经死了，管道也要关掉
+        self.secrets = []
+        try:
+            env = _mcp_child_env(self.config, self.secrets)
+        except ValueError as exc:
+            raise McpError(str(exc)) from None
+        self.secrets = [s for s in self.secrets if s]
+        kwargs = {}
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        try:
+            self.proc = subprocess.Popen(
+                [binary] + self.config["args"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, bufsize=0, env=env,
+                cwd=self.config["cwd"] or None, shell=False, **kwargs)
+        except OSError as exc:
+            raise McpError(f"启动失败：{exc}") from None
+        self.stderr_tail = []
+        proc = self.proc
+        threading.Thread(target=self._read_loop, args=(proc,), daemon=True,
+                         name=f"mcp-{self.id}-stdout").start()
+        threading.Thread(target=self._drain_stderr, args=(proc,), daemon=True,
+                         name=f"mcp-{self.id}-stderr").start()
+
+    def _drain_stderr(self, proc):
+        try:
+            for raw in iter(proc.stderr.readline, b""):
+                line = raw.decode("utf-8", errors="replace").rstrip()
+                if not line:
+                    continue
+                self.stderr_tail = (self.stderr_tail + [line])[-MCP_STDERR_KEEP:]
+                print(f"[mcp:{self.id}] {line}", flush=True)
+        except (OSError, ValueError):
+            pass   # 我们自己关了管道
+
+    def _read_loop(self, proc):
+        try:
+            for raw in iter(proc.stdout.readline, b""):
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    message = json.loads(line.decode("utf-8"))
+                except ValueError:
+                    print(f"[mcp:{self.id}] 收到非 JSON 的一行，已忽略", flush=True)
+                    continue
+                if isinstance(message, dict):
+                    self._dispatch(message)
+        except (OSError, ValueError):
+            return   # stop() 关了管道，不是 server 退出
+        # 进程退出：唤醒所有还在等的请求，让它们拿到一个明确的错误而不是等到超时
+        if proc is self.proc:
+            try:
+                code = proc.wait(2)
+            except subprocess.TimeoutExpired:
+                code = proc.poll()
+            self._go_offline(f"server 进程已退出（退出码 {code}）"
+                             + (f"：{self.stderr_tail[-1]}" if self.stderr_tail else ""))
+
+    def _dispatch(self, message):
+        if "method" in message:
+            if message.get("id") is not None:
+                # server 向客户端发请求（sampling、roots、elicitation）：本期一律不支持
+                self._send({"jsonrpc": "2.0", "id": message["id"],
+                            "error": {"code": -32601, "message": "doc2sop 工具服务不支持该方法"}})
+            elif message["method"] == "notifications/tools/list_changed":
+                self.list_changed = True
+            return
+        ident = message.get("id")
+        with self._state_lock:
+            slot = self._waiting.get(ident)
+        if slot is not None:
+            slot[1] = message
+            slot[0].set()
+
+    def _send(self, message):
+        data = (json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8")
+        with self._send_lock:
+            try:
+                self.proc.stdin.write(data)
+                self.proc.stdin.flush()
+            except (OSError, ValueError, AttributeError) as exc:
+                raise McpError(f"写入 server 失败：{exc}") from None
+
+    def _go_offline(self, reason):
+        self.online = False
+        self.reason = reason
+        with self._state_lock:
+            waiting = list(self._waiting.values())
+            self._waiting.clear()
+        for event, _ in waiting:
+            event.set()
+
+    # --- JSON-RPC -----------------------------------------------------------
+
+    def request(self, method, params=None, timeout=TIMEOUT):
+        if not self.alive():
+            raise McpError(self.reason or "server 未连接")
+        with self._state_lock:
+            self._next_id += 1
+            ident = self._next_id
+            slot = [threading.Event(), None]
+            self._waiting[ident] = slot
+        message = {"jsonrpc": "2.0", "id": ident, "method": method}
+        if params is not None:
+            message["params"] = params
+        try:
+            self._send(message)
+            if not slot[0].wait(timeout):
+                raise McpError(f"{method} 超时（{timeout}s）")
+        finally:
+            with self._state_lock:
+                self._waiting.pop(ident, None)
+        response = slot[1]
+        if response is None:
+            raise McpError(self.reason or "server 已断开")
+        if "error" in response:
+            error = response["error"] if isinstance(response["error"], dict) else {}
+            raise McpError(f"server 返回错误 {error.get('code', '')}：{error.get('message', '')}".strip())
+        return response.get("result")
+
+    def notify(self, method, params=None):
+        message = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            message["params"] = params
+        self._send(message)
+
+    # --- 生命周期 -------------------------------------------------------------
+
+    def start(self):
+        """拉起子进程并握手、拉一次工具列表。失败则记退避，连续三次标离线。"""
+        if self.alive() and self.online:
+            return
+        now = time.monotonic()
+        if now < self.next_retry:
+            raise McpError(self.reason)
+        try:
+            if self.alive():
+                self.stop("重新连接")
+            self._spawn()
+            result = self.request("initialize", {
+                "protocolVersion": MCP_PROTOCOL, "capabilities": {},
+                "clientInfo": {"name": "doc2sop", "version": "1"}}, timeout=MCP_INIT_TIMEOUT) or {}
+            self.protocol = str(result.get("protocolVersion", ""))
+            self.server_info = result.get("serverInfo") or {}
+            self.notify("notifications/initialized")
+            self.online = True
+            self.reason = ""
+            self.list_tools()
+        except McpError as exc:
+            self.failures += 1
+            delay = MCP_BACKOFF[min(self.failures, len(MCP_BACKOFF)) - 1]
+            self.next_retry = time.monotonic() + delay
+            self._go_offline(f"连接失败（第 {self.failures} 次）：{exc}；{delay}s 后重试")
+            self._kill()
+            raise McpError(self.reason) from None
+        self.failures = 0
+        self.next_retry = 0.0
+        print(f"[mcp:{self.id}] 已连接 {self.server_info.get('name', '')} "
+              f"{self.server_info.get('version', '')}（协议 {self.protocol}），"
+              f"发现 {len(self.tools)} 个工具", flush=True)
+
+    def ensure(self):
+        """调用前保证在线：进程死了就按退避重拉。"""
+        if not (self.alive() and self.online):
+            self.start()
+
+    def list_tools(self):
+        found, cursor = {}, None
+        for _ in range(100):   # 分页上限，防 server 一直给 nextCursor
+            params = {"cursor": cursor} if cursor else None
+            result = self.request("tools/list", params) or {}
+            for tool in result.get("tools") or []:
+                if isinstance(tool, dict) and str(tool.get("name", "")).strip():
+                    found[str(tool["name"])] = tool
+            cursor = result.get("nextCursor")
+            if not cursor:
+                break
+        self.tools = found
+        self.list_changed = False
+        self.last_discovery = time.monotonic()
+        return found
+
+    def call(self, tool, arguments, timeout=TIMEOUT):
+        self.ensure()
+        return self.request("tools/call", {"name": tool, "arguments": arguments or {}},
+                            timeout=timeout) or {}
+
+    def _kill(self):
+        proc, self.proc = self.proc, None
+        if proc is None:
+            return
+        # 先结束进程再关管道：读线程正阻塞在 readline 上，Windows 上先关管道会等到它返回为止
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(3)
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+    def stop(self, reason="已停止"):
+        self._go_offline(reason)
+        self._kill()
+
+    def status(self, approved=0):
+        return {"label": self.label, "online": bool(self.online and self.alive()),
+                "reason": "" if self.online else self.reason,
+                "discovered": len(self.tools), "approved": approved,
+                "server": self.server_info, "protocol": self.protocol}
+
+
+class McpRegistry:
+    """按配置管一组 server：配置变了就启停对应子进程；后台线程负责重连与定期重新发现。"""
+
+    def __init__(self):
+        self.servers = {}
+        self.on_discovered = None       # server -> None；发现/刷新后由审批层接手（写 pending、比 hash）
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._thread = None
+
+    def configure(self, configs):
+        """只创建/替换对象，不拉进程：进程由后台线程或下一次调用按需拉起，CLI 子命令永远不会碰到。"""
+        with self._lock:
+            for ident in list(self.servers):
+                if ident not in configs or self.servers[ident].config != configs[ident]:
+                    self.servers.pop(ident).stop("配置已变更")
+            for ident, config in configs.items():
+                if ident not in self.servers:
+                    self.servers[ident] = McpServer(ident, config)
+        self._wake.set()
+
+    def get(self, ident):
+        return self.servers.get(ident)
+
+    def sync(self, ident=None, force=False):
+        """同步地把（某个/所有）server 连上并刷新工具列表，再交给审批层。测试与后台线程都走这里。"""
+        for server in ([self.servers[ident]] if ident in self.servers else list(self.servers.values())):
+            try:
+                if not (server.alive() and server.online):
+                    server.start()
+                elif force or server.list_changed or \
+                        time.monotonic() - server.last_discovery > MCP_REFRESH:
+                    server.list_tools()
+                else:
+                    continue
+            except McpError as exc:
+                print(f"[mcp:{server.id}] {exc}", flush=True)
+                continue
+            if self.on_discovered:
+                try:
+                    self.on_discovered(server)
+                except Exception as exc:   # 审批层出错不能把后台线程弄死
+                    print(f"[mcp:{server.id}] 处理发现结果失败：{exc.__class__.__name__}: {exc}", flush=True)
+
+    def start_background(self):
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="mcp-registry")
+        self._thread.start()
+        atexit.register(self.shutdown)
+
+    def _loop(self):
+        while not self._stop.is_set():
+            self._wake.clear()
+            try:
+                self.sync()
+            except Exception as exc:
+                print(f"[mcp] 后台刷新失败：{exc.__class__.__name__}: {exc}", flush=True)
+            self._wake.wait(5)
+
+    def shutdown(self):
+        self._stop.set()
+        self._wake.set()
+        with self._lock:
+            for server in self.servers.values():
+                server.stop("工具服务退出")
+
+    def status(self, approved_counts=None):
+        counts = approved_counts or {}
+        return {ident: server.status(counts.get(ident, 0))
+                for ident, server in sorted(self.servers.items())}
+
+
+_mcp = McpRegistry()
 
 
 def run_tool(name, args):
