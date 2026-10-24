@@ -151,6 +151,54 @@ SOP 面板顶部有「待确认提议 N」，回放对话时卡片也会补画�
  └─ 向量化入库    文本 + 向量 + 来源页码一起写入 Chroma
 ```
 
+## 代码结构
+
+```
+app/
+├── main.py            HTTP API 与鉴权
+├── config.py          环境变量配置
+├── clients.py         模型客户端（经网关）
+├── conversations.py   会话列表与界面回放（SQLite）
+├── jobs.py            后台入库任务与进度
+├── playbooks.py       SOP：存储与校验（只能引用已有工具）
+├── packs.py           场景包：发现、校验、导入（文档 + SOP）、导出、首次运行自动导入
+├── graph.py           组织运行图谱：执行、工具完整返回、实体与带出处的事实、提议、反馈（SQLite）
+├── models.py          网关可用模型列表与校验
+├── tracing.py         LangSmith 追踪
+├── agent/
+│   ├── loop.py        LangGraph Agent：模型 ⇄ 工具循环，检查点记住每轮完整过程
+│   ├── tools.py       按宿主机下发的定义动态生成工具签名
+│   ├── extract.py     从文档抽取 SOP
+│   ├── grow.py        从一次自由排查长出 SOP 提议（回答后后台判断、生成、去重）
+│   ├── web_search.py  联网搜索（经网关）与泄漏拦截
+│   └── ops_client.py  只读接口客户端
+├── rag/
+│   ├── chunking.py    切分
+│   ├── embedding.py   向量化
+│   ├── store.py       Chroma 读写
+│   ├── lexical.py     BM25 关键词索引（内存，随写入重建）
+│   ├── retrieval.py   向量 + 关键词融合召回 → 重排
+│   ├── rerank.py      交叉编码器重排（经网关 /rerank，best-effort）
+│   └── answer.py      提示词与生成
+└── ingest/
+    ├── extract.py     文档解析
+    └── vision.py      多模态 OCR
+
+deploy/
+├── ops_readonly.py    宿主机上的只读运维接口（白名单 + 令牌），支持 include 场景包的工具定义
+├── ops_tools.yaml     工具定义的唯一真相源，改完即时生效
+├── demo/              一键演示用的工具 sidecar：Dockerfile.ops + entrypoint.py（按 DEMO_PACKS 生成 include）
+├── backup.sh          每日备份
+└── embedding/
+    ├── server.py          向量服务（FastEmbed ONNX，OpenAI 兼容 /v1/embeddings）
+    └── rerank_server.py   重排服务（onnxruntime，Infinity/Cohere 兼容 /rerank），LiteLLM 用 infinity/ 接
+
+packs/                 场景包：每个目录 = pack.yaml + docs/ + tools.yaml + sops.json（docs/场景包.md）
+├── leave-planning     行政-请假拼假
+├── model-selfcheck    研发-模型调用自查
+└── ops-inspection     运维-日常巡检（需宿主机 docker）
+```
+
 ## 关键取舍
 
 **手写解析器，而不是用现成 Loader。** 标准加载器会丢掉内嵌图片、演讲者备注、
