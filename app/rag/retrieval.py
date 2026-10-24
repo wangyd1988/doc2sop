@@ -7,6 +7,9 @@ A chunk ranked well by either makes the list; a chunk ranked well by both rises 
 
 The similarity shown to users (and to the model as a hint) stays the cosine
 score, so its meaning does not change with this fusion.
+
+向量服务超时或不可达时不让整次提问失败：退化为只用 BM25 召回，hit 上没有相似度（score=None）并带
+degraded 标记，日志、给模型的上下文和页面来源卡片都标明这一点。
 """
 import re
 import time
@@ -16,7 +19,7 @@ from langsmith import traceable
 
 from app.config import MIN_SCORE, RERANK_CANDIDATES, TOP_K, log
 from app.rag import lexical, rerank, store
-from app.rag.embedding import embed_query
+from app.rag.embedding import EmbeddingError, embed_query
 
 CANDIDATES = 30     # how deep each retriever looks before fusion
 RRF_K = 60
@@ -27,6 +30,7 @@ LEXICAL_MIN_SCORE = 0.40
 # Everyday English words are not identifiers; "full" or "and" in the question must not admit a chunk.
 STOP = {"the", "and", "or", "is", "are", "of", "to", "in", "on", "for", "with", "by", "at", "from",
         "as", "be", "it", "this", "that", "full", "not", "all", "new", "old", "set", "get", "use"}
+DEGRADED_NOTE = "向量服务超时，本次只按关键词召回，没有相似度"
 
 
 def _identifiers(text: str):
@@ -65,20 +69,25 @@ def retrieve(question: str, progress=None):
         timing[name] = now - clock
         clock = now
 
-    query_vector = embed_query(question)
+    try:
+        query_vector = embed_query(question)
+    except EmbeddingError as exc:
+        # 向量服务挂了不该让提问失败：关键词召回还在，照样能答「文档上怎么说」
+        log.warning("retrieve: embedding unavailable (%s), falling back to BM25 only", exc)
+        query_vector = None
     lap("embed")
     depth = min(CANDIDATES, total)
-    result = store.collection.query(
-        query_embeddings=[query_vector], n_results=depth,
-        include=["documents", "metadatas", "distances"])
-    lap("vector")
-
     # id -> record; rank lists feed the fusion.
     records, vector_rank, lexical_rank = {}, [], []
-    for cid, text, meta, distance in zip(result["ids"][0], result["documents"][0],
-                                         result["metadatas"][0], result["distances"][0]):
-        records[cid] = {"text": text, "meta": meta, "score": round(1 - distance, 3)}
-        vector_rank.append(cid)
+    if query_vector is not None:
+        result = store.collection.query(
+            query_embeddings=[query_vector], n_results=depth,
+            include=["documents", "metadatas", "distances"])
+        lap("vector")
+        for cid, text, meta, distance in zip(result["ids"][0], result["documents"][0],
+                                             result["metadatas"][0], result["distances"][0]):
+            records[cid] = {"text": text, "meta": meta, "score": round(1 - distance, 3)}
+            vector_rank.append(cid)
 
     try:
         lexical_hits = lexical.search(question, depth)
@@ -92,7 +101,10 @@ def retrieve(question: str, progress=None):
             continue
         records[cid] = {"text": text, "meta": meta, "score": None}
         missing.append(cid)
-    if missing:
+    if missing and query_vector is None:
+        # 没有向量就没有余弦可比：BM25 的顺序就是全部依据，也不做相似度门槛
+        lexical_rank.extend(missing)
+    elif missing:
         # Lexical-only hits still get a real cosine score so the UI stays comparable.
         got = store.collection.get(ids=missing, include=["embeddings"])
         for cid, vector in zip(got["ids"], got["embeddings"]):
@@ -121,23 +133,27 @@ def retrieve(question: str, progress=None):
     want = max(TOP_K, RERANK_CANDIDATES) if rerank.enabled() else TOP_K
     for cid in sorted(fused, key=lambda c: (-fused[c], -(records[c]["score"] or 0))):
         record = records[cid]
-        if (record["score"] or 0) < MIN_SCORE:
+        if query_vector is not None and (record["score"] or 0) < MIN_SCORE:
             continue
         meta = record["meta"]
-        hits.append({"index": len(hits) + 1, "location": _location(meta),
-                     "text": record["text"], "score": record["score"],
-                     "category": meta.get("category") or "",
-                     "match": "both" if cid in both else
-                              "lexical" if cid in lexical_rank else "vector"})
+        hit = {"index": len(hits) + 1, "location": _location(meta),
+               "text": record["text"], "score": record["score"],
+               "category": meta.get("category") or "",
+               "match": "both" if cid in both else
+                        "lexical" if cid in lexical_rank else "vector"}
+        if query_vector is None:
+            hit["degraded"] = True
+        hits.append(hit)
         if len(hits) >= want:
             break
     if rerank.enabled() and len(hits) > 1:
         report("rerank")
     out = rerank.rerank(question, hits, TOP_K)
     lap("rerank")
-    log.info("retrieve: %s candidates=%d hits=%d total=%.0fms",
+    log.info("retrieve: %s candidates=%d hits=%d total=%.0fms%s",
              " ".join(f"{k}={v * 1000:.0f}ms" for k, v in timing.items()),
-             len(hits), len(out), sum(timing.values()) * 1000)
+             len(hits), len(out), sum(timing.values()) * 1000,
+             " degraded=bm25-only" if query_vector is None else "")
     return out
 
 
@@ -150,11 +166,14 @@ def as_context(hits) -> str:
     if not hits:
         return "（这次没有检索到相关片段）"
     note = ""
+    if any(h.get("degraded") for h in hits):
+        note = f"（{DEGRADED_NOTE}；片段是否相关只能看内容本身）\n\n"
     if any(h.get("rerank") is not None for h in hits):
-        note = ("（重排分由交叉编码器给出：大于 0 通常相关，小于 -2 基本无关；它比相似度可靠得多，"
-                "全部为负时应判断为知识库没有相关内容）\n\n")
+        note += ("（重排分由交叉编码器给出：大于 0 通常相关，小于 -2 基本无关；它比相似度可靠得多，"
+                 "全部为负时应判断为知识库没有相关内容）\n\n")
     return note + "\n\n".join(
-        f"[{h['index']}] 来源：{h['location']}（相似度 {h['score']:.2f}"
+        f"[{h['index']}] 来源：{h['location']}（"
+        + (f"相似度 {h['score']:.2f}" if h.get("score") is not None else "相似度 —")
         + (f"，重排分 {h['rerank']:.1f}" if h.get("rerank") is not None else "") + f"）\n{h['text']}"
         for h in hits)
 

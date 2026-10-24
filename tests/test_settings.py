@@ -55,6 +55,22 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(clients.llm.model_name, "new-model")
         self.assertIn("other", str(clients.llm.openai_api_base))
         self.assertEqual(clients.embeddings.openai_api_base, "http://127.0.0.1:9/other/v1")
+        self.assertEqual(clients.embeddings_bulk.openai_api_base, "http://127.0.0.1:9/other/v1")
+
+    def test_embedding_clients_have_bounded_timeouts(self):
+        """向量服务一悬挂不能卡 20 分钟：查询和入库各有自己的超时，都只重试一次。"""
+        settings.reset()
+        self.assertEqual(clients.embeddings.request_timeout, config.EMBED_TIMEOUT)
+        self.assertEqual(clients.embeddings_bulk.request_timeout, config.EMBED_INGEST_TIMEOUT)
+        self.assertLess(config.EMBED_TIMEOUT, config.EMBED_INGEST_TIMEOUT)
+        for client in (clients.embeddings, clients.embeddings_bulk):
+            self.assertEqual(client.max_retries, 1)
+        example = (config.Path(__file__).resolve().parent.parent / ".env.example").read_text(encoding="utf-8")
+        for name in ("EMBED_TIMEOUT", "EMBED_INGEST_TIMEOUT"):
+            self.assertIn(f"# {name}=", example, f".env.example 应说明 {name}")
+        with patch.object(config, "LLM_BASE_URL", ""), patch.object(config, "LLM_API_KEY", ""):
+            settings.reset()
+            self.assertIsNone(clients.embeddings_bulk)
 
     def test_values_equal_to_env_are_not_marked_as_overrides(self):
         settings.save({"chat_model": config.CHAT_MODEL, "llm_base_url": config.LLM_BASE_URL})

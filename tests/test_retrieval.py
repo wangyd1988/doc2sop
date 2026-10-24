@@ -208,6 +208,36 @@ class HybridTests(unittest.TestCase):
             hits = retrieval.retrieve("内容")
         self.assertEqual([h["location"] for h in hits], ["a.md"])
 
+    def test_embedding_failure_degrades_to_keyword_only(self):
+        """向量服务超时不该让提问失败：只用 BM25 召回，hit 没有相似度、带 degraded 标记，上下文说明这一点。"""
+        self.add("kw", "mem_limit 字段控制容器内存上限", "c.md", [0.6, 0.8])
+        self.add("other", "休假制度：年假 5 天", "a.md", [1.0, 0.0])
+
+        def timeout(_t):
+            raise retrieval.EmbeddingError("APITimeoutError：Request timed out.")
+
+        with patch.object(retrieval, "embed_query", timeout), \
+             self.assertLogs("kb", level="WARNING") as logs:
+            hits = retrieval.retrieve("mem_limit 怎么设")
+        self.assertEqual([h["location"] for h in hits], ["c.md"])
+        self.assertEqual(hits[0]["match"], "lexical")
+        self.assertIsNone(hits[0]["score"])
+        self.assertTrue(hits[0]["degraded"])
+        self.assertFalse(self.collection.last_query, "没有向量就不该去查向量库")
+        self.assertIn("falling back to BM25 only", "\n".join(logs.output))
+        context = retrieval.as_context(hits)
+        self.assertIn(retrieval.DEGRADED_NOTE, context)
+        self.assertIn("相似度 —", context)
+
+    def test_embedding_failure_without_keyword_hits_returns_nothing(self):
+        self.add("a", "休假制度：年假 5 天", "a.md", [1.0, 0.0])
+
+        def timeout(_t):
+            raise retrieval.EmbeddingError("timeout")
+
+        with patch.object(retrieval, "embed_query", timeout):
+            self.assertEqual(retrieval.retrieve("zzzz"), [])
+
 
 class RerankTests(unittest.TestCase):
     """Cross-encoder rerank is best-effort: reorders the fused head, never blocks answering."""

@@ -61,6 +61,11 @@ MIN_SCORE = float(os.environ.get("MIN_SCORE", "0.25"))
 RERANK_MODEL = os.environ.get("RERANK_MODEL", "").strip()
 RERANK_CANDIDATES = int(os.environ.get("RERANK_CANDIDATES", "8"))
 RERANK_TIMEOUT = float(os.environ.get("RERANK_TIMEOUT", "10"))
+# 向量模型请求超时（秒）。不设的话 OpenAI 客户端默认 600 s 还重试两次，向量服务一悬挂，一次提问能卡 20 分钟。
+# 查询只有一条短文本，超时后检索降级为只用关键词召回；入库每个请求最多 16 段（clients.py 的 chunk_size），
+# 自托管的 CPU 向量服务要跑几秒到几十秒，所以单独给一个宽松得多的上限。
+EMBED_TIMEOUT = float(os.environ.get("EMBED_TIMEOUT", "15"))
+EMBED_INGEST_TIMEOUT = float(os.environ.get("EMBED_INGEST_TIMEOUT", "120"))
 HISTORY_MESSAGES = int(os.environ.get("HISTORY_MESSAGES", "8"))
 HISTORY_CHARS = 1200
 

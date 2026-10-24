@@ -7,7 +7,7 @@ them as `clients.llm`, not `from app.clients import llm`.
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from app import settings
-from app.config import REASONING_EFFORT
+from app.config import EMBED_INGEST_TIMEOUT, EMBED_TIMEOUT, REASONING_EFFORT
 
 
 def chat_model(**overrides) -> ChatOpenAI:
@@ -21,17 +21,17 @@ def chat_model(**overrides) -> ChatOpenAI:
     return ChatOpenAI(**kwargs)
 
 
-llm = rewriter = embeddings = None
+llm = rewriter = embeddings = embeddings_bulk = None
 vision_llms: list = []
 vision_names: list = []
 
 
 def reload():
-    global llm, rewriter, embeddings, vision_llms, vision_names
+    global llm, rewriter, embeddings, embeddings_bulk, vision_llms, vision_names
     cur = settings.current()
     if not settings.configured():
         # 还没配置：客户端留空，调用方按「未配置」处理，而不是去连一个不存在的地址
-        llm = rewriter = embeddings = None
+        llm = rewriter = embeddings = embeddings_bulk = None
         vision_llms, vision_names = [], []
         return
     # Answer generation: long timeout, one retry.
@@ -44,12 +44,19 @@ def reload():
                               temperature=0, timeout=90, max_retries=0, max_tokens=1500)
                    for name in vision_names]
     e_url, e_key = settings.embed_endpoint(cur)
-    embeddings = OpenAIEmbeddings(
-        model=cur["embed_model"], base_url=e_url, api_key=e_key,
-        # The self-hosted embedding server accepts raw strings only, not token-id arrays.
-        check_embedding_ctx_length=False,
-        # It also caps each request at 16 inputs.
-        chunk_size=16)
+
+    def embedder(timeout):
+        return OpenAIEmbeddings(
+            model=cur["embed_model"], base_url=e_url, api_key=e_key,
+            request_timeout=timeout, max_retries=1,
+            # The self-hosted embedding server accepts raw strings only, not token-id arrays.
+            check_embedding_ctx_length=False,
+            # It also caps each request at 16 inputs.
+            chunk_size=16)
+
+    # 查询一条短文本，等不起就降级成关键词召回；入库一批 16 段在 CPU 向量服务上要慢得多，上限单独给
+    embeddings = embedder(EMBED_TIMEOUT)
+    embeddings_bulk = embedder(EMBED_INGEST_TIMEOUT)
 
 
 reload()

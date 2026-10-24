@@ -181,7 +181,9 @@ def test(base_url: str, api_key: str, chat_model: str, embed_model: str,
     except Exception as exc:
         out["errors"].append(f"对话模型 {chat_model} 调用失败：{why(exc)}")
     try:
+        # 「测试连接」是人在页面上等着的：不设超时会沿用客户端默认的 600 s × 重试，一挂就是半小时
         vec = OpenAIEmbeddings(model=embed_model, base_url=e_url, api_key=e_key,
+                               request_timeout=config.EMBED_TIMEOUT, max_retries=0,
                                check_embedding_ctx_length=False, chunk_size=16).embed_query("测试")
         out["embed"] = "ok"
         out["embed_dim"] = len(vec)

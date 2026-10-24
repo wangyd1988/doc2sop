@@ -1072,14 +1072,17 @@ function sourcesHtml(sources) {
         <span class="host">${esc(host)}</span></summary>
         <div class="body">${esc(s.text)}<br><a href="${esc(safe)}" target="_blank" rel="noopener noreferrer">${esc(s.url)}</a></div></details>`;
     }
-    const pct = Math.max(0, Math.min(100, Math.round(s.score * 100)));
-    // 「网络补充」是之前联网搜到、人确认后存进来的，和手写文档区分开；「关键词」表示靠精确词命中而非语义
+    const pct = Math.max(0, Math.min(100, Math.round((s.score || 0) * 100)));
+    // 「网络补充」是之前联网搜到、人确认后存进来的，和手写文档区分开；「关键词」表示靠精确词命中而非语义；
+    // 「仅关键词」是向量服务超时后的降级：这一轮没有相似度，条形图也不画
     const tags = (s.category === '网络补充' ? '<span class="tag net" title="这段来自之前联网搜索后存入知识库的内容，注意时效">网络补充</span>' : '')
-               + (s.match === 'lexical' ? '<span class="tag kw" title="靠关键词精确匹配召回（字段名、错误码等）">关键词</span>' : '')
+               + (s.degraded ? '<span class="tag kw" title="向量服务超时，本次只按关键词召回，没有相似度">仅关键词（向量服务超时）</span>'
+                  : s.match === 'lexical' ? '<span class="tag kw" title="靠关键词精确匹配召回（字段名、错误码等）">关键词</span>' : '')
                + (s.rerank != null ? `<span class="tag rr" title="交叉编码器重排分（越高越相关，可为负）">重排 ${Number(s.rerank).toFixed(1)}</span>` : '');
+    const bar = s.score == null ? '' : `<span class="bar" title="相似度 ${s.score}"><i style="width:${pct}%"></i></span>`;
     return `<details class="src" data-n="${s.index}"><summary><span class="n">[${s.index}]</span>
       <span class="loc" title="${esc(s.location)}">${esc(s.location)}</span>${tags}
-      <span class="bar" title="相似度 ${s.score}"><i style="width:${pct}%"></i></span></summary>
+      ${bar}</summary>
       <div class="body">${esc(tidy(s.text))}</div></details>`;
   }).join('');
 }
