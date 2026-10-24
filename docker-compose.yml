@@ -2,8 +2,11 @@
 #
 # 一键演示：.env 里 COMPOSE_PROFILES=demo（.env.example 已预置），或者命令行 --profile demo，
 # 会多起一个极小的只读工具 sidecar（kb-ops）。它的工具全部来自 packs/ 下 DEMO_PACKS 列出的场景包，
-# 不需要 docker socket、k8s 或任何自托管模型。正式部署把 COMPOSE_PROFILES 留空、
-# OPS_URL 指向宿主机上的 deploy/ops_readonly.py 即可。步骤见 docs/五分钟演示.md。
+# 不需要 docker socket、k8s 或任何自托管模型。正式部署（host 网络 + deploy/release.sh）不走这个文件，
+# 见 docs/正式部署.md；步骤见 docs/五分钟演示.md。
+#
+# 容器名、镜像名、宿主机端口、资源上限都是带默认值的变量：一台机器要跑第二套（比如正式站旁边再起一个
+# 演示站）时，在另一个目录 clone 后只改那份 .env 里的 APP_* / OPS_*，compose 项目名跟目录走，网络和卷互不干扰。
 services:
   kb-app:
     build:
@@ -11,19 +14,23 @@ services:
       args:
         # 国内拉不动 Docker Hub 时，.env 里设 BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim
         BASE_IMAGE: ${BASE_IMAGE:-python:3.12-slim}
-    image: kb-app:latest
-    container_name: kb-app
+    image: ${APP_IMAGE:-kb-app:latest}
+    container_name: ${APP_CONTAINER:-kb-app}
     restart: unless-stopped
     env_file: .env
     ports:
-      - "127.0.0.1:8765:8765"
+      # 左边是宿主机端口（APP_PORT），右边是容器内的 8765；改端口只改 APP_PORT，别动 .env 的 PORT
+      - "127.0.0.1:${APP_PORT:-8765}:8765"
     volumes:
       - ./data:/data
       # 场景包只读挂进来：改包里的文档 / SOP 不用重建镜像（镜像里也有一份，挂载会盖住它）
       - ./packs:/srv/packs:ro
+    # 容器访问宿主机上的服务（本机网关、宿主机工具服务）用 host.docker.internal；Linux 需要这一行，Docker Desktop 上无害
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Sized for a 2 vCPU / 2 GB host that also runs other services.
-    mem_limit: 900m
-    cpus: 1.5
+    mem_limit: ${APP_MEM_LIMIT:-900m}
+    cpus: ${APP_CPUS:-1.5}
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8765/',timeout=5)\" || exit 0"]
       interval: 60s
@@ -37,8 +44,8 @@ services:
       dockerfile: demo/Dockerfile.ops
       args:
         BASE_IMAGE: ${BASE_IMAGE:-python:3.12-slim}
-    image: kb-ops:latest
-    container_name: kb-ops
+    image: ${OPS_IMAGE:-kb-ops:latest}
+    container_name: ${OPS_CONTAINER:-kb-ops}
     restart: unless-stopped
     environment:
       # 和 kb-app 读同一个 .env 值，用户不用两边对齐；留空时 up 直接报错，而不是起一个连不上的服务
@@ -53,7 +60,9 @@ services:
       - ./packs:/packs:ro
       # 生成的工具定义及其旁路文件（页面上的启停、待审申请）放在卷里，重启不丢
       - ops-state:/ops
-    # 故意不发布端口：只有同一 compose 网络里的 kb-app 能访问它，令牌是第二道保险
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # 故意不发布端口：只有同一 compose 网络里的 kb-app 能访问它（OPS_URL 里的 kb-ops 是服务名，容器改名不影响），令牌是第二道保险
     mem_limit: 128m
     cpus: 0.5
     healthcheck:

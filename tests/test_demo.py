@@ -52,9 +52,24 @@ class ComposeTests(unittest.TestCase):
     def test_sidecar_is_not_published_and_is_small(self):
         self.assertNotIn("ports", self.ops)
         self.assertEqual(self.ops["mem_limit"], "128m")
-        self.assertEqual(self.app["mem_limit"], "900m")
+        self.assertEqual(self.app["mem_limit"], "${APP_MEM_LIMIT:-900m}")
+        self.assertEqual(self.app["cpus"], "${APP_CPUS:-1.5}")
         self.assertEqual(self.ops["build"]["context"], "deploy")
         self.assertEqual(self.ops["build"]["dockerfile"], "demo/Dockerfile.ops")
+
+    def test_names_ports_and_limits_come_from_env_with_defaults(self):
+        """一台机器跑两套只改 .env：容器名、镜像名、宿主机端口都是带默认值的变量，默认值就是原来的字面量。"""
+        self.assertEqual(self.app["container_name"], "${APP_CONTAINER:-kb-app}")
+        self.assertEqual(self.app["image"], "${APP_IMAGE:-kb-app:latest}")
+        self.assertEqual(self.app["ports"], ["127.0.0.1:${APP_PORT:-8765}:8765"])
+        self.assertEqual(self.ops["container_name"], "${OPS_CONTAINER:-kb-ops}")
+        self.assertEqual(self.ops["image"], "${OPS_IMAGE:-kb-ops:latest}")
+        # 容器访问宿主机服务（本机网关、宿主机工具）靠这一条；Linux 上没有它 host.docker.internal 解析不了
+        for service in (self.app, self.ops):
+            self.assertIn("host.docker.internal:host-gateway", service["extra_hosts"])
+        text, _ = env_example()
+        for name in ("APP_CONTAINER", "OPS_CONTAINER", "APP_IMAGE", "OPS_IMAGE", "APP_PORT", "APP_MEM_LIMIT", "APP_CPUS"):
+            self.assertIn(f"# {name}=", text, f".env.example 应说明 {name}")
 
     def test_base_image_is_overridable_from_the_env_file(self):
         """国内拉不动 Docker Hub 时只改 .env 的 BASE_IMAGE：两个镜像都要吃到同一个值，默认仍是官方镜像。"""
