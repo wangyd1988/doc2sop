@@ -370,6 +370,15 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .proposal .cancel { background: var(--panel-2); color: var(--muted); }
 .proposal .msg { font-size: 12px; color: var(--muted); }
 .proposal .tip { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+/* 提议卡片刚出现时闪一下，让正看着回答末尾的人注意到它 */
+.proposal { transition: box-shadow .3s; }
+.proposal.flash { box-shadow: 0 0 0 4px #ddd6fe; }
+/* 用户翻到别处时不拉他回来，改在输入框上方挂一条可点的提示 */
+.nudge { position: absolute; left: 50%; bottom: calc(100% - 2px); transform: translateX(-50%); z-index: 5;
+         padding: 6px 14px; border-radius: 999px; font-size: 12.5px; font-weight: 600; color: #fff; cursor: pointer;
+         background: #7c3aed; box-shadow: 0 4px 14px rgba(124,58,237,.35); white-space: nowrap;
+         animation: toast-in .18s ease-out; }
+.nudge:hover { background: #6d28d9; }
 .pb-pending { margin: 0 0 10px; }
 .pb-pending > summary { cursor: pointer; font-size: 13px; font-weight: 600; color: #7c3aed; padding: 6px 4px; list-style: none; }
 .pb-pending > summary::before { content: '▸ '; }
@@ -377,7 +386,7 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .pb-pending .proposal { margin: 4px 0 8px; }
 
 /* Composer */
-.composer { padding: 10px 20px 18px; }
+.composer { padding: 10px 20px 18px; position: relative; }
 .box { max-width: 820px; margin: 0 auto; display: flex; align-items: flex-end; gap: 8px; background: var(--panel);
        border: 1px solid var(--border); border-radius: 16px; padding: 8px 8px 8px 8px; box-shadow: var(--shadow); }
 .box:focus-within { border-color: var(--accent); }
@@ -1182,6 +1191,28 @@ function showProposal(bot, p) {
   if (!bot || bot.querySelector('.proposal')) return;
   (bot.querySelector('.tools') || bot.querySelector('.card')).insertAdjacentHTML('afterend', proposalHtml(p));
 }
+/* 提议是回答结束后几秒到几十秒才冒出来的，插在来源和工具条下面，大概率在视口外。
+   用户还看着这条回答的末尾（正文底边在视口里）→ 把卡片滚进来并闪一下；
+   已经翻去看别处 → 不拉他回来，在输入框上方挂一条可点的提示。回放补画的卡片不走这里。 */
+function flash(el) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1600); }
+function revealProposal(bot) {
+  const box = bot.querySelector('.proposal'); if (!box) return;
+  const view = $('chat').getBoundingClientRect(), end = bot.querySelector('.card').getBoundingClientRect().bottom;
+  if (end >= view.top && end <= view.bottom) { box.scrollIntoView({block: 'nearest', behavior: 'smooth'}); flash(box); }
+  else showNudge(box);
+}
+let nudgeWatch = null;
+function hideNudge() { document.querySelector('.nudge')?.remove(); nudgeWatch?.disconnect(); nudgeWatch = null; }
+function showNudge(box) {
+  hideNudge();
+  const el = document.createElement('button');
+  el.className = 'nudge'; el.textContent = '💡 有一条 SOP 提议 ↓';
+  el.onclick = () => { hideNudge(); if (box.isConnected) { box.scrollIntoView({block: 'center', behavior: 'smooth'}); flash(box); } };
+  document.querySelector('.composer').appendChild(el);
+  // 用户自己滚到卡片处，提示就没必要留着了
+  nudgeWatch = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) hideNudge(); }, {root: $('chat'), threshold: .5});
+  nudgeWatch.observe(box);
+}
 async function pollProposal(bot) {
   for (const wait of [2000, 4000, 8000, 8000, 8000, 8000, 8000, 8000]) {
     await new Promise(r => setTimeout(r, wait));
@@ -1189,7 +1220,7 @@ async function pollProposal(bot) {
     try {
       const d = await (await fetch('/api/proposals?execution_id=' + encodeURIComponent(bot.dataset.exec))).json();
       const p = (d.proposals || [])[0];
-      if (p) { showProposal(bot, p); if (nearBottom()) toBottom(); return; }
+      if (p) { showProposal(bot, p); revealProposal(bot); return; }
     } catch (_) {}
   }
 }
@@ -1211,6 +1242,7 @@ async function decideProposal(el, approve) {
   } else {
     box.remove();
   }
+  hideNudge();
   refreshBadges();
   if (!$('pbPanel').hidden || MANAGE) loadPlaybooks();
 }
@@ -1265,6 +1297,7 @@ async function openConv(id) {
   if (!r.ok) { convId = null; welcome(); return; }
   const d = await r.json();
   convId = id;
+  hideNudge();
   $('thread').innerHTML = '';
   let lastQuestion = '';
   for (const m of d.messages) {
@@ -1281,7 +1314,7 @@ async function openConv(id) {
   if (!d.messages.length) welcome();
   toBottom();
 }
-function newConv() { convId = null; welcome(); $('question').focus(); }
+function newConv() { convId = null; hideNudge(); welcome(); $('question').focus(); }
 // 品牌区当主页按钮：对话页回到首屏，管理页跳回对话页
 document.querySelectorAll('.brand[data-home]').forEach(b => b.addEventListener('click', () => {
   if (MANAGE) { location.href = '/'; return; }
