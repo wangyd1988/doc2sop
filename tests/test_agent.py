@@ -425,6 +425,77 @@ class ToolLayerTests(unittest.TestCase):
         self.assertIn("工具接口不可用", result["output"])
 
 
+class McpSchemaTests(unittest.TestCase):
+    """MCP 工具带 input_schema：模型看到的签名要保住嵌套、枚举、必填，而不是被压扁成几个字符串。"""
+
+    SCHEMA = {"type": "object", "required": ["query", "filter"],
+              "properties": {
+                  "query": {"type": "string", "description": "关键词"},
+                  "limit": {"type": "integer", "default": 20, "description": "条数"},
+                  "ratio": {"type": ["number", "null"]},
+                  "kind": {"type": "string", "enum": ["pod", "svc"]},
+                  "filter": {"type": "object", "required": ["ns"],
+                             "properties": {"ns": {"type": "string"},
+                                            "labels": {"type": "array", "items": {"type": "string"}}}},
+                  "opaque": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+                  "schema": {"type": "string"},
+                  "_hidden": {"type": "string"}}}
+
+    def build(self, meta):
+        return agent_tools.build_tools({"gh__search": meta})[0]
+
+    def test_input_schema_generates_nested_model(self):
+        tool = self.build({"desc": "搜", "params": {}, "input_schema": self.SCHEMA})
+        fields = tool.args_schema.model_fields
+        self.assertEqual(sorted(fields), ["filter", "kind", "limit", "opaque", "query", "ratio", "schema"])
+        self.assertTrue(fields["query"].is_required())
+        self.assertTrue(fields["filter"].is_required())
+        self.assertFalse(fields["limit"].is_required())
+        self.assertEqual(fields["limit"].default, 20)
+        self.assertEqual(fields["query"].description, "关键词")
+        nested = fields["filter"].annotation.model_fields
+        self.assertTrue(nested["ns"].is_required())
+        self.assertIn("labels", nested)
+        # 枚举变成 Literal，模型拿到的是可选值而不是任意字符串
+        self.assertIn("Literal", repr(fields["kind"].annotation))
+
+    def test_nested_arguments_reach_the_host_as_plain_json(self):
+        tool = self.build({"desc": "搜", "params": {}, "input_schema": self.SCHEMA})
+        with patch.object(agent_tools.ops_client, "execute",
+                          return_value={"ok": True, "output": "ok"}) as execute:
+            tool.invoke({"query": "x", "filter": {"ns": "default", "labels": ["a"]}, "kind": "pod"})
+        sent = execute.call_args[0][1]
+        self.assertEqual(sent["filter"], {"ns": "default", "labels": ["a"]})
+        self.assertEqual(sent["kind"], "pod")
+        self.assertEqual(execute.call_args[0][0], "gh__search")
+
+    def test_model_validation_rejects_bad_enum_before_the_host(self):
+        tool = self.build({"desc": "搜", "params": {}, "input_schema": self.SCHEMA})
+        with self.assertRaises(Exception):
+            tool.invoke({"query": "x", "filter": {"ns": "d"}, "kind": "node"})
+
+    def test_empty_or_broken_schema_falls_back_to_params(self):
+        tool = self.build({"desc": "搜", "params": {"q": {"type": "str", "required": True}},
+                           "input_schema": "not-a-schema"})
+        self.assertEqual(list(tool.args_schema.model_fields), ["q"])
+        tool = self.build({"desc": "搜", "params": {}, "input_schema": {"type": "object"}})
+        self.assertIs(tool.args_schema, agent_tools.Empty)
+
+    def test_params_fallback_understands_new_types(self):
+        tool = self.build({"desc": "搜", "params": {
+            "flag": {"type": "bool", "required": True},
+            "ratio": {"type": "float"},
+            "blob": {"type": "json"},
+            "mode": {"type": "enum", "enum": ["a", "b"], "default": "a"},
+            "count": {"type": "int", "required": True}}})
+        fields = tool.args_schema.model_fields
+        self.assertTrue(fields["flag"].is_required())
+        self.assertTrue(fields["count"].is_required())
+        self.assertFalse(fields["ratio"].is_required())
+        self.assertEqual(fields["mode"].default, "a")
+        self.assertIn("Literal", repr(fields["mode"].annotation))
+
+
 class FakeTool:
     """替身工具，记录被调用的参数。"""
 

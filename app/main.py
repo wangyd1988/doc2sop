@@ -531,6 +531,7 @@ def tools_overview(q: str = "", group: str = "", offset: int = 0, limit: int = c
     detail = ops_client.describe_tools()
     page = catalog.page_tools(detail.get("tools", {}), q, group, offset, limit)
     return {**page, "pending": detail.get("pending", 0),
+            "mcp_servers": detail.get("mcp_servers", {}),
             "error": detail.get("error", ""), "agent_mode": AGENT_MODE}
 
 

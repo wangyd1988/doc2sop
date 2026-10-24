@@ -47,6 +47,16 @@ class StoreTests(unittest.TestCase):
                 playbooks.save(None, "坏 SOP", "", [step(bad)], TOOLS)
             self.assertIn("不存在的工具", str(cm.exception))
 
+    def test_mcp_tool_names_pass_when_the_host_lists_them(self):
+        """MCP 工具名是 server__tool、参数可能嵌套；对 SOP 来说它只是又一个「当前存在的工具」。"""
+        tools = TOOLS | {"holiday__holiday_calendar"}
+        pid = playbooks.save(None, "拼假", "", [step("holiday__holiday_calendar", year=2026,
+                                                   filter={"kind": "holiday"})], tools)
+        self.assertEqual(playbooks.get(pid)["steps"][0]["args"],
+                         {"year": 2026, "filter": {"kind": "holiday"}})
+        with self.assertRaises(playbooks.InvalidPlaybook):
+            playbooks.save(None, "拼假", "", [step("holiday__holiday_calendar")], TOOLS)
+
     def test_empty_name_or_steps_rejected(self):
         with self.assertRaises(playbooks.InvalidPlaybook):
             playbooks.save(None, "  ", "", [step("container_stats")], TOOLS)
