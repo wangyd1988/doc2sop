@@ -497,6 +497,36 @@ class ExecTests(_McpCase):
         self.assertEqual(status["approved"], 3)
         self.assertEqual(status["server"]["name"], "holiday-mcp")
 
+    def test_non_dict_call_result_is_a_failure_not_a_crash(self):
+        self.approve_all()
+        server = ops._mcp.get("holiday")
+        with patch.object(server, "call", return_value=["not", "a", "dict"]):
+            result = ops.run_tool("holiday__echo", {"text": "x"})
+        self.assertFalse(result["ok"])
+        self.assertIn("不符合 MCP 规范", result["error"])
+
+    def test_concurrent_start_does_not_kill_the_handshake(self):
+        """后台线程在握手，/exec 同时到来：两边都要拿到同一个在线的进程，不能互相拆台。"""
+        import threading
+        self.write_main()
+        server = ops._mcp.get("holiday")
+        errors = []
+
+        def go():
+            try:
+                server.ensure()
+            except ops.McpError as exc:
+                errors.append(str(exc))
+
+        threads = [threading.Thread(target=go) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        self.assertEqual(errors, [])
+        self.assertTrue(server.online)
+        self.assertEqual(server.failures, 0)
+
 
 class ShapeTests(unittest.TestCase):
     """子集校验器自身：嵌套对象、数组、枚举、anyOf、additionalProperties。"""
@@ -538,6 +568,16 @@ class ShapeTests(unittest.TestCase):
     def test_unknown_keywords_are_ignored(self):
         self.assertEqual(ops._check_shape({"a": 1}, {"type": "object", "$ref": "#/x",
                                                     "patternProperties": {"^a": {"type": "string"}}}), [])
+
+    def test_malformed_bounds_from_server_do_not_crash(self):
+        """server 给的 schema 本身可能写错（minimum 是字符串、required 不是列表），只能放行不能炸。"""
+        schema = {"type": "object", "required": 5,
+                  "properties": {"n": {"type": "integer", "minimum": "0", "maximum": None},
+                                 "s": {"type": "string", "maxLength": "3"},
+                                 "l": {"type": "array", "minItems": "1"}}}
+        clean, errors = ops.prepare_mcp_args({"n": 1, "s": "abcd", "l": []}, schema)
+        self.assertEqual(errors, [])
+        self.assertEqual(clean, {"n": 1, "s": "abcd", "l": []})
 
     def test_params_from_schema_maps_common_types(self):
         params = ops._params_from_schema({

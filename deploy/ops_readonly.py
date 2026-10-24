@@ -497,10 +497,15 @@ def _read_yaml(path):
 
 def _write_yaml(path, document):
     """Write atomically, so an interrupted write can't leave half a file."""
-    temporary = f"{path}.tmp"
+    # 临时文件名带随机后缀：后台发现线程和页面请求可能同时写同一个文件
+    temporary = f"{path}.{secrets.token_hex(3)}.tmp"
     with open(temporary, "w", encoding="utf-8") as handle:
         _yaml().safe_dump(document, handle, allow_unicode=True, sort_keys=False)
     os.replace(temporary, path)
+
+
+# 待审文件的读-改-写要串行：后台线程写发现结果，页面线程写申请，谁都不能把对方刚写的覆盖掉。
+_pending_lock = threading.RLock()
 
 
 def _sibling(kind):
@@ -1058,17 +1063,18 @@ def propose_tool(raw, author="web"):
         raise ConfigError(_form_wording(str(exc), name)) from None
     if spec["name"] in all_tools():
         raise ConfigError(f"已存在同名工具：{spec['name']}")
-    entries = list_pending()
-    if any((item.get("tool") or {}).get("name") == spec["name"] for item in entries):
-        raise ConfigError(f"已有同名待审申请：{spec['name']}")
-    if len(entries) >= 50:
-        raise ConfigError("待审队列已满，请先在宿主机上处理")
+    with _pending_lock:
+        entries = list_pending()
+        if any((item.get("tool") or {}).get("name") == spec["name"] for item in entries):
+            raise ConfigError(f"已有同名待审申请：{spec['name']}")
+        if len(entries) >= 50:
+            raise ConfigError("待审队列已满，请先在宿主机上处理")
 
-    item = {"id": secrets.token_hex(4),
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "author": str(author)[:40], "tool": raw}
-    entries.append(item)
-    _write_yaml(_sibling("pending"), {"pending": entries})
+        item = {"id": secrets.token_hex(4),
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "author": str(author)[:40], "tool": raw}
+        entries.append(item)
+        _write_yaml(_sibling("pending"), {"pending": entries})
     return item
 
 
@@ -1080,9 +1086,10 @@ def _find_pending(ident):
 
 
 def drop_pending(ident):
-    item = _find_pending(ident)
-    _write_yaml(_sibling("pending"),
-                {"pending": [i for i in list_pending() if i.get("id") != item["id"]]})
+    with _pending_lock:
+        item = _find_pending(ident)
+        _write_yaml(_sibling("pending"),
+                    {"pending": [i for i in list_pending() if i.get("id") != item["id"]]})
     return item
 
 
@@ -1173,6 +1180,11 @@ def _mcp_discovered(server):
     默认拒绝的落实点就在这里——发现 ≠ 可用。破坏性工具连 pending 都不进，只记一行日志；
     其余按 server 有没有声明只读、名字像不像写操作打标签，给审批人看。
     """
+    with _pending_lock:
+        _reconcile_pending(server)
+
+
+def _reconcile_pending(server):
     tools = all_tools()
     approved = {spec["mcp"]["tool"]: spec for spec in tools.values()
                 if spec.get("type") == "mcp" and spec["mcp"]["server"] == server.id}
@@ -1469,6 +1481,8 @@ class McpServer:
         self.notes = []             # 审批层对这个 server 的备注：哪些工具没列出、为什么
         self._send_lock = threading.Lock()
         self._state_lock = threading.Lock()
+        # 握手期间不许别的线程再来 start/stop：后台线程在连，/exec 同时到来就会把它刚拉起的进程杀掉
+        self._life_lock = threading.RLock()
         self._waiting = {}          # 请求 id -> [Event, 响应]
         self._next_id = 0
 
@@ -1613,41 +1627,43 @@ class McpServer:
 
     def start(self):
         """拉起子进程并握手、拉一次工具列表。失败则记退避，连续三次标离线。"""
-        if self.alive() and self.online:
-            return
-        now = time.monotonic()
-        if now < self.next_retry:
-            raise McpError(self.reason)
-        try:
-            if self.alive():
-                self.stop("重新连接")
-            self._spawn()
-            result = self.request("initialize", {
-                "protocolVersion": MCP_PROTOCOL, "capabilities": {},
-                "clientInfo": {"name": "doc2sop", "version": "1"}}, timeout=MCP_INIT_TIMEOUT) or {}
-            self.protocol = str(result.get("protocolVersion", ""))
-            self.server_info = result.get("serverInfo") or {}
-            self.notify("notifications/initialized")
-            self.online = True
-            self.reason = ""
-            self.list_tools()
-        except McpError as exc:
-            self.failures += 1
-            delay = MCP_BACKOFF[min(self.failures, len(MCP_BACKOFF)) - 1]
-            self.next_retry = time.monotonic() + delay
-            self._go_offline(f"连接失败（第 {self.failures} 次）：{exc}；{delay}s 后重试")
-            self._kill()
-            raise McpError(self.reason) from None
-        self.failures = 0
-        self.next_retry = 0.0
+        with self._life_lock:
+            if self.alive() and self.online:
+                return   # 等锁期间别的线程已经连好了
+            now = time.monotonic()
+            if now < self.next_retry:
+                raise McpError(self.reason)
+            try:
+                if self.alive():
+                    self.stop("重新连接")
+                self._spawn()
+                result = self.request("initialize", {
+                    "protocolVersion": MCP_PROTOCOL, "capabilities": {},
+                    "clientInfo": {"name": "doc2sop", "version": "1"}}, timeout=MCP_INIT_TIMEOUT) or {}
+                self.protocol = str(result.get("protocolVersion", ""))
+                self.server_info = result.get("serverInfo") or {}
+                self.notify("notifications/initialized")
+                self.online = True
+                self.reason = ""
+                self.list_tools()
+            except McpError as exc:
+                self.failures += 1
+                delay = MCP_BACKOFF[min(self.failures, len(MCP_BACKOFF)) - 1]
+                self.next_retry = time.monotonic() + delay
+                self._go_offline(f"连接失败（第 {self.failures} 次）：{exc}；{delay}s 后重试")
+                self._kill()
+                raise McpError(self.reason) from None
+            self.failures = 0
+            self.next_retry = 0.0
         print(f"[mcp:{self.id}] 已连接 {self.server_info.get('name', '')} "
               f"{self.server_info.get('version', '')}（协议 {self.protocol}），"
               f"发现 {len(self.tools)} 个工具", flush=True)
 
     def ensure(self):
         """调用前保证在线：进程死了就按退避重拉。"""
-        if not (self.alive() and self.online):
-            self.start()
+        with self._life_lock:
+            if not (self.alive() and self.online):
+                self.start()
 
     def list_tools(self):
         found, cursor = {}, None
@@ -1689,8 +1705,9 @@ class McpServer:
                 pass
 
     def stop(self, reason="已停止"):
-        self._go_offline(reason)
-        self._kill()
+        with self._life_lock:
+            self._go_offline(reason)
+            self._kill()
 
     def status(self, approved=0):
         return {"label": self.label, "online": bool(self.online and self.alive()),
@@ -1730,6 +1747,8 @@ class McpRegistry:
         for server in ([self.servers[ident]] if ident in self.servers else list(self.servers.values())):
             try:
                 if not (server.alive() and server.online):
+                    if time.monotonic() < server.next_retry:
+                        continue   # 退避期内不反复尝试，也不反复刷日志
                     server.start()
                 elif force or server.list_changed or \
                         time.monotonic() - server.last_discovery > MCP_REFRESH:
@@ -1828,9 +1847,9 @@ def _check_shape(value, schema, path="参数"):
             errors.extend(_check_shape(value, option, path))
 
     if isinstance(value, str):
-        if "minLength" in schema and len(value) < schema["minLength"]:
+        if isinstance(schema.get("minLength"), int) and len(value) < schema["minLength"]:
             errors.append(f"{path} 至少 {schema['minLength']} 个字符")
-        if "maxLength" in schema and len(value) > schema["maxLength"]:
+        if isinstance(schema.get("maxLength"), int) and len(value) > schema["maxLength"]:
             errors.append(f"{path} 最多 {schema['maxLength']} 个字符")
         if isinstance(schema.get("pattern"), str):
             try:
@@ -1839,20 +1858,20 @@ def _check_shape(value, schema, path="参数"):
             except re.error:
                 pass   # ECMAScript 正则 Python 可能不认，放行
     elif isinstance(value, (int, float)) and not isinstance(value, bool):
-        if "minimum" in schema and value < schema["minimum"]:
-            errors.append(f"{path} 不能小于 {schema['minimum']}")
-        if "maximum" in schema and value > schema["maximum"]:
-            errors.append(f"{path} 不能大于 {schema['maximum']}")
-        if "exclusiveMinimum" in schema and isinstance(schema["exclusiveMinimum"], (int, float)) \
-                and value <= schema["exclusiveMinimum"]:
-            errors.append(f"{path} 必须大于 {schema['exclusiveMinimum']}")
-        if "exclusiveMaximum" in schema and isinstance(schema["exclusiveMaximum"], (int, float)) \
-                and value >= schema["exclusiveMaximum"]:
-            errors.append(f"{path} 必须小于 {schema['exclusiveMaximum']}")
+        bounds = {key: schema[key] for key in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum")
+                  if isinstance(schema.get(key), (int, float)) and not isinstance(schema.get(key), bool)}
+        if "minimum" in bounds and value < bounds["minimum"]:
+            errors.append(f"{path} 不能小于 {bounds['minimum']}")
+        if "maximum" in bounds and value > bounds["maximum"]:
+            errors.append(f"{path} 不能大于 {bounds['maximum']}")
+        if "exclusiveMinimum" in bounds and value <= bounds["exclusiveMinimum"]:
+            errors.append(f"{path} 必须大于 {bounds['exclusiveMinimum']}")
+        if "exclusiveMaximum" in bounds and value >= bounds["exclusiveMaximum"]:
+            errors.append(f"{path} 必须小于 {bounds['exclusiveMaximum']}")
     elif isinstance(value, list):
-        if "minItems" in schema and len(value) < schema["minItems"]:
+        if isinstance(schema.get("minItems"), int) and len(value) < schema["minItems"]:
             errors.append(f"{path} 至少 {schema['minItems']} 项")
-        if "maxItems" in schema and len(value) > schema["maxItems"]:
+        if isinstance(schema.get("maxItems"), int) and len(value) > schema["maxItems"]:
             errors.append(f"{path} 最多 {schema['maxItems']} 项")
         items = schema.get("items")
         if isinstance(items, dict):
@@ -1863,7 +1882,8 @@ def _check_shape(value, schema, path="参数"):
                 errors.extend(_check_shape(item, sub, f"{path}[{index}]"))
     elif isinstance(value, dict):
         properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
-        for key in schema.get("required") or []:
+        required = schema.get("required") if isinstance(schema.get("required"), list) else []
+        for key in required:
             if str(key) not in value:
                 inner = path[len("参数 "):] + "." if path.startswith("参数 ") else ""
                 errors.append(f"缺少必填参数：{inner}{key}")
@@ -1988,7 +2008,9 @@ def _run_mcp(spec, args):
         result = server.call(spec["mcp"]["tool"], clean, timeout=TIMEOUT)
     except McpError as exc:
         return {"ok": False, "error": _scrub(str(exc), server.secrets), "command": command}
-    text = _scrub(_flatten_content(result if isinstance(result, dict) else {}), server.secrets)
+    if not isinstance(result, dict):
+        return {"ok": False, "error": "server 返回的结果不符合 MCP 规范（不是对象）", "command": command}
+    text = _scrub(_flatten_content(result), server.secrets)
     truncated = len(text) > MAX_OUTPUT
     return {"ok": not result.get("isError"), "command": command,
             "output": text[:MAX_OUTPUT] + ("\n…（输出已截断）" if truncated else "")}
@@ -2091,7 +2113,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._propose(payload)
 
         name = payload.get("tool")
-        result = run_tool(name, payload.get("args"))
+        try:
+            result = run_tool(name, payload.get("args"))
+        except Exception as exc:   # 不能让一个 server 报回来的怪数据把连接直接掐断
+            result = {"ok": False, "error": f"执行失败：{exc.__class__.__name__}: {exc}"}
         print(f"[exec] {name} args={payload.get('args')} ok={result.get('ok')}", flush=True)
         self._send(200, result)
 
@@ -2262,7 +2287,8 @@ def main():
     if _state["mcp_servers"]:
         print(f"MCP server {len(_state['mcp_servers'])} 个：{', '.join(sorted(_state['mcp_servers']))}，"
               f"后台连接中；发现的工具会进入待审列表")
-        _mcp.start_background()
+    # 没声明 server 也要起这个线程：配置热加载后新加的 mcp_servers 靠它连接和发现
+    _mcp.start_background()
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
     return 0
 
