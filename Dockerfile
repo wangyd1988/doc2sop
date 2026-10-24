@@ -1,4 +1,6 @@
-FROM python:3.12-slim
+# Docker Hub 拉不动时，.env 里把 BASE_IMAGE 指到国内镜像站（compose 透传进来），不用改这个文件
+ARG BASE_IMAGE=python:3.12-slim
+FROM ${BASE_IMAGE}
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

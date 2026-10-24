@@ -1,7 +1,8 @@
 # 演示用的只读工具 sidecar（kb-ops）：标准库写的 ops_readonly.py + PyYAML，常驻内存几十 MB。
 # 和 kb-app 共用 python:3.12-slim 基础层，不多下载一份；slim 里的 date 是 GNU 版，date_info 工具能用。
-# 构建上下文是 deploy/（见 docker-compose.yml）。
-FROM python:3.12-slim
+# 构建上下文是 deploy/（见 docker-compose.yml）。BASE_IMAGE 与 kb-app 同一个值，由 compose 从 .env 透传。
+ARG BASE_IMAGE=python:3.12-slim
+FROM ${BASE_IMAGE}
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1

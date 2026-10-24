@@ -53,7 +53,18 @@ class ComposeTests(unittest.TestCase):
         self.assertNotIn("ports", self.ops)
         self.assertEqual(self.ops["mem_limit"], "128m")
         self.assertEqual(self.app["mem_limit"], "900m")
-        self.assertEqual(self.ops["build"], {"context": "deploy", "dockerfile": "demo/Dockerfile.ops"})
+        self.assertEqual(self.ops["build"]["context"], "deploy")
+        self.assertEqual(self.ops["build"]["dockerfile"], "demo/Dockerfile.ops")
+
+    def test_base_image_is_overridable_from_the_env_file(self):
+        """国内拉不动 Docker Hub 时只改 .env 的 BASE_IMAGE：两个镜像都要吃到同一个值，默认仍是官方镜像。"""
+        for service in (self.app, self.ops):
+            self.assertEqual(service["build"]["args"]["BASE_IMAGE"], "${BASE_IMAGE:-python:3.12-slim}")
+        for dockerfile in ("Dockerfile", "deploy/demo/Dockerfile.ops"):
+            text = (REPO / dockerfile).read_text(encoding="utf-8")
+            self.assertIn("ARG BASE_IMAGE=python:3.12-slim", text, dockerfile)
+            self.assertIn("FROM ${BASE_IMAGE}", text, dockerfile)
+            self.assertNotIn("FROM python:", text, dockerfile)
 
     def test_token_and_gateway_credentials_come_from_the_single_env_file(self):
         env = self.ops["environment"]

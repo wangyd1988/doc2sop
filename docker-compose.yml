@@ -6,7 +6,11 @@
 # OPS_URL 指向宿主机上的 deploy/ops_readonly.py 即可。步骤见 docs/五分钟演示.md。
 services:
   kb-app:
-    build: .
+    build:
+      context: .
+      args:
+        # 国内拉不动 Docker Hub 时，.env 里设 BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim
+        BASE_IMAGE: ${BASE_IMAGE:-python:3.12-slim}
     image: kb-app:latest
     container_name: kb-app
     restart: unless-stopped
@@ -31,6 +35,8 @@ services:
     build:
       context: deploy
       dockerfile: demo/Dockerfile.ops
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-python:3.12-slim}
     image: kb-ops:latest
     container_name: kb-ops
     restart: unless-stopped
