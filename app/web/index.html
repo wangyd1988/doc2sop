@@ -307,6 +307,14 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
            padding: 9px 11px; margin-bottom: 8px; font-size: 12.5px; }
 .tl-wait .cmd { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px;
                 color: var(--muted); margin-top: 3px; }
+.tl-wait .tag { font-size: 11px; border-radius: 6px; padding: 0 6px; margin-left: 4px; border: 1px solid var(--border); color: var(--muted); }
+.tl-wait .tag.warn, .tl-ro.warn { color: var(--danger); border-color: var(--danger); }
+.tl-wait .tag.ok, .tl-ro.ok { color: var(--ok, #15803d); border-color: var(--ok, #15803d); }
+.pb-top .src.tl-mcp { color: #7c3aed; border-color: #7c3aed; font-weight: 600; }
+.pb-top .src.tl-ro { font-weight: 500; }
+.tl-servers { font-size: 11.5px; color: var(--muted); padding: 6px 8px; line-height: 1.6; }
+.tl-servers b { color: var(--text); font-weight: 600; }
+.tl-servers .off { color: var(--danger); }
 .tl-pick input { margin-bottom: 6px; }
 .tl-pform { border: 1px dashed var(--border); border-radius: 10px; padding: 8px 10px 4px; margin-bottom: 8px; }
 .tl-param { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px; align-items: center; margin-bottom: 6px;
@@ -1759,10 +1767,19 @@ $('pbPanel').addEventListener('dblclick', e => {
 let tlEditing = null, tlProposing = false, tlProposeKind = 'command', tlSearch = '';
 let tlScripts = [], tlScriptSel = '', tlScriptDir = '';
 
+/* MCP 工具的只读依据：server 自己声明的，还是管理员批准时确认的。两者都没有的不能执行。 */
+const TL_RO = {declared: ['ok', '只读 · server 声明'], attested: ['ok', '只读 · 管理员确认'], none: ['warn', '未确认只读']};
+function tlParamHint(p) {
+  if (p.type === 'json') return '（结构化）';
+  if (p.type === 'enum' && (p.enum || []).length) return '（' + p.enum.map(esc).join(' / ') + '）';
+  if (p.type === 'bool') return '（是/否）';
+  return '';
+}
 function tlCard(name, t) {
   mCache['tl:' + name] = {name, t};   // 「用它提问」要用到参数定义
   const params = Object.entries(t.params || {});
   const editing = tlEditing === name;
+  const mcp = t.type === 'mcp', ro = TL_RO[t.readonly] || TL_RO.none;
   const field = 'width:100%;box-sizing:border-box;font:inherit;font-size:12.5px;padding:7px;'
               + 'border-radius:7px;border:1px solid var(--border);background:var(--panel-2);color:var(--text)';
   return `<div class="pb ${t.enabled ? '' : 'off'} ${t.runnable ? '' : 'bad'}"
@@ -1771,6 +1788,8 @@ function tlCard(name, t) {
     <div class="pb-top">
       <span class="nm">${esc(t.label || name)}</span>
       ${t.label ? `<span class="src">${esc(name)}</span>` : ''}
+      ${mcp ? `<span class="src tl-mcp" title="来自 MCP server ${esc(t.mcp?.server || '')}">MCP</span><span class="src tl-ro ${ro[0]}">${ro[1]}</span>` : ''}
+      ${mcp && !t.schema_locked ? '<span class="src" title="手写条目没有 schema 指纹，server 改了参数形状也不会自动停用">未锁定 schema</span>' : ''}
       ${(t.overridden || []).length ? '<span class="src">已在页面改过</span>' : ''}
       ${t.enabled && t.runnable ? `<button class="run" data-tluse="${esc(name)}" title="把「用这个工具查…」填进对话框">💬 用它提问</button>` : ''}
       <button data-tledit="${esc(name)}">${editing ? '收起' : '改名/说明'}</button>
@@ -1790,9 +1809,11 @@ function tlCard(name, t) {
         : `<div class="pb-trig">${esc(t.desc)}</div>`}
       <div class="tl-cmd">${esc(t.command)}</div>
       ${params.length ? `<div class="tl-params">${params.map(([key, p]) =>
-          `<span><code>${esc(key)}</code> ${p.required ? '必填' : '可选'}${
+          `<span><code>${esc(key)}</code> ${p.required ? '必填' : '可选'}${tlParamHint(p)}${
             p.desc ? '：' + esc(p.desc) : ''}</span>`).join('')}</div>` : ''}
-      ${t.runnable ? '' : `<div class="pb-warn">⚠ 本机没有 ${esc(t.binary)}，该工具不可用</div>`}
+      ${mcp && Object.keys(t.restrict || {}).length ? `<div class="tl-params"><span>管理员收紧：${
+          Object.entries(t.restrict).map(([k, r]) => `<code>${esc(k)}</code> ${esc(JSON.stringify(r))}`).join('，')}</span></div>` : ''}
+      ${t.runnable ? '' : `<div class="pb-warn">⚠ ${mcp ? esc(t.reason || 'MCP 工具暂不可用') : `本机没有 ${esc(t.binary)}，该工具不可用`}</div>`}
     </div>
   </div>`;
 }
@@ -1892,15 +1913,37 @@ function tlProposeForm() {
 
 function tlWaiting(items) {
   if (!items.length) return '';
+  const RO = {declared: ['ok', '只读（server 声明）'], undeclared: ['warn', '未声明只读']};
   return `<div class="tl-wait">⏳ ${items.length} 条申请待批准，在宿主机上执行：
     <div class="cmd">python3 /opt/ops/ops_readonly.py pending</div>
     ${items.map(i => {
-      const t = i.tool || {};
+      const t = i.tool || {}, rv = i.review || {};
+      if (t.mcp) {
+        // MCP 候选：谁发现的、只读依据、名字像不像写操作、为什么进来（新发现 / schema 变了）
+        const ro = RO[rv.readonly] || RO.undeclared;
+        const tags = `<span class="tag">MCP ${esc(t.mcp.server || '')}</span><span class="tag ${ro[0]}">${ro[1]}</span>`
+                   + (rv.suspicious_name ? '<span class="tag warn">名称疑似写操作</span>' : '')
+                   + (rv.reason && rv.reason !== '新发现' ? `<span class="tag warn">${esc(rv.reason)}</span>` : '');
+        const flag = rv.readonly === 'declared' ? '' : ' --attest-readonly';
+        return `<div class="cmd">[${esc(i.id)}] ${esc(t.name || '')}　${esc(t.mcp.tool || '')}${tags}
+          <div class="cmd" style="margin:2px 0 0 14px">批准：ops_readonly.py approve ${esc(i.id)}${flag}</div></div>`;
+      }
       const what = t.script ? '脚本 ' + t.script
                  : t.http ? 'GET ' + (t.http.url || '') : (t.argv || []).join(' ');
       return `<div class="cmd">[${esc(i.id)}] ${esc(t.name || '')}　${esc(what)}</div>`;
     }).join('')}
   </div>`;
+}
+
+function mcpServersHtml(servers) {
+  const list = Object.entries(servers || {});
+  if (!list.length) return '';
+  return `<div class="tl-servers">MCP server：${list.map(([id, s]) =>
+    `<b>${esc(s.label || id)}</b> ${s.online
+      ? `在线 · 发现 ${s.discovered} · 已批准 ${s.approved}`
+      : `<span class="off">离线${s.reason ? '：' + esc(s.reason) : ''}</span>`}${
+      (s.notes || []).length ? `<span title="${esc(s.notes.join('\n'))}">（${s.notes.length} 条未列出）</span>` : ''}`
+  ).join('；')}</div>`;
 }
 
 async function loadTools() {
@@ -1922,6 +1965,7 @@ async function loadTools() {
        <button class="icon-btn" id="tlNew">＋ 申请新工具</button>
        <button class="x" data-close title="关闭">✕</button></div>` +
     (d.error ? `<div class="pb-warn">工具接口不可用：${esc(d.error)}</div>` : '') +
+    mcpServersHtml(d.mcp_servers) +
     (tlProposing ? tlProposeForm() : tlWaiting(waiting)) +
     (tc.total > 3 ? searchBox('tlSearch', tlSearch, '搜索工具：名称、显示名、说明、命令、分组、参数…') : '') +
     (tc.total ? groupsHtml('tl', d.groups || [])
@@ -2314,7 +2358,7 @@ async function renderManage() {
   if (mTab === 'settings') return renderSettings();
 
   // 1. 分组栏
-  let groups, live, count, pending = [], proposals = 0, origins = null;
+  let groups, live, count, pending = [], proposals = 0, origins = null, mcpServers = {};
   if (mTab === 'docs') {
     const by = {};
     for (const d of allDocs) { const k = d.category || '未分类'; by[k] = (by[k] || 0) + 1; }
@@ -2324,6 +2368,7 @@ async function renderManage() {
     const d = await (await fetch(LAZY[cfg.panel].url)).json();
     groups = d.groups || []; live = d.live || 0; count = d.count || 0;
     if (mTab === 'sop') { pbTools = d.tools || {}; proposals = d.pending || 0; origins = d.origins || null; }
+    if (mTab === 'tools') mcpServers = d.mcp_servers || {};
     setBadge(cfg.panel + 'Badge', {live, total: count}, cfg.unit.slice(1));
     if (mTab === 'tools') pending = await fetch('/api/tools/pending').then(r => r.json()).then(r => r.pending || []).catch(() => []);
     if (d.error) toast('工具接口不可用：' + d.error, 'err');
@@ -2333,6 +2378,7 @@ async function renderManage() {
     + groups.map(g => mgHtml(g.name, g.live, g.total)).join('')
     + (mTab === 'tools' && pending.length ? `<div class="mg-head" style="margin-top:8px">审批</div>${mgHtml('__pending', null, pending.length, true).replace('__pending</span>', '待审申请</span>')}` : '')
     + (mTab === 'sop' && proposals ? `<div class="mg-head" style="margin-top:8px">沉淀</div>${mgHtml('__proposals', null, proposals, true).replace('__proposals</span>', '待确认提议</span>')}` : '')
+    + (mTab === 'tools' && Object.keys(mcpServers).length ? `<div class="mg-head" style="margin-top:8px">MCP</div>${mcpServersHtml(mcpServers)}` : '')
     + (!groups.length ? '<div class="empty">空</div>' : '');
 
   // 2. 列表栏：工具栏 + 行
