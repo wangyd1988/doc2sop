@@ -506,7 +506,7 @@ def reject_proposal(proposal_id: str):
 # 命令模板永远只在宿主机那份手写配置里定义，这个接口碰不到。
 
 class ToolOverride(BaseModel):
-    name: str = Field(min_length=1, max_length=60)
+    name: str = Field(min_length=1, max_length=64)
     enabled: bool | None = None
     desc: str | None = Field(default=None, max_length=300)
     label: str | None = Field(default=None, max_length=40)
@@ -514,7 +514,7 @@ class ToolOverride(BaseModel):
 
 
 class ToolProposal(BaseModel):
-    name: str = Field(min_length=1, max_length=40)
+    name: str = Field(min_length=1, max_length=64)
     label: str = Field(default="", max_length=40)
     desc: str = Field(min_length=1, max_length=300)
     # 命令型：binary + argv；脚本型：script；接口型：http（三选一，具体校验在宿主机侧）

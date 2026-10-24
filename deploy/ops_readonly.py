@@ -59,7 +59,10 @@ GROUP_MAX = 20
 # argv 元素必须"整个"是 {参数名} 才算占位符，不做片段拼接。
 # 这样 docker 的 "{{.Names}}" 之类模板不会被误伤，参数值也永远独占一个 argv 项。
 PLACEHOLDER = re.compile(r"^\{([a-z_][a-z0-9_]*)\}$")
-TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
+# 64 而不是 40：MCP 工具名是 server__tool 两段拼起来的，40 不够用。
+TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+# MCP 工具的参数名由 server 定（常见 camelCase），只要求能当 Python 标识符且不以下划线开头。
+MCP_PARAM_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 # 脚本只能是 scripts 目录下的文件名，不能带路径，自然就跳不出目录。
 SCRIPT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 MAX_LABEL = 40
@@ -276,6 +279,150 @@ def _check_http_tool(raw, name):
             "http": {"url": url, "query": query, "headers": headers, "pick": pick}}
 
 
+# ---- MCP 工具条目 -----------------------------------------------------------
+
+# 算 schema 指纹时只看这些结构键。description/title/examples 变了不算漂移——
+# 文案改动不该让一个已批准的工具停掉；类型、必填、枚举、范围变了才要重新审。
+SCHEMA_STRUCT_KEYS = ("type", "required", "items", "enum", "const", "anyOf", "oneOf", "allOf",
+                      "additionalProperties", "minimum", "maximum", "exclusiveMinimum",
+                      "exclusiveMaximum", "minLength", "maxLength", "minItems", "maxItems",
+                      "format", "pattern")
+MAX_MCP_DESC = 600
+
+
+def _normalize_schema(node):
+    if isinstance(node, dict):
+        out = {}
+        for key in SCHEMA_STRUCT_KEYS:
+            if key in node:
+                out[key] = _normalize_schema(node[key])
+        if isinstance(node.get("properties"), dict):
+            out["properties"] = {str(k): _normalize_schema(v) for k, v in node["properties"].items()}
+        if isinstance(out.get("required"), list):
+            out["required"] = sorted(str(r) for r in out["required"])
+        return out
+    if isinstance(node, list):
+        return [_normalize_schema(item) for item in node]
+    return node
+
+
+def _mcp_hash(tool):
+    """一个 MCP 工具的指纹：结构化后的 inputSchema + 只读/破坏性标注。
+
+    标注也进指纹：server 把一个工具从「只读」改成「不只读」，和改参数一样需要人重新看一眼。
+    """
+    annotations = tool.get("annotations") or {}
+    body = {"schema": _normalize_schema(tool.get("inputSchema") or {}),
+            "readOnly": annotations.get("readOnlyHint") is True,
+            "destructive": annotations.get("destructiveHint") is True}
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"),
+                                       ensure_ascii=False).encode("utf-8")).hexdigest()
+    return "sha256:" + digest
+
+
+def _check_restrict(name, raw):
+    """管理员给 MCP 参数加的收紧项，比 server 的 schema 更严，执行前双重校验。"""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{name}.restrict 必须是映射：参数名 → {{pattern, enum, max_len, min, max}}")
+    clean = {}
+    for key, rule in raw.items():
+        key = str(key)
+        if not MCP_PARAM_NAME.match(key):
+            raise ConfigError(f"{name}.restrict 的参数名不合法：{key[:40]!r}")
+        if not isinstance(rule, dict):
+            raise ConfigError(f"{name}.restrict.{key} 必须是映射")
+        kept = {}
+        if "pattern" in rule:
+            if rule["pattern"] not in PATTERNS:
+                raise ConfigError(f"{name}.restrict.{key}.pattern 必须是 {'、'.join(PATTERNS)} 之一")
+            kept["pattern"] = rule["pattern"]
+        if "enum" in rule:
+            if not isinstance(rule["enum"], list) or not rule["enum"]:
+                raise ConfigError(f"{name}.restrict.{key}.enum 必须是非空列表")
+            kept["enum"] = [v for v in rule["enum"] if isinstance(v, (str, int, float, bool))]
+        for bound in ("max_len", "min", "max"):
+            if bound in rule:
+                try:
+                    kept[bound] = int(rule[bound]) if bound == "max_len" else float(rule[bound])
+                except (TypeError, ValueError):
+                    raise ConfigError(f"{name}.restrict.{key}.{bound} 必须是数字") from None
+        if kept:
+            clean[key] = kept
+    return clean
+
+
+def _params_from_schema(schema, restrict=None):
+    """inputSchema 的顶层属性 → 现有 params 形状，给应用侧清洗 args 键、给图谱播种实体用。
+
+    只是"尽量映射"：string/integer/number/boolean/enum 直译，嵌套对象和数组标 json。
+    真正的校验按完整 schema 做（见 _check_shape），这里不承担安全职责。
+    """
+    restrict = restrict or {}
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    required = set(str(r) for r in (schema.get("required") or [])) if isinstance(schema, dict) else set()
+    params = {}
+    for key, prop in (properties or {}).items():
+        key = str(key)
+        if not MCP_PARAM_NAME.match(key) or not isinstance(prop, dict):
+            continue
+        kind = prop.get("type")
+        if isinstance(kind, list):
+            kind = next((k for k in kind if k != "null"), "json")
+        mapped = {"string": "str", "integer": "int", "number": "float", "boolean": "bool"}.get(kind, "json")
+        if "enum" in prop and isinstance(prop["enum"], list):
+            mapped = "enum"
+        spec = {"type": mapped, "desc": str(prop.get("description") or prop.get("title") or "")[:300],
+                "required": key in required}
+        if mapped == "enum":
+            spec["enum"] = [v for v in prop["enum"] if isinstance(v, (str, int, float, bool))]
+        if "default" in prop and isinstance(prop["default"], (str, int, float, bool)):
+            spec["default"] = prop["default"]
+        rule = restrict.get(key) or {}
+        if "pattern" in rule:
+            spec["pattern"] = rule["pattern"]
+        if "enum" in rule:
+            spec["enum"] = list(rule["enum"])
+            spec["type"] = "enum"
+        params[key] = spec
+    return params
+
+
+def _check_mcp_tool(raw, name):
+    """MCP 型工具：条目只是一张「允许调用 server 上哪个工具」的许可，执行的是 server 那边的代码。
+
+    和前三种一样，模型只能填参数；不同的是参数形状由 server 的 inputSchema 决定，所以条目里
+    记一份 schema 快照和指纹——server 悄悄改了形状，指纹对不上，工具自动停用、重新进 pending。
+    """
+    mcp = raw.get("mcp")
+    if not isinstance(mcp, dict):
+        raise ConfigError(f"{name}.mcp 必须是映射：{{server: <id>, tool: <server 上的原名>}}")
+    server = str(mcp.get("server", "")).strip()
+    tool = str(mcp.get("tool", "")).strip()
+    if not MCP_SERVER_ID.match(server):
+        raise ConfigError(f"{name}.mcp.server 不合法：{server[:40]!r}")
+    if not tool or len(tool) > 120:
+        raise ConfigError(f"{name}.mcp.tool 不能为空")
+    schema = raw.get("input_schema")
+    if schema is not None and not isinstance(schema, dict):
+        raise ConfigError(f"{name}.input_schema 必须是映射（JSON Schema）")
+    schema_hash = str(raw.get("schema_hash") or "").strip()
+    restrict = _check_restrict(name, raw.get("restrict"))
+    for key in restrict:
+        if schema and key not in (schema.get("properties") or {}):
+            raise ConfigError(f"{name}.restrict 收紧了 schema 里没有的参数 {key}")
+    spec = {**_common(raw, name), "type": "mcp", "binary": "", "argv": [],
+            "mcp": {"server": server, "tool": tool},
+            "input_schema": schema or {}, "schema_hash": schema_hash, "restrict": restrict,
+            "params": _params_from_schema(schema or {}, restrict),
+            "readonly_declared": raw.get("readonly_declared") is True,
+            "readonly_attested": raw.get("readonly_attested") is True}
+    spec["desc"] = spec["desc"][:MAX_MCP_DESC]
+    spec["group"] = spec["group"] or server
+    return spec
+
+
 def _check_tool(raw):
     """Validate one entry. Everything that could widen privilege is checked here."""
     if not isinstance(raw, dict):
@@ -287,6 +434,8 @@ def _check_tool(raw):
             f"按 function calling 的规范只能用小写字母、数字和下划线，不能用中文；"
             f"中文名请写在 label 字段里，界面会显示它。")
 
+    if raw.get("mcp") is not None:
+        return _check_mcp_tool(raw, name)
     if raw.get("script"):
         spec = _check_script_tool(raw, name)
         spec["group"] = _common(raw, name)["group"]
@@ -420,12 +569,30 @@ def _expand_includes(patterns, base):
     return files, problems
 
 
+def _mcp_file():
+    """批准过的 MCP 工具条目。由 approve 命令写、机器维护；root 只读它，不手改。
+
+    不追加进手写主文件，是因为 schema 漂移后重新批准要**替换**同名旧条目——整体重写一个
+    没有注释需要保留的文件最干净。手写 allowlist 仍然可以放在主文件或场景包里。
+    """
+    return _sibling("mcp")
+
+
 def load_tools(path):
-    """Parse the definition file. A bad entry is skipped; a bad file raises.
+    """Parse the definition file. A bad entry is skipped; a bad file raises."""
+    tools, problems, _ = _load_all(path)
+    return tools, problems
+
+
+def _load_all(path):
+    """load_tools 的完整版：多返回主文件声明的 MCP server 配置。
 
     除了自己的 `tools:`，主文件还可以用顶层 `include:` 引入别的定义文件（例如一个场景包的
     tools.yaml）。被包含的文件和主文件同等可信——它们是管理员亲手写进主文件的路径，所以同样
     只能由宿主机 root 维护；它们自己不能再 include，避免链条越拉越长看不清。
+
+    MCP server 只认主文件顶层的 `mcp_servers:`：它是宿主机上要跑的一段代码，必须是 root 在
+    主文件里亲手写下的。被包含的文件里出现 mcp_servers 会被忽略并报出来。
     """
     document = _read_yaml(path)
     entries = document.get("tools")
@@ -433,8 +600,18 @@ def load_tools(path):
         raise ConfigError("配置里缺少 tools 列表")
     patterns = _include_patterns(document)
     files, problems = _expand_includes(patterns, os.path.dirname(os.path.abspath(str(path))))
+    servers = _check_mcp_servers(document, problems)
 
-    sources = [(str(path), entries)]
+    # 批准文件最先读：同名时它说了算（漂移后重新批准的条目要盖过主文件里的旧条目）。
+    sources = []
+    mcp_path = str(_mcp_file())
+    try:
+        approved = _read_yaml(mcp_path).get("tools")
+        if isinstance(approved, list):
+            sources.append((mcp_path, approved))
+    except ConfigError as exc:
+        problems.append(str(exc))
+    sources.append((str(path), entries))
     for included in files:
         try:
             sub = _read_yaml(included)
@@ -443,6 +620,8 @@ def load_tools(path):
             continue
         if sub.get("include"):
             problems.append(f"{included} 里的 include 已忽略：被包含的文件不能再包含别的文件")
+        if sub.get("mcp_servers"):
+            problems.append(f"{included} 里的 mcp_servers 已忽略：MCP server 只能在主文件里声明")
         sub_entries = sub.get("tools")
         if not isinstance(sub_entries, list):
             problems.append(f"{included} 缺少 tools 列表")
@@ -458,16 +637,29 @@ def load_tools(path):
                 problems.append(str(exc) if origin == str(path) else f"{exc}（{origin}）")
                 continue
             if spec["name"] in tools:
-                problems.append(f"工具名重复：{spec['name']}"
-                                + ("" if origin == str(path) else f"（{origin}，已忽略）"))
+                if origin != mcp_path and tools[spec["name"]].get("origin") == mcp_path:
+                    problems.append(f"{spec['name']} 已被 {os.path.basename(mcp_path)} 里批准的条目覆盖"
+                                    + ("" if origin == str(path) else f"（{origin}）"))
+                else:
+                    problems.append(f"工具名重复：{spec['name']}"
+                                    + ("" if origin == str(path) else f"（{origin}，已忽略）"))
                 continue
             if spec.get("type") == "script":
                 reason = _script_untrusted_reason(spec)
                 if reason:
                     problems.append(reason)
                     continue
+            if spec.get("type") == "mcp":
+                server = servers.get(spec["mcp"]["server"])
+                if server is None:
+                    problems.append(f"{spec['name']} 引用了未声明的 MCP server {spec['mcp']['server']}"
+                                    + ("" if origin == str(path) else f"（{origin}）"))
+                    continue
+                if spec["group"] == spec["mcp"]["server"]:
+                    spec["group"] = server["label"]
+            spec["origin"] = origin
             tools[spec["name"]] = spec
-    return tools, problems
+    return tools, problems, servers
 
 
 # 覆盖层只允许改这几个字段：一个是开关（缩权方向），两个是给人和模型看的文字。
@@ -507,7 +699,7 @@ def _apply_overrides(tools, overrides):
 
 
 _state = {"path": DEFAULT_CONFIG, "mtime": None, "omtime": None, "tmtime": None, "imtime": None,
-          "includes": [], "tools": {}, "problems": []}
+          "mmtime": None, "includes": [], "tools": {}, "problems": [], "mcp_servers": {}}
 
 
 def _mtimes():
@@ -520,7 +712,7 @@ def _mtimes():
     # 被包含的文件按上一次加载记下的模式重新展开：新增一个匹配文件、改动任何一个，都算变化。
     files, _ = _expand_includes(_state["includes"], os.path.dirname(os.path.abspath(str(_state["path"]))))
     return (stamp(_state["path"]), stamp(_sibling("overrides")),
-            stamp(_trust_file()), tuple((f, stamp(f)) for f in files))
+            stamp(_trust_file()), tuple((f, stamp(f)) for f in files), stamp(_mcp_file()))
 
 
 def refresh(force=False):
@@ -528,17 +720,18 @@ def refresh(force=False):
 
     A broken edit must not take the service down: we keep the last good set.
     """
-    mtime, omtime, tmtime, imtime = _mtimes()
+    mtime, omtime, tmtime, imtime, mmtime = _mtimes()
     if mtime is None:
         if not _state["tools"]:
             _state["problems"] = [f"读不到配置文件 {_state['path']}"]
         return _state["tools"]
-    if not force and (mtime, omtime, tmtime, imtime) == (
-            _state["mtime"], _state["omtime"], _state["tmtime"], _state["imtime"]):
+    if not force and (mtime, omtime, tmtime, imtime, mmtime) == (
+            _state["mtime"], _state["omtime"], _state["tmtime"], _state["imtime"],
+            _state.get("mmtime")):
         return _state["tools"]
 
     try:
-        tools, problems = load_tools(_state["path"])
+        tools, problems, servers = _load_all(_state["path"])
         includes = _include_patterns(_read_yaml(_state["path"]))
     except ConfigError as exc:
         _state["problems"] = [str(exc)]
@@ -550,10 +743,12 @@ def refresh(force=False):
         overrides = {}
         problems = problems + [f"覆盖层已忽略：{exc}"]
 
-    _state.update(mtime=mtime, omtime=omtime, tmtime=tmtime, includes=includes, problems=problems,
-                  tools=_apply_overrides(tools, overrides))
+    _state.update(mtime=mtime, omtime=omtime, tmtime=tmtime, mmtime=mmtime, includes=includes,
+                  problems=problems, tools=_apply_overrides(tools, overrides), mcp_servers=servers)
     # 模式列表可能刚变，用它重新算一次被包含文件的印章，下一次请求才不会白白重载
     _state["imtime"] = _mtimes()[3]
+    # server 配置变了就启停对应子进程；这里只换对象，真正拉进程的是后台线程或下一次调用
+    _mcp.configure(servers)
     for problem in problems:
         print(f"[config] {problem}", flush=True)
     print(f"[config] 已加载 {len(tools)} 个工具定义，"
@@ -565,10 +760,41 @@ def all_tools():
     return refresh()
 
 
+def _mcp_state(spec):
+    """一个已批准 MCP 工具此刻能不能用：(runnable, 原因, server 上的实时定义)。"""
+    ident, raw_name = spec["mcp"]["server"], spec["mcp"]["tool"]
+    server = _mcp.get(ident)
+    if server is None:
+        return False, f"配置里没有声明 MCP server {ident}", None
+    if not (server.online and server.alive()):
+        return False, f"MCP server {ident} 离线" + (f"：{server.reason}" if server.reason else ""), None
+    live = server.tools.get(raw_name)
+    if live is None:
+        return False, f"MCP server {ident} 上已经没有 {raw_name} 这个工具", None
+    if (live.get("annotations") or {}).get("destructiveHint") is True:
+        return False, f"server 把 {raw_name} 标成了破坏性操作，拒绝提供", live
+    if spec["schema_hash"] and _mcp_hash(live) != spec["schema_hash"]:
+        return False, "schema 已变更，需重新批准", live
+    return True, "", live
+
+
+def _mcp_readonly(spec, live=None):
+    """只读依据：declared（server 声明）/ attested（管理员确认）/ none。执行期靠它拒绝。"""
+    declared = spec.get("readonly_declared") or (
+        live is not None and (live.get("annotations") or {}).get("readOnlyHint") is True)
+    if declared:
+        return "declared"
+    if spec.get("readonly_attested"):
+        return "attested"
+    return "none"
+
+
 def _runnable(spec):
     """Command/script tools need their binary here; HTTP tools only need the network."""
     if spec.get("type") == "http":
         return True
+    if spec.get("type") == "mcp":
+        return _mcp_state(spec)[0]
     return bool(spec.get("binary") and shutil.which(spec["binary"]))
 
 
@@ -588,29 +814,73 @@ def _display(spec):
         return "脚本：" + spec["binary"]
     if spec.get("type") == "http":
         return _http_display(spec)
+    if spec.get("type") == "mcp":
+        return f"MCP {spec['mcp']['server']} / {spec['mcp']['tool']}"
     return " ".join(spec["argv"])
+
+
+def _live_schema(spec):
+    """给模型看的参数 schema：server 在线且指纹一致时用它那份（文案更新），否则用批准时的快照。"""
+    _, _, live = _mcp_state(spec)
+    if live is not None and isinstance(live.get("inputSchema"), dict):
+        return live["inputSchema"]
+    return spec.get("input_schema") or {"type": "object", "properties": {}}
+
+
+def _mcp_params(spec):
+    """手写的 allowlist 条目没有 schema 快照，参数表要从 server 的实时定义上算。"""
+    return _params_from_schema(_live_schema(spec), spec["restrict"])
 
 
 def available_tools():
     """Only advertise enabled tools that can actually run on this host."""
-    return {name: {"desc": spec["desc"], "params": spec["params"]}
-            for name, spec in all_tools().items()
-            if spec["enabled"] and _runnable(spec)}
+    out = {}
+    for name, spec in all_tools().items():
+        if not (spec["enabled"] and _runnable(spec)):
+            continue
+        entry = {"desc": spec["desc"], "params": spec["params"]}
+        if spec.get("type") == "mcp":
+            # 应用侧有 input_schema 就按它生成完整的 pydantic 模型（嵌套、枚举、必填都在）
+            entry["input_schema"] = _live_schema(spec)
+            entry["params"] = _mcp_params(spec)
+        out[name] = entry
+    return out
+
+
+def _approved_counts():
+    counts = {}
+    for spec in _state["tools"].values():
+        if spec.get("type") == "mcp":
+            counts[spec["mcp"]["server"]] = counts.get(spec["mcp"]["server"], 0) + 1
+    return counts
+
+
+def mcp_status():
+    all_tools()
+    return _mcp.status(_approved_counts())
 
 
 def describe_tools():
     """Everything the UI needs in order to show what the agent can really run."""
-    return {name: {"desc": spec["desc"], "params": spec["params"],
-                   "label": spec.get("label", ""),
-                   "group": spec.get("group", ""),
-                   "binary": spec["binary"],
-                   "command": _display(spec),
-                   "type": spec.get("type", "command"),
-                   "script": spec.get("script", ""),
-                   "enabled": spec["enabled"],
-                   "runnable": _runnable(spec),
-                   "overridden": spec.get("overridden", [])}
-            for name, spec in all_tools().items()}
+    out = {}
+    for name, spec in all_tools().items():
+        item = {"desc": spec["desc"], "params": spec["params"],
+                "label": spec.get("label", ""),
+                "group": spec.get("group", ""),
+                "binary": spec["binary"],
+                "command": _display(spec),
+                "type": spec.get("type", "command"),
+                "script": spec.get("script", ""),
+                "enabled": spec["enabled"],
+                "runnable": _runnable(spec),
+                "overridden": spec.get("overridden", [])}
+        if spec.get("type") == "mcp":
+            runnable, reason, live = _mcp_state(spec)
+            item.update(mcp=spec["mcp"], reason=reason, readonly=_mcp_readonly(spec, live),
+                        schema_locked=bool(spec["schema_hash"]), restrict=spec["restrict"],
+                        input_schema=_live_schema(spec), params=_mcp_params(spec))
+        out[name] = item
+    return out
 
 
 def set_override(name, enabled=None, desc=None, label=None):
@@ -767,6 +1037,10 @@ def propose_tool(raw, author="web"):
             raise ConfigError(problems[0])
         raise ConfigError("\n".join(f"{i}. {p}" for i, p in enumerate(problems, 1)))
 
+    if raw.get("mcp") is not None:
+        # MCP 工具不由页面申请：它来自 server 的发现，而 server 只能由管理员在宿主机声明。
+        raise ConfigError("页面不能申请 MCP 工具；在宿主机配置 mcp_servers 后，发现到的工具会自动进入待审列表")
+
     if raw.get("http") is not None:
         # 页面申请的接口工具不能带凭据：否则一条申请就能把宿主机上的密钥发到任意地址，
         # 只差审批时的一次疏忽。需要鉴权的接口，由管理员直接写进配置文件。
@@ -810,10 +1084,16 @@ def drop_pending(ident):
     return item
 
 
-def approve_pending(ident):
-    """Append an approved tool to the main file. Only runs on the host."""
+def approve_pending(ident, attest_readonly=False):
+    """Append an approved tool to the main file. Only runs on the host.
+
+    MCP 条目走另一条路：写进 ops_tools.mcp.yaml（同名替换），并且必须有只读依据——
+    server 声明了 readOnlyHint，或者审批人加 --attest-readonly 亲口确认。
+    """
     item = _find_pending(ident)
     spec = _check_tool(item.get("tool") or {})  # 再校验一次，文件可能被改过
+    if spec.get("type") == "mcp":
+        return _approve_mcp(item, spec, attest_readonly)
     if spec["name"] in all_tools():
         raise ConfigError(f"已存在同名工具：{spec['name']}")
     if spec.get("type") == "script":
@@ -833,6 +1113,110 @@ def approve_pending(ident):
     drop_pending(item["id"])
     refresh(force=True)
     return spec
+
+
+def _approve_mcp(item, spec, attest_readonly):
+    raw = dict(item["tool"])
+    if attest_readonly:
+        raw["readonly_attested"] = True
+    if not raw.get("readonly_declared") and not raw.get("readonly_attested"):
+        raise ConfigError(
+            f"{spec['name']} 没有被 server 声明为只读（readOnlyHint）。请先确认它确实不会改任何东西，"
+            f"再用 --attest-readonly 批准：ops_readonly.py approve {item.get('id')} --attest-readonly")
+    existing = all_tools().get(spec["name"])
+    if existing is not None and (existing.get("type") != "mcp" or existing["mcp"] != spec["mcp"]):
+        raise ConfigError(f"已存在同名工具：{spec['name']}")
+    raw["approved_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    document = _read_yaml(_mcp_file())
+    entries = [e for e in (document.get("tools") or [])
+               if not (isinstance(e, dict) and e.get("name") == spec["name"])]
+    _write_yaml(_mcp_file(), {**document, "tools": entries + [raw]})
+    drop_pending(item["id"])
+    refresh(force=True)
+    return _check_tool(raw)
+
+
+def _mcp_tool_name(server_id, raw_name):
+    """server 上的原名 → 发给模型的函数名：server__原名，原名按确定性规则转小写下划线。"""
+    slug = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(raw_name)).lower()
+    slug = re.sub(r"[^a-z0-9_]+", "_", slug)
+    slug = re.sub(r"_+", "_", slug).strip("_") or "tool"
+    if not slug[0].isalpha():
+        slug = "t_" + slug
+    return f"{server_id}__{slug}"[:64]
+
+
+def _suspicious_name(raw_name):
+    words = set(re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(raw_name)).lower()
+                .replace("-", "_").split("_"))
+    return bool(words & MCP_WRITE_WORDS)
+
+
+def _mcp_candidate(server, raw_name, tool, name):
+    """发现到的一个 MCP 工具 → 待审条目（批准后原样落盘）。"""
+    annotations = tool.get("annotations") or {}
+    label = str(tool.get("title") or annotations.get("title") or raw_name).strip()[:MAX_LABEL]
+    return {"name": name, "label": label, "group": server.label,
+            "desc": str(tool.get("description") or "").strip()[:MAX_MCP_DESC],
+            "mcp": {"server": server.id, "tool": raw_name},
+            "input_schema": tool.get("inputSchema") if isinstance(tool.get("inputSchema"), dict)
+            else {"type": "object", "properties": {}},
+            "schema_hash": _mcp_hash(tool),
+            "readonly_declared": annotations.get("readOnlyHint") is True}
+
+
+def _mcp_discovered(server):
+    """tools/list 之后：没批准过的进 pending，批准过但指纹变了的也重新进 pending。
+
+    默认拒绝的落实点就在这里——发现 ≠ 可用。破坏性工具连 pending 都不进，只记一行日志；
+    其余按 server 有没有声明只读、名字像不像写操作打标签，给审批人看。
+    """
+    tools = all_tools()
+    approved = {spec["mcp"]["tool"]: spec for spec in tools.values()
+                if spec.get("type") == "mcp" and spec["mcp"]["server"] == server.id}
+    pending = list_pending()
+    by_name = {(item.get("tool") or {}).get("name"): item for item in pending}
+    notes, changed, taken = [], False, set()
+    for raw_name in sorted(server.tools):
+        tool = server.tools[raw_name]
+        annotations = tool.get("annotations") or {}
+        if annotations.get("destructiveHint") is True:
+            notes.append(f"{raw_name}：server 标为破坏性操作，不列出")
+            continue
+        digest = _mcp_hash(tool)
+        existing = approved.get(raw_name)
+        if existing is not None and (not existing["schema_hash"] or existing["schema_hash"] == digest):
+            continue
+        name = existing["name"] if existing is not None else _mcp_tool_name(server.id, raw_name)
+        if name in taken or (existing is None and name in tools):
+            notes.append(f"{raw_name}：转换后的工具名 {name} 已被占用，未列出")
+            continue
+        taken.add(name)
+        reason = "schema 已变更，需重新批准" if existing is not None else "新发现"
+        previous = by_name.get(name)
+        if previous is not None and (previous.get("tool") or {}).get("schema_hash") == digest:
+            continue
+        if previous is not None:
+            pending = [item for item in pending if item is not previous]
+        candidate = _mcp_candidate(server, raw_name, tool, name)
+        pending.append({"id": secrets.token_hex(4),
+                        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "author": f"mcp:{server.id}", "tool": candidate,
+                        "review": {"readonly": "declared" if candidate["readonly_declared"] else "undeclared",
+                                   "suspicious_name": _suspicious_name(raw_name),
+                                   "reason": reason}})
+        changed = True
+        print(f"[mcp:{server.id}] {raw_name} → 待审 {name}（{reason}）", flush=True)
+    # server 上已经没有的工具，它的待审申请也没意义了
+    live_names = {_mcp_tool_name(server.id, raw) for raw in server.tools} | {s["name"] for s in approved.values()}
+    kept = [item for item in pending
+            if not (str(item.get("author", "")) == f"mcp:{server.id}"
+                    and (item.get("tool") or {}).get("name") not in live_names)]
+    if len(kept) != len(pending):
+        pending, changed = kept, True
+    server.notes = notes
+    if changed:
+        _write_yaml(_sibling("pending"), {"pending": pending})
 
 
 def _value(key, spec, args):
@@ -1080,6 +1464,7 @@ class McpServer:
         self.server_info = {}
         self.protocol = ""
         self.stderr_tail = []
+        self.notes = []             # 审批层对这个 server 的备注：哪些工具没列出、为什么
         self._send_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._waiting = {}          # 请求 id -> [Event, 响应]
@@ -1309,6 +1694,7 @@ class McpServer:
         return {"label": self.label, "online": bool(self.online and self.alive()),
                 "reason": "" if self.online else self.reason,
                 "discovered": len(self.tools), "approved": approved,
+                "notes": list(self.notes),
                 "server": self.server_info, "protocol": self.protocol}
 
 
@@ -1387,6 +1773,7 @@ class McpRegistry:
 
 
 _mcp = McpRegistry()
+_mcp.on_discovered = _mcp_discovered
 
 
 def run_tool(name, args):
@@ -1448,14 +1835,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            return self._send(200, {"status": "ok", "tools": sorted(available_tools())})
+            return self._send(200, {"status": "ok", "tools": sorted(available_tools()),
+                                    "mcp": mcp_status()})
         if not self._authorised():
             return self._send(401, {"error": "令牌无效"})
         if self.path == "/tools":
             return self._send(200, {"tools": available_tools()})
         if self.path == "/tools/full":
             return self._send(200, {"tools": describe_tools(),
-                                    "pending": len(list_pending())})
+                                    "pending": len(list_pending()),
+                                    "mcp_servers": mcp_status()})
         if self.path == "/tools/pending":
             return self._send(200, {"pending": list_pending()})
         if self.path == "/tools/scripts":
@@ -1533,6 +1922,17 @@ def _print_pending():
         print(f"      说明：{tool.get('desc')}")
         if tool.get("script"):
             print(f"      脚本：scripts/{tool['script']}（批准前请逐行读脚本内容）")
+        elif isinstance(tool.get("mcp"), dict):
+            review = item.get("review") or {}
+            marks = {"declared": "只读（server 声明）", "undeclared": "未声明只读"}.get(
+                review.get("readonly"), "未声明只读")
+            if review.get("suspicious_name"):
+                marks += "，名称疑似写操作"
+            print(f"      MCP：{tool['mcp'].get('server')} / {tool['mcp'].get('tool')}    [{marks}]")
+            if review.get("reason") and review["reason"] != "新发现":
+                print(f"      原因：{review['reason']}")
+            if review.get("readonly") != "declared":
+                print(f"      批准需确认只读：ops_readonly.py approve {item.get('id')} --attest-readonly")
         elif isinstance(tool.get("http"), dict):
             http = tool["http"]
             query = "&".join(f"{k}={v}" for k, v in (http.get("query") or {}).items())
@@ -1547,6 +1947,7 @@ def _print_pending():
         print()
     print("批准：ops_readonly.py approve <id>     拒绝：ops_readonly.py reject <id>")
     print("批准前请逐字读一遍「命令」或脚本内容——这是它唯一会执行的东西。")
+    print("MCP 工具没有 server 的只读声明时，要加 --attest-readonly 表示你确认过它不改任何东西。")
     return 0
 
 
@@ -1568,7 +1969,7 @@ def _print_scripts():
     return 0
 
 
-def _cli(command, ident, config):
+def _cli(command, ident, config, attest_readonly=False):
     """Review proposals from the host. Approving is deliberately not an API."""
     _state["path"] = Path(config)
     if command == "pending":
@@ -1580,9 +1981,12 @@ def _cli(command, ident, config):
         return 2
     try:
         if command == "approve":
-            spec = approve_pending(ident)
+            spec = approve_pending(ident, attest_readonly=attest_readonly)
             print(f"已批准并写入配置：{spec['name']}")
             print(f"  {_display(spec)}")
+            if spec.get("type") == "mcp":
+                print(f"  只读依据：{'server 声明' if spec['readonly_declared'] else '管理员确认（--attest-readonly）'}"
+                      f"；条目已写入 {_mcp_file().name}")
             print("下一次提问即可使用，无需重启。")
         elif command == "trust":
             if ident not in {s["name"] for s in list_scripts()}:
@@ -1612,10 +2016,12 @@ def main():
                         help="Tool definitions; edits are picked up live.")
     parser.add_argument("--host", default="127.0.0.1",
                         help="Loopback by default; do not expose this publicly.")
+    parser.add_argument("--attest-readonly", action="store_true",
+                        help="approve 时使用：确认这个 MCP 工具只读（server 没有声明 readOnlyHint 时必须加）")
     args = parser.parse_args()
 
     if args.command != "serve":
-        return _cli(args.command, args.ident, args.config)
+        return _cli(args.command, args.ident, args.config, attest_readonly=args.attest_readonly)
 
     token = os.environ.get("OPS_TOKEN", "").strip()
     if not token:
@@ -1629,10 +2035,14 @@ def main():
     print(f"可用工具 {len(tools)} 个：{', '.join(sorted(tools))}")
     missing = sorted(set(all_tools()) - set(tools))
     if missing:
-        print(f"（本机缺少对应命令，暂不可用：{', '.join(missing)}）")
+        print(f"（本机缺少对应命令或 MCP server 尚未连上，暂不可用：{', '.join(missing)}）")
     waiting = len(list_pending())
     if waiting:
         print(f"（有 {waiting} 条新工具申请待审：ops_readonly.py pending）")
+    if _state["mcp_servers"]:
+        print(f"MCP server {len(_state['mcp_servers'])} 个：{', '.join(sorted(_state['mcp_servers']))}，"
+              f"后台连接中；发现的工具会进入待审列表")
+        _mcp.start_background()
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
     return 0
 

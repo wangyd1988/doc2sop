@@ -33,7 +33,7 @@ from app.config import ALLOWED_SUFFIXES, DATA_DIR, log, why
 
 STATE_PATH = DATA_DIR / "packs.json"
 PACK_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
-TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
+TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")   # 与 deploy/ops_readonly.py 一致
 EXAMPLES_MAX = 6
 
 _lock = threading.Lock()          # 状态文件读写 + 一次只导一个包

@@ -53,7 +53,7 @@ def include_list(ids, packs_dir=None):
 
 
 def write_config(path, includes):
-    """写主定义文件：include 按本次启动重算，tools 保留上次批准过的。原子替换。"""
+    """写主定义文件：include 按本次启动重算，tools 和其他顶层键（如 mcp_servers）原样保留。原子替换。"""
     import yaml
     path = Path(path)
     document = {}
@@ -62,10 +62,12 @@ def write_config(path, includes):
             document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         except Exception:
             document = {}
-    tools = document.get("tools") if isinstance(document, dict) and isinstance(document.get("tools"), list) else []
+    document = document if isinstance(document, dict) else {}
+    tools = document.get("tools") if isinstance(document.get("tools"), list) else []
+    others = {k: v for k, v in document.items() if k not in ("include", "tools")}
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(HEADER + yaml.safe_dump({"include": list(includes), "tools": tools},
+    tmp.write_text(HEADER + yaml.safe_dump({"include": list(includes), **others, "tools": tools},
                                            allow_unicode=True, sort_keys=False), encoding="utf-8")
     os.replace(tmp, path)
     return path

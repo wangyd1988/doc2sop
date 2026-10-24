@@ -1837,7 +1837,7 @@ function tlParamsPayload(text) {
 }
 function tlProposeForm() {
   const common =
-    `<input id="tlNewName" placeholder="工具名，如 host_time（小写字母、数字、下划线）" maxlength="40">
+    `<input id="tlNewName" placeholder="工具名，如 host_time（小写字母、数字、下划线）" maxlength="64">
      <input id="tlNewLabel" placeholder="中文显示名，如「看时间」（可留空，只用于界面）" maxlength="40">
      <input id="tlNewDesc" placeholder="给模型看的说明：什么情况下该调用它" maxlength="300">`;
   const tab = (k, text) =>
