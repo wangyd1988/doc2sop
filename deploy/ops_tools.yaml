@@ -35,7 +35,7 @@
 #
 # include:
 #   - ../packs/leave-planning/tools.yaml
-#   - /opt/personal-kb/packs/*/tools.yaml
+#   - /opt/doc2sop/packs/*/tools.yaml
 
 tools:
   - name: list_containers

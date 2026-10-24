@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>个人知识库</title>
+<title>doc2sop</title>
 <style>
 :root {
   --bg: #f5f6fa; --panel: #ffffff; --panel-2: #f0f2f7; --border: #e3e6ee; --text: #1c2030;
@@ -609,7 +609,7 @@ body.manage.settings #mgroups, body.manage.settings #mlist, body.manage.settings
 </head>
 <body>
 <aside>
-  <div class="brand" data-home title="回到主页"><div class="logo">📚</div><div><h1>个人知识库</h1><small id="summary">加载中…</small></div></div>
+  <div class="brand" data-home title="回到主页"><div class="logo">📚</div><div><h1 data-brand>doc2sop</h1><small id="summary">加载中…</small></div></div>
   <div class="drop" id="drop"><b>＋ 上传文档</b>点击或拖拽文件到这里<br>PDF · Word · PPT · TXT · MD · 图片</div>
   <input type="file" id="files" multiple hidden accept=".md,.markdown,.txt,.pdf,.docx,.pptx,.png,.jpg,.jpeg,.webp,.bmp,.gif">
   <div class="search"><input id="newCat" list="catList" placeholder="分类（留空则自动识别）" maxlength="12"></div>
@@ -632,7 +632,7 @@ body.manage.settings #mgroups, body.manage.settings #mlist, body.manage.settings
     <button class="nav-btn icon-only" id="menuBtn" title="文档" aria-label="文档">
       <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
     <div class="head-title">
-      <span class="t">知识库问答</span>
+      <span class="t" data-brand>doc2sop</span>
       <select class="model-chip" id="modelPick" title="选择回答用的模型" hidden></select>
     </div>
     <button class="new-btn" id="newBtn" title="开始新对话">
@@ -662,7 +662,7 @@ body.manage.settings #mgroups, body.manage.settings #mlist, body.manage.settings
   </header>
   <div id="manage" hidden>
     <nav id="mnav">
-      <div class="brand" data-home title="回到对话主页"><div class="logo">📚</div><div><h1>个人知识库</h1><small>管理后台</small></div></div>
+      <div class="brand" data-home title="回到对话主页"><div class="logo">📚</div><div><h1 data-brand>doc2sop</h1><small>管理后台</small></div></div>
       <button data-tab="tools">
         <svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/></svg>
         工具<span class="badge" id="mTlBadge"></span></button>
@@ -823,6 +823,7 @@ async function loadDocs() {
              examples: d.examples || [],
              packs: {importing: pk.importing || '', stage: pk.stage || '', pending: pk.pending || [], notes: pk.notes || {}, failed: pk.failed || {}}};
   if (d.bot_name && d.bot_name !== botName) botName = d.bot_name;
+  applyBrand();
   if ($('thread').querySelector('.welcome') && (before !== JSON.stringify(onboard) || d.bot_name !== botName)) welcome();
   // 演示场景包还在后台导：隔几秒刷一次，导完引导卡自己变样、示例问题换成包里的
   clearTimeout(packPoll);
@@ -981,7 +982,18 @@ document.addEventListener('drop', e => { e.preventDefault(); if (e.target.closes
 const DEFAULT_EXAMPLES = ['总结一下知识库里有哪些主要内容', '按运维指南巡检一下 API 网关的各组件 Pod',
                           'biz 命名空间的 order.biz.example.com 通过 Ingress 访问超时，帮我查一下',
                           '我 9 月 29 日提交了住院理赔材料，大概什么时候能到账？'];
-let convId = null, botName = '小知';
+let convId = null, botName = 'doc2sop';
+// 品牌跟着服务端的 BOT_NAME 走：标签页标题、侧栏与管理页的名字、对话页顶栏。
+// 管理页顶栏由 renderManage 写成「工具管理」这类页名，这里不碰。
+function applyBrand() {
+  document.title = MANAGE ? `${botName} · 管理` : botName;
+  document.querySelectorAll('[data-brand]').forEach(el => {
+    if (MANAGE && el.matches('.head-title .t')) return;
+    el.textContent = botName;
+  });
+}
+// 「您好，我是doc2sop」中西文挤在一起不好看；名字以西文开头时补一个空格
+const brandGreeting = () => `您好，我是${/^[\x21-\x7e]/.test(botName) ? ' ' : ''}${esc(botName)}`;
 // 「▶ 执行」刚填进输入框的 SOP：发送时只要问题还是以它的「执行 SOP《…》」开头，就带上 id，
 // 这一轮在图谱里才算一次 SOP 执行；用户改成别的问题就不带。
 let pendingPlaybook = null;
@@ -1017,7 +1029,7 @@ function welcome() {
     <div class="st"><div class="k"><i>3</i>问一句</div>
       <p>${askHint}——它会按 SOP 调工具、对照文档给结论。只问规则时不调工具。</p></div>
   </div>`;
-  $('thread').innerHTML = `<div class="welcome"><div class="logo">📚</div><h2>您好，我是${esc(botName)}</h2>
+  $('thread').innerHTML = `<div class="welcome"><div class="logo">📚</div><h2>${brandGreeting()}</h2>
     <p>📄 读您上传的文档 · 📋 照文档里的做法 · 🔧 用批准过的工具查真实数据</p>${guide}
     <div class="chips">${examples.map(q => `<button class="chip">${esc(q)}</button>`).join('')}</div></div>`;
 }

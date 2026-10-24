@@ -24,7 +24,8 @@ REASONING_EFFORT = os.environ.get("REASONING_EFFORT", "").strip()
 WEB_USER = os.environ["WEB_USER"]
 WEB_PASSWORD = os.environ["WEB_PASSWORD"]
 PORT = int(os.environ.get("PORT", "8765"))
-BOT_NAME = os.environ.get("BOT_NAME", "小知")
+# 助手自称，也是页面标题与顶栏品牌；团队想给它起自己的名字就设 BOT_NAME。
+BOT_NAME = os.environ.get("BOT_NAME", "").strip() or "doc2sop"
 
 # --- Storage -----------------------------------------------------------------
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
