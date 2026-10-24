@@ -98,6 +98,14 @@ PACKS_DIR = Path(os.environ.get("PACKS_DIR", "") or Path(__file__).resolve().par
 DEMO_PACKS = [p.strip() for p in os.environ.get("DEMO_PACKS", "").split(",") if p.strip()]
 
 log = logging.getLogger("kb")
+# uvicorn 只配置自己的 logger，不配 root；不挂这个 handler，下面所有 log.info（检索计时、
+# 「rerank skipped」这类诊断）都会被静默丢掉，docker logs 里只剩 WARNING。
+if not log.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s kb: %(message)s"))
+    log.addHandler(_handler)
+    log.setLevel(logging.INFO)
+    log.propagate = False
 
 
 def why(exc: Exception) -> str:

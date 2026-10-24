@@ -9,11 +9,12 @@ The similarity shown to users (and to the model as a hint) stays the cosine
 score, so its meaning does not change with this fusion.
 """
 import re
+import time
 from pathlib import Path
 
 from langsmith import traceable
 
-from app.config import MIN_SCORE, RERANK_CANDIDATES, TOP_K
+from app.config import MIN_SCORE, RERANK_CANDIDATES, TOP_K, log
 from app.rag import lexical, rerank, store
 from app.rag.embedding import embed_query
 
@@ -45,16 +46,32 @@ def _location(meta):
 
 
 @traceable(name="知识库检索", run_type="retriever")
-def retrieve(question: str):
-    """Return up to TOP_K snippets, each with its source location and score."""
+def retrieve(question: str, progress=None):
+    """Return up to TOP_K snippets, each with its source location and score.
+
+    `progress(stage)` 可选：开始召回时报 "retrieve"、真要调重排时报 "rerank"，
+    问答流靠它把等待态分阶段告诉用户。各段耗时记一行 info 日志，慢在哪一眼能看出来。
+    """
+    report = progress or (lambda stage: None)
+    report("retrieve")
     total = store.collection.count()
     if total == 0:
         return []
+    timing, clock = {}, time.monotonic()
+
+    def lap(name):
+        nonlocal clock
+        now = time.monotonic()
+        timing[name] = now - clock
+        clock = now
+
     query_vector = embed_query(question)
+    lap("embed")
     depth = min(CANDIDATES, total)
     result = store.collection.query(
         query_embeddings=[query_vector], n_results=depth,
         include=["documents", "metadatas", "distances"])
+    lap("vector")
 
     # id -> record; rank lists feed the fusion.
     records, vector_rank, lexical_rank = {}, [], []
@@ -67,6 +84,7 @@ def retrieve(question: str):
         lexical_hits = lexical.search(question, depth)
     except Exception:
         lexical_hits = []
+    lap("lexical")
     missing = []
     for cid, text, meta, _ in lexical_hits:
         if cid in records:
@@ -90,6 +108,7 @@ def retrieve(question: str):
         # keep BM25 order for the ones that survived
         order = {cid: i for i, (cid, *_rest) in enumerate(lexical_hits)}
         lexical_rank.sort(key=order.get)
+        lap("fill")
 
     fused = {}
     for rank_list in (vector_rank, lexical_rank):
@@ -112,7 +131,14 @@ def retrieve(question: str):
                               "lexical" if cid in lexical_rank else "vector"})
         if len(hits) >= want:
             break
-    return rerank.rerank(question, hits, TOP_K)
+    if rerank.enabled() and len(hits) > 1:
+        report("rerank")
+    out = rerank.rerank(question, hits, TOP_K)
+    lap("rerank")
+    log.info("retrieve: %s candidates=%d hits=%d total=%.0fms",
+             " ".join(f"{k}={v * 1000:.0f}ms" for k, v in timing.items()),
+             len(hits), len(out), sum(timing.values()) * 1000)
+    return out
 
 
 def as_context(hits) -> str:
