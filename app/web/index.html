@@ -1902,7 +1902,8 @@ function tlProposeForm() {
     <div class="tl-tabs">${tab('command', '命令')}${tab('http', '接口')}${tab('script', '脚本')}</div>
     ${common}
     ${body}
-    <div class="tl-note">${note}<br>提交后<b>不会生效</b>，要在宿主机上批准——页面定义不了宿主机执行什么。</div>
+    <div class="tl-note">${note}<br>提交后<b>不会生效</b>，要在宿主机上批准——页面定义不了宿主机执行什么。<br>
+      <b>MCP 工具不在这里申请</b>：管理员在宿主机配置里声明 MCP server 后，它上面的工具会自动出现在「待审申请」里，批准后才可用。</div>
     <div class="pb-edit"><div class="row">
       <button class="ok" id="tlDoPropose">提交申请</button>
       <button class="cancel" id="tlCancelPropose">取消</button>
