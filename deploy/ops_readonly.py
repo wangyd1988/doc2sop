@@ -1776,6 +1776,216 @@ _mcp = McpRegistry()
 _mcp.on_discovered = _mcp_discovered
 
 
+# ---- MCP 执行：形状校验 → 收紧项 → tools/call → 拍平输出 ------------------------
+
+def _is_type(value, kind):
+    if kind == "string":
+        return isinstance(value, str)
+    if kind == "boolean":
+        return isinstance(value, bool)
+    if kind == "integer":
+        return (isinstance(value, int) and not isinstance(value, bool)) or \
+               (isinstance(value, float) and value.is_integer())
+    if kind == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if kind == "object":
+        return isinstance(value, dict)
+    if kind == "array":
+        return isinstance(value, list)
+    if kind == "null":
+        return value is None
+    return True   # 不认识的 type 放行，server 自己还会校一次
+
+
+def _check_shape(value, schema, path="参数"):
+    """按 JSON Schema 的常用子集校验，返回错误列表（空表示通过）。
+
+    标准库手写而不引入 jsonschema：覆盖 type/required/properties/items/enum/const/
+    anyOf/oneOf/allOf/additionalProperties/数值范围/长度范围/pattern。不认识的关键字放行——
+    这一层的目的是把明显填错的参数在进 server 之前挡掉并给出中文原因，不是替 server 做完整校验。
+    """
+    if not isinstance(schema, dict):
+        return []
+    errors = []
+    kinds = schema.get("type")
+    if kinds:
+        kinds = kinds if isinstance(kinds, list) else [kinds]
+        if not any(_is_type(value, k) for k in kinds):
+            return [f"{path} 应为 {'/'.join(str(k) for k in kinds)}，实际是 {type(value).__name__}"]
+    if "enum" in schema and isinstance(schema["enum"], list) and value not in schema["enum"]:
+        errors.append(f"{path} 只能是 {schema['enum']} 之一")
+    if "const" in schema and value != schema["const"]:
+        errors.append(f"{path} 只能是 {schema['const']!r}")
+    for key in ("anyOf", "oneOf"):
+        options = schema.get(key)
+        if isinstance(options, list) and options and \
+                not any(not _check_shape(value, option, path) for option in options):
+            errors.append(f"{path} 不符合任一候选形状")
+    if isinstance(schema.get("allOf"), list):
+        for option in schema["allOf"]:
+            errors.extend(_check_shape(value, option, path))
+
+    if isinstance(value, str):
+        if "minLength" in schema and len(value) < schema["minLength"]:
+            errors.append(f"{path} 至少 {schema['minLength']} 个字符")
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            errors.append(f"{path} 最多 {schema['maxLength']} 个字符")
+        if isinstance(schema.get("pattern"), str):
+            try:
+                if not re.search(schema["pattern"], value):
+                    errors.append(f"{path} 不符合要求的格式")
+            except re.error:
+                pass   # ECMAScript 正则 Python 可能不认，放行
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        if "minimum" in schema and value < schema["minimum"]:
+            errors.append(f"{path} 不能小于 {schema['minimum']}")
+        if "maximum" in schema and value > schema["maximum"]:
+            errors.append(f"{path} 不能大于 {schema['maximum']}")
+        if "exclusiveMinimum" in schema and isinstance(schema["exclusiveMinimum"], (int, float)) \
+                and value <= schema["exclusiveMinimum"]:
+            errors.append(f"{path} 必须大于 {schema['exclusiveMinimum']}")
+        if "exclusiveMaximum" in schema and isinstance(schema["exclusiveMaximum"], (int, float)) \
+                and value >= schema["exclusiveMaximum"]:
+            errors.append(f"{path} 必须小于 {schema['exclusiveMaximum']}")
+    elif isinstance(value, list):
+        if "minItems" in schema and len(value) < schema["minItems"]:
+            errors.append(f"{path} 至少 {schema['minItems']} 项")
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            errors.append(f"{path} 最多 {schema['maxItems']} 项")
+        items = schema.get("items")
+        if isinstance(items, dict):
+            for index, item in enumerate(value):
+                errors.extend(_check_shape(item, items, f"{path}[{index}]"))
+        elif isinstance(items, list):
+            for index, (item, sub) in enumerate(zip(value, items)):
+                errors.extend(_check_shape(item, sub, f"{path}[{index}]"))
+    elif isinstance(value, dict):
+        properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        for key in schema.get("required") or []:
+            if str(key) not in value:
+                inner = path[len("参数 "):] + "." if path.startswith("参数 ") else ""
+                errors.append(f"缺少必填参数：{inner}{key}")
+        for key, item in value.items():
+            sub = properties.get(key)
+            label = f"{path}.{key}" if path != "参数" else f"参数 {key}"
+            if sub is not None:
+                errors.extend(_check_shape(item, sub, label))
+            elif schema.get("additionalProperties") is False:
+                errors.append(f"多余的参数：{key}")
+            elif isinstance(schema.get("additionalProperties"), dict):
+                errors.extend(_check_shape(item, schema["additionalProperties"], label))
+    return errors
+
+
+def _coerce_top(value, prop):
+    """顶层参数的宽松转换：模型常把数字发成 "2026"、布尔发成 "true"，这些不该算填错。"""
+    kind = prop.get("type") if isinstance(prop, dict) else None
+    if isinstance(kind, list):
+        kind = next((k for k in kind if k != "null"), None)
+    if isinstance(value, str):
+        text = value.strip()
+        if kind == "integer" and re.fullmatch(r"[+-]?\d+", text):
+            return int(text)
+        if kind == "number" and re.fullmatch(r"[+-]?\d+(\.\d+)?", text):
+            return float(text) if "." in text else int(text)
+        if kind == "boolean" and text.lower() in ("true", "false"):
+            return text.lower() == "true"
+    elif kind == "string" and isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    return value
+
+
+def _apply_restrict(args, restrict):
+    errors = []
+    for key, rule in restrict.items():
+        if key not in args or args[key] is None:
+            continue
+        value = args[key]
+        if "pattern" in rule and not PATTERNS[rule["pattern"]].match(str(value)):
+            errors.append(f"参数 {key} 不合法：{str(value)[:40]!r}")
+        if "enum" in rule and value not in rule["enum"]:
+            errors.append(f"参数 {key} 只能是 {rule['enum']} 之一")
+        if "max_len" in rule and len(str(value)) > rule["max_len"]:
+            errors.append(f"参数 {key} 最多 {rule['max_len']} 个字符")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if "min" in rule and value < rule["min"]:
+                errors.append(f"参数 {key} 不能小于 {rule['min']:g}")
+            if "max" in rule and value > rule["max"]:
+                errors.append(f"参数 {key} 不能大于 {rule['max']:g}")
+    return errors
+
+
+def prepare_mcp_args(args, schema, restrict=None):
+    """校验并整理要发给 server 的参数：(清洗后的 args, 错误列表)。"""
+    args = dict(args) if isinstance(args, dict) else {}
+    properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    clean = {}
+    for key, value in args.items():
+        if value is None:
+            continue   # 应用侧没填的参数是 None，不要当成「传了 null」；必填的留给 required 去报
+        clean[key] = _coerce_top(value, properties.get(key))
+    errors = _check_shape(clean, schema)
+    errors.extend(_apply_restrict(clean, restrict or {}))
+    return clean, errors
+
+
+def _flatten_content(result):
+    """tools/call 的 content 块拍成一段文字；二进制块只留一句说明，不把 base64 喂给模型。"""
+    parts = []
+    for block in result.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if kind == "text":
+            parts.append(str(block.get("text", "")))
+        elif kind == "resource":
+            resource = block.get("resource") if isinstance(block.get("resource"), dict) else {}
+            parts.append(str(resource["text"]) if "text" in resource
+                         else f"[资源 {resource.get('uri', '')}，二进制内容已省略]")
+        elif kind == "resource_link":
+            parts.append(f"[资源链接 {block.get('uri', '')}]")
+        elif kind in ("image", "audio"):
+            parts.append(f"[{'图片' if kind == 'image' else '音频'} {block.get('mimeType', '')}，已省略]")
+        else:
+            parts.append(f"[{kind} 内容已省略]")
+    structured = result.get("structuredContent")
+    if structured is not None:
+        try:
+            parts.append(json.dumps(structured, ensure_ascii=False, indent=1))
+        except (TypeError, ValueError):
+            pass
+    return "\n".join(p for p in parts if p).strip()
+
+
+def _run_mcp(spec, args):
+    server = _mcp.get(spec["mcp"]["server"])
+    if server is not None and not (server.online and server.alive()):
+        try:
+            server.ensure()   # 崩过的 server 在这里重拉；退避期内会直接报原因
+        except McpError:
+            pass
+    runnable, reason, live = _mcp_state(spec)
+    if not runnable:
+        return {"ok": False, "error": f"该工具暂不可用：{reason}"}
+    # 执行期再校一次只读依据：条目可能是手写的，批准时的检查它没经过
+    if _mcp_readonly(spec, live) == "none":
+        return {"ok": False, "error": "拒绝执行：server 没有声明该工具只读，管理员也没有确认过"
+                                      "（批准时加 --attest-readonly，或在条目里写 readonly_attested: true）"}
+    schema = live.get("inputSchema") if isinstance(live.get("inputSchema"), dict) else spec["input_schema"]
+    clean, errors = prepare_mcp_args(args, schema or {}, spec["restrict"])
+    if errors:
+        return {"ok": False, "error": "参数不合法：" + "；".join(errors[:5])}
+    command = _display(spec)
+    try:
+        result = server.call(spec["mcp"]["tool"], clean, timeout=TIMEOUT)
+    except McpError as exc:
+        return {"ok": False, "error": _scrub(str(exc), server.secrets), "command": command}
+    text = _scrub(_flatten_content(result if isinstance(result, dict) else {}), server.secrets)
+    truncated = len(text) > MAX_OUTPUT
+    return {"ok": not result.get("isError"), "command": command,
+            "output": text[:MAX_OUTPUT] + ("\n…（输出已截断）" if truncated else "")}
+
+
 def run_tool(name, args):
     spec = all_tools().get(name)
     if spec is None or not spec["enabled"]:
@@ -1783,6 +1993,8 @@ def run_tool(name, args):
 
     if spec.get("type") == "http":
         return _run_http(spec, args)
+    if spec.get("type") == "mcp":
+        return _run_mcp(spec, args)
 
     # 先校验参数再看本机有没有这个命令：不可信输入是安全边界，要最先挡掉。
     try:

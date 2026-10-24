@@ -174,8 +174,8 @@ class ServerConfigTests(unittest.TestCase):
         self.assertIsNone(registry.get("a"))
 
 
-class ApprovalFlowTests(unittest.TestCase):
-    """发现 → pending → 宿主机批准 → 出现在 /tools。默认拒绝，每一步都要留下依据。"""
+class _McpCase(unittest.TestCase):
+    """临时主文件 + 玩具 server 的公共装配。"""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -204,6 +204,10 @@ class ApprovalFlowTests(unittest.TestCase):
 
     def pending_by_name(self):
         return {(i.get("tool") or {}).get("name"): i for i in ops.list_pending()}
+
+
+class ApprovalFlowTests(_McpCase):
+    """发现 → pending → 宿主机批准 → 出现在 /tools。默认拒绝，每一步都要留下依据。"""
 
     def test_discovery_fills_pending_with_review_labels(self):
         server = self.connect()
@@ -375,6 +379,200 @@ class ApprovalFlowTests(unittest.TestCase):
         self.assertTrue(ops._suspicious_name("deleteRepo"))
         self.assertTrue(ops._suspicious_name("create-issue"))
         self.assertFalse(ops._suspicious_name("list_issues"))
+
+
+class ExecTests(_McpCase):
+    """批准之后：参数先过 schema 和收紧项，输出拍平、脱敏、截断；只读依据执行期再查一次。"""
+
+    def setUp(self):
+        super().setUp()
+        self.data = Path(self.tmp.name) / "data"
+        self.data.mkdir()
+        (self.data / "2026.json").write_text(json.dumps({"year": 2026, "days": [
+            {"name": "国庆节", "date": "2026-10-01", "isOffDay": True},
+            {"name": "国庆节", "date": "2026-09-27", "isOffDay": False}]}), encoding="utf-8")
+
+    def approve_all(self, extra_env=""):
+        env = f"HOLIDAY_MCP_DATA_DIR: {json.dumps(str(self.data))}"
+        self.write_main(extra_env=env + (", " + extra_env if extra_env else ""))
+        self.connect()
+        ops.approve_pending("holiday__holiday_calendar")
+        ops.approve_pending("holiday__date_info")
+        ops.approve_pending("holiday__echo", attest_readonly=True)
+
+    def test_call_flattens_text_and_structured_content(self):
+        self.approve_all()
+        result = ops.run_tool("holiday__holiday_calendar", {"year": 2026})
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["command"], "MCP holiday / holiday_calendar")
+        self.assertIn("2026-10-01", result["output"])
+        self.assertIn("isOffDay", result["output"])
+
+    def test_numeric_strings_are_coerced_but_wrong_values_refused(self):
+        self.approve_all()
+        self.assertTrue(ops.run_tool("holiday__holiday_calendar", {"year": "2026"})["ok"])
+        for bad, hint in [({"year": 1999}, "不能小于"), ({"year": "abc"}, "应为 integer"),
+                          ({}, "缺少必填参数"), ({"year": None}, "缺少必填参数")]:
+            with self.subTest(args=bad):
+                result = ops.run_tool("holiday__holiday_calendar", bad)
+                self.assertFalse(result["ok"])
+                self.assertIn("参数不合法", result["error"])
+                self.assertIn(hint, result["error"])
+
+    def test_optional_none_is_dropped_not_sent(self):
+        self.approve_all(extra_env="HOLIDAY_MCP_SCHEMA_VARIANT: '1'")
+        result = ops.run_tool("holiday__echo", {"text": "hi", "times": None})
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["output"], "hi")
+
+    def test_server_is_error_becomes_ok_false(self):
+        self.approve_all()
+        result = ops.run_tool("holiday__date_info", {"day": "2026-02-30"})
+        self.assertFalse(result["ok"])
+        self.assertIn("ValueError", result["output"])
+
+    def test_admin_restrict_is_stricter_than_schema(self):
+        self.write_main(
+            extra_env=f"HOLIDAY_MCP_DATA_DIR: {json.dumps(str(self.data))}",
+            tools=("tools:\n"
+                   "  - name: date_info\n    desc: d\n    mcp: {server: holiday, tool: date_info}\n"
+                   "    restrict: {day: {pattern: date}}\n"
+                   "  - name: echo\n    desc: e\n    readonly_attested: true\n"
+                   "    mcp: {server: holiday, tool: echo}\n"
+                   "    restrict: {text: {enum: [ping, pong], max_len: 4}}\n"
+                   "  - name: holiday_calendar\n    desc: h\n    mcp: {server: holiday, tool: holiday_calendar}\n"
+                   "    restrict: {year: {min: 2026, max: 2027}}\n"))
+        self.connect()
+        self.assertTrue(ops.run_tool("date_info", {"day": "2026-10-01"})["ok"])
+        bad = ops.run_tool("date_info", {"day": "Oct 1"})
+        self.assertFalse(bad["ok"])
+        self.assertIn("不合法", bad["error"])
+        self.assertTrue(ops.run_tool("echo", {"text": "ping"})["ok"])
+        self.assertIn("只能是", ops.run_tool("echo", {"text": "other"})["error"])
+        # schema 允许 2007..2035，管理员收到 2026..2027
+        self.assertIn("不能小于 2026", ops.run_tool("holiday_calendar", {"year": 2020})["error"])
+
+    def test_execution_refuses_without_readonly_basis(self):
+        self.write_main(tools="tools:\n  - name: plain_echo\n    desc: e\n"
+                              "    mcp: {server: holiday, tool: echo}\n")
+        self.connect()
+        self.assertEqual(ops.describe_tools()["plain_echo"]["readonly"], "none")
+        result = ops.run_tool("plain_echo", {"text": "x"})
+        self.assertFalse(result["ok"])
+        self.assertIn("拒绝执行", result["error"])
+        self.assertIn("只读", result["error"])
+
+    def test_output_is_scrubbed_and_truncated(self):
+        with patch.dict(ops.os.environ, {"OPS_SECRET_HOLIDAY": "holiday-key-123456"}):
+            self.approve_all(extra_env="HOLIDAY_TOKEN: '${OPS_SECRET_HOLIDAY}'")
+            leaked = ops.run_tool("holiday__echo", {"text": "token=holiday-key-123456"})
+            self.assertEqual(leaked["output"], "token=***")
+            long = ops.run_tool("holiday__echo", {"text": "x" * (ops.MAX_OUTPUT + 500)})
+            self.assertTrue(long["ok"])
+            self.assertTrue(long["output"].endswith("…（输出已截断）"))
+            self.assertLess(len(long["output"]), ops.MAX_OUTPUT + 50)
+
+    def test_stopped_server_is_relaunched_on_next_call(self):
+        self.approve_all()
+        ops._mcp.get("holiday").stop("测试：停掉")
+        self.assertNotIn("holiday__echo", ops.available_tools())
+        result = ops.run_tool("holiday__echo", {"text": "again"})
+        self.assertTrue(result["ok"], result)
+        self.assertIn("holiday__echo", ops.available_tools())
+
+    def test_destructive_flip_on_server_blocks_execution(self):
+        """已批准的工具被 server 改标成破坏性：指纹含标注，所以会漂移停用。"""
+        self.approve_all()
+        server = ops._mcp.get("holiday")
+        server.tools["echo"]["annotations"] = {"destructiveHint": True}
+        result = ops.run_tool("holiday__echo", {"text": "x"})
+        self.assertFalse(result["ok"])
+        self.assertIn("暂不可用", result["error"])
+
+    def test_health_and_full_listing_carry_server_status(self):
+        self.approve_all()
+        status = ops.mcp_status()["holiday"]
+        self.assertTrue(status["online"])
+        self.assertEqual(status["discovered"], 4)
+        self.assertEqual(status["approved"], 3)
+        self.assertEqual(status["server"]["name"], "holiday-mcp")
+
+
+class ShapeTests(unittest.TestCase):
+    """子集校验器自身：嵌套对象、数组、枚举、anyOf、additionalProperties。"""
+
+    SCHEMA = {"type": "object", "required": ["q", "filter"], "additionalProperties": False,
+              "properties": {
+                  "q": {"type": "string", "minLength": 1, "maxLength": 5},
+                  "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 10},
+                  "filter": {"type": "object", "required": ["kind"],
+                             "properties": {"kind": {"enum": ["pod", "svc"]},
+                                            "tags": {"type": "array", "items": {"type": "string"},
+                                                     "maxItems": 2}}},
+                  "when": {"anyOf": [{"type": "string", "format": "date"}, {"type": "integer"}]}}}
+
+    def check(self, value):
+        return ops._check_shape(value, self.SCHEMA)
+
+    def test_valid_document_passes(self):
+        self.assertEqual(self.check({"q": "abc", "limit": 3, "filter": {"kind": "pod", "tags": ["a"]},
+                                     "when": 5}), [])
+        self.assertEqual(self.check({"q": "abc", "limit": None, "filter": {"kind": "svc"}}), [])
+
+    def test_each_violation_is_named(self):
+        errors = self.check({"q": "", "limit": 11, "filter": {"kind": "node", "tags": ["a", "b", "c"]},
+                             "when": 1.5, "extra": 1})
+        joined = "；".join(errors)
+        for expected in ["参数 q 至少 1", "参数 limit 不能大于 10", "filter.kind 只能是",
+                         "filter.tags 最多 2 项", "参数 when 不符合任一候选形状", "多余的参数：extra"]:
+            self.assertIn(expected, joined)
+
+    def test_missing_required_and_wrong_types(self):
+        errors = self.check({"q": 5, "filter": "nope"})
+        joined = "；".join(errors)
+        self.assertIn("参数 q 应为 string", joined)
+        self.assertIn("参数 filter 应为 object", joined)
+        self.assertIn("缺少必填参数：q", "；".join(self.check({"filter": {"kind": "pod"}})))
+        self.assertIn("缺少必填参数：filter.kind", "；".join(self.check({"q": "a", "filter": {}})))
+
+    def test_unknown_keywords_are_ignored(self):
+        self.assertEqual(ops._check_shape({"a": 1}, {"type": "object", "$ref": "#/x",
+                                                    "patternProperties": {"^a": {"type": "string"}}}), [])
+
+    def test_params_from_schema_maps_common_types(self):
+        params = ops._params_from_schema({
+            "type": "object", "required": ["name"],
+            "properties": {"name": {"type": "string", "description": "名字"},
+                           "count": {"type": "integer", "default": 3},
+                           "ratio": {"type": "number"}, "flag": {"type": "boolean"},
+                           "mode": {"type": "string", "enum": ["a", "b"]},
+                           "filter": {"type": "object"}, "_private": {"type": "string"},
+                           "tags": {"type": ["array", "null"]}}},
+            restrict={"name": {"pattern": "k8s_name"}})
+        self.assertEqual(params["name"], {"type": "str", "desc": "名字", "required": True,
+                                          "pattern": "k8s_name"})
+        self.assertEqual(params["count"]["type"], "int")
+        self.assertEqual(params["count"]["default"], 3)
+        self.assertEqual(params["ratio"]["type"], "float")
+        self.assertEqual(params["flag"]["type"], "bool")
+        self.assertEqual(params["mode"], {"type": "enum", "desc": "", "required": False, "enum": ["a", "b"]})
+        self.assertEqual(params["filter"]["type"], "json")
+        self.assertEqual(params["tags"]["type"], "json")
+        self.assertNotIn("_private", params)
+
+    def test_flatten_handles_every_block_kind(self):
+        text = ops._flatten_content({"content": [
+            {"type": "text", "text": "hello"},
+            {"type": "image", "mimeType": "image/png", "data": "AAAA"},
+            {"type": "audio", "mimeType": "audio/wav", "data": "AAAA"},
+            {"type": "resource", "resource": {"uri": "file:///a", "text": "inside"}},
+            {"type": "resource", "resource": {"uri": "file:///b", "blob": "AAAA"}},
+            {"type": "resource_link", "uri": "https://x"}],
+            "structuredContent": {"k": 1}})
+        self.assertNotIn("AAAA", text)
+        for expected in ["hello", "[图片 image/png，已省略]", "[音频 audio/wav，已省略]", "inside",
+                         "[资源 file:///b，二进制内容已省略]", "[资源链接 https://x]", '"k": 1']:
+            self.assertIn(expected, text)
 
 
 if __name__ == "__main__":
