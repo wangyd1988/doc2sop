@@ -165,6 +165,7 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 4px 16px 16px 16px;
         padding: 14px 18px; box-shadow: var(--shadow); }
 .status { color: var(--muted); font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
+.status .tick { margin-left: auto; font-size: 12px; opacity: .7; font-variant-numeric: tabular-nums; }
 .answer { word-break: break-word; }
 .answer > :first-child { margin-top: 0; } .answer > :last-child { margin-bottom: 0; }
 .answer h1, .answer h2, .answer h3, .answer h4 { margin: 14px 0 6px; line-height: 1.35; }
@@ -2060,12 +2061,23 @@ async function ask() {
   $('question').value = ''; autosize();
   if ($('thread').querySelector('.welcome')) $('thread').innerHTML = '';
   addUser(q);
-  const bot = addBot('<div class="status"><span class="spin"></span>正在检索知识库…</div><div class="answer"></div>');
+  const bot = addBot('<div class="status"></div><div class="answer"></div>');
   const card = bot.querySelector('.card'), ans = bot.querySelector('.answer');
+  // 等待态按服务端的阶段事件换文案，并跟着走秒；status 被 delta 分支移除后（模型先说一句再调工具）要能补回来
+  const t0 = performance.now(); let tFirst = 0;
+  const tick = () => ((performance.now() - t0) / 1000).toFixed(1) + ' s';
+  const setStatus = html => {
+    let st = card.querySelector('.status');
+    if (!st) { st = document.createElement('div'); st.className = 'status'; card.insertBefore(st, ans); }
+    st.innerHTML = `<span class="spin"></span><span class="txt">${html}</span><span class="tick">${tick()}</span>`;
+  };
+  const clearStatus = () => card.querySelector('.status')?.remove();
+  const ticker = setInterval(() => { const el = card.querySelector('.status .tick'); if (el) el.textContent = tick(); }, 200);
+  setStatus('正在检索知识库…');
   toBottom();
   $('askBtn').disabled = true;
-  let text = '', pending = false, finished = false;
-  const t0 = performance.now(); let tFirst = 0;
+  let text = '', pending = false, finished = false, candidates = 0, answered = false;
+  const wasNew = !convId;
   const webSrc = [];
   // 渲染推迟到下一帧；流结束后才执行的那一帧不能再把光标加回去。
   const paint = () => { pending = false; if (finished) return; const stick = nearBottom(); ans.innerHTML = md(text); ans.classList.add('cursor'); if (stick) toBottom(); };
@@ -2086,20 +2098,20 @@ async function ask() {
           convId = msg.conversation.id;
           if (msg.model) bot.dataset.model = msg.model;
           if (msg.execution_id) bot.dataset.exec = msg.execution_id;
+        } else if (msg.stage) {
+          setStatus(msg.stage === 'rewrite' ? '正在结合上文理解问题…'
+                  : msg.stage === 'retrieve' ? '正在检索知识库（向量 + 关键词）…'
+                  : msg.stage === 'rerank' ? '找到候选片段，正在重排…'
+                  : msg.stage === 'think' ? (candidates ? `检索到 ${candidates} 个候选片段，模型正在判断相关性并组织回答…` : '模型思考中…')
+                  : '处理中…');
         } else if (msg.sources) {
           bot.dataset.retr = ((performance.now() - t0) / 1000).toFixed(1);
-          const st = card.querySelector('.status');
-          if (st) st.innerHTML = msg.sources.length ? `<span class="spin"></span>检索到 ${msg.sources.length} 个候选片段，正在判断是否相关…` : '';
+          candidates = msg.sources.length;
           bot.querySelector('.sources').innerHTML = sourcesHtml(msg.sources);
           arrangeSources(bot, '', false);
         } else if (msg.tool_call) {
           const isWeb = msg.tool_call.tool === 'web_search';
-          // 流式下模型可能先说一句再调工具，此时 status 已被 delta 分支移除，要补回来
-          let status = card.querySelector('.status');
-          if (!status) { status = document.createElement('div'); status.className = 'status'; card.insertBefore(status, ans); }
-          status.innerHTML = isWeb
-            ? `<span class="spin"></span>知识库里没有足够信息，正在上网搜索…`
-            : `<span class="spin"></span>正在查询：${esc(msg.tool_call.tool)}…`;
+          setStatus(isWeb ? '知识库里没有足够信息，正在上网搜索…' : `正在查询：${esc(msg.tool_call.tool)}…`);
           bot.querySelector('.steps').insertAdjacentHTML('beforeend', stepHtml(msg.tool_call, true));
           if (nearBottom()) toBottom();
         } else if (msg.web_sources) {
@@ -2117,27 +2129,34 @@ async function ask() {
               step.querySelector('.out').insertAdjacentHTML('beforeend',
                 `<div class="trunc">仅显示前 ${msg.tool_result.preview.length} 字，共 ${msg.tool_result.chars} 字 / ${msg.tool_result.lines} 行</div>`);
           }
+          setStatus('工具已返回，模型正在分析…');
           if (nearBottom()) toBottom();
         } else if (msg.delta) {
-          card.querySelector('.status')?.remove();
+          clearStatus();
           text += msg.delta;
+          if (msg.delta.trim()) answered = true;
           if (!tFirst) tFirst = performance.now();
           if (!pending) { pending = true; requestAnimationFrame(paint); }
         } else if (msg.error) {
+          // 检索一失败流就结束了，转圈要立刻停，错误随正文一起画出来
+          clearStatus();
           text += `\n\n⚠️ ${msg.error}`;
         }
       }
     }
     finished = true;
-    card.querySelector('.status')?.remove();
+    clearStatus();
     ans.innerHTML = md(text || '（没有返回内容）');
   } catch (e) {
     finished = true;
-    card.querySelector('.status')?.remove();
+    clearStatus();
     ans.innerHTML = md(text) + `<p class="error">请求失败：${esc(e.message)}</p>`;
   } finally {
     finished = true;
+    clearInterval(ticker);
     ans.classList.remove('cursor');
+    // 新对话这一轮没答出任何东西：服务端已把它删掉，这边也忘掉它的 id，下一问重新开
+    if (wasNew && !answered) convId = null;
     arrangeSources(bot, text, true);
     bot.dataset.took = ((performance.now() - t0) / 1000).toFixed(1);
     if (tFirst) bot.dataset.first = ((tFirst - t0) / 1000).toFixed(1);

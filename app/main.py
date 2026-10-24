@@ -1,8 +1,12 @@
 """HTTP API and web UI."""
+import contextvars
 import hashlib
 import json
+import queue
 import re
 import secrets
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
@@ -745,6 +749,32 @@ def retrieve_only(body: Question):
     return {"hits": retrieve(body.question.strip())}
 
 
+def _with_stages(fn, *args):
+    """在工作线程里跑 fn，把它经 progress 回调报告的阶段实时吐成 NDJSON 行；fn 的返回值作为生成器返回值。
+
+    检索要几秒到几十秒，这期间要给页面发阶段事件，在生成器里同步调它就发不出去。
+    contextvars 复制一份带进线程，LangSmith 的父 run 才跟得上。
+    """
+    box = queue.Queue()
+    ctx = contextvars.copy_context()
+
+    def work():
+        try:
+            box.put(("done", ctx.run(fn, *args, progress=lambda stage: box.put(("stage", stage)))))
+        except BaseException as exc:
+            box.put(("error", exc))
+
+    threading.Thread(target=work, daemon=True, name="retrieve").start()
+    while True:
+        kind, payload = box.get()
+        if kind == "stage":
+            yield json.dumps({"stage": payload}, ensure_ascii=False) + "\n"
+        elif kind == "done":
+            return payload
+        else:
+            raise payload
+
+
 @app.post("/api/ask")
 def ask(payload: Question):
     if not settings.configured():
@@ -770,38 +800,47 @@ def ask(payload: Question):
     root = start_root_run(question, conversation_id)
     overview = is_overview(question)
     continuation = is_continuation(question, history)
-    try:
-        with traced_under(root):
-            if overview or continuation:
-                # 「知识库里有什么」答案来自文档目录；「继续」是在回应上一轮——两者都不用检索
-                search_query, hits = question, []
-            else:
-                search_query = rewrite_question(question, history)
-                hits = retrieve(search_query)
-    except Exception as exc:
-        finish_root_run(root, error=f"检索失败：{exc.__class__.__name__}")
-        if started_new:
-            conversations.delete(conversation_id)
-        raise HTTPException(502, f"检索失败：{exc.__class__.__name__}")
-
     # Tools are opt-in and degrade gracefully: no ops endpoint and no web search means plain RAG.
     allow_web = AGENT_MODE != "off" and payload.web and web_search.enabled()
     use_agent = AGENT_MODE != "off" and (ops_client.enabled() or allow_web)
-
-    conversations.add_message(conversation_id, "user", question)
     # 图谱里的这一轮：工具的完整返回、最终结论质量、人工反馈都挂在它下面
     execution_id = graph.start_execution(conversation_id, question, payload.playbook_id)
 
     def stream():
-        """NDJSON: conversation, sources, tool activity, then answer fragments."""
+        """NDJSON: conversation, stage…, sources, stage, tool activity, then answer fragments.
+
+        检索放在流里做：首行先发出去，等待期间页面能看到「改写 → 检索 → 重排 → 思考」在推进，
+        而不是对着一个转圈等十几秒。代价是检索失败不能再回 502，只能作为 error 事件发出。
+        """
         answer, failure, tool_calls, web_hits, message_id = "", None, [], [], None
+        search_query, hits = question, []
+        started = time.monotonic()
+        retrieved_at = first_token_at = None
+
+        def line(**event):
+            return json.dumps(event, ensure_ascii=False) + "\n"
+
         try:
-            yield json.dumps({"conversation": conversation, "model": model_name,
-                              "execution_id": execution_id}, ensure_ascii=False) + "\n"
-            yield json.dumps({"sources": hits}, ensure_ascii=False) + "\n"
+            yield line(conversation=conversation, model=model_name, execution_id=execution_id)
+            try:
+                with traced_under(root):
+                    # 「知识库里有什么」答案来自文档目录；「继续」是在回应上一轮——两者都不用检索
+                    if not (overview or continuation):
+                        if history:
+                            yield line(stage="rewrite")
+                        search_query = rewrite_question(question, history)
+                        hits = yield from _with_stages(retrieve, search_query)
+            except Exception as exc:
+                failure = f"检索失败：{exc.__class__.__name__}"
+                yield line(error=failure)
+                return
+            retrieved_at = time.monotonic()
+            yield line(sources=hits)
+            conversations.add_message(conversation_id, "user", question)
             context = (catalog_context() if overview
                        else "（本轮是对上一轮的确认，没有重新检索；沿用上一轮的知识库依据和编号）" if continuation
                        else as_context(hits))
+            yield line(stage="think")
 
             if use_agent:
                 # The agent decides for itself whether the live environment is
@@ -815,6 +854,7 @@ def ask(payload: Question):
                                                             execution_id=execution_id):
                             if kind == "delta":
                                 answer += payload
+                                first_token_at = first_token_at or time.monotonic()
                             elif kind == "error":
                                 failure = payload
                             elif kind == "tool_call":
@@ -831,7 +871,7 @@ def ask(payload: Question):
                             yield json.dumps({kind: payload}, ensure_ascii=False) + "\n"
                 except Exception as exc:
                     failure = f"工具调用流程失败：{exc.__class__.__name__}"
-                    yield json.dumps({"error": failure}, ensure_ascii=False) + "\n"
+                    yield line(error=failure)
             else:
                 messages = build_messages(question, context, history)
                 try:
@@ -839,10 +879,11 @@ def ask(payload: Question):
                     with traced_under(root):
                         for fragment in stream_answer(messages, model=model_name):
                             answer += fragment
-                            yield json.dumps({"delta": fragment}, ensure_ascii=False) + "\n"
+                            first_token_at = first_token_at or time.monotonic()
+                            yield line(delta=fragment)
                 except Exception as exc:
                     failure = f"大模型调用失败：{exc.__class__.__name__}"
-                    yield json.dumps({"error": failure}, ensure_ascii=False) + "\n"
+                    yield line(error=failure)
 
             if answer.strip():
                 message_id = conversations.add_message(conversation_id, "assistant", answer,
@@ -858,6 +899,16 @@ def ask(payload: Question):
                     grow.schedule(execution_id, answer, tool_specs)
             except Exception:
                 log.warning("failed to finish execution %s", execution_id, exc_info=True)
+            # 新对话这一轮什么都没答出来（检索或模型失败）：不在历史里留一个空对话。页面按同一规则忘掉它的 id。
+            if started_new and message_id is None:
+                conversations.delete(conversation_id)
+            now = time.monotonic()
+            log.info("ask %s: retrieve=%s first_token=%s total=%.1fs tools=%d model=%s%s",
+                     conversation_id[:8],
+                     f"{retrieved_at - started:.1f}s" if retrieved_at else "-",
+                     f"{first_token_at - started:.1f}s" if first_token_at else "-",
+                     now - started, len(tool_calls), model_name,
+                     f" failure={failure}" if failure else "")
             finish_root_run(root, outputs={"answer": answer, "search_query": search_query,
                                            "sources": len(hits), "web_sources": len(web_hits),
                                            "model": model_name,

@@ -367,6 +367,8 @@ class ChatTests(unittest.TestCase):
         self.assertIn("大模型调用失败", root.end.call_args.kwargs["error"])
 
     def test_failed_first_turn_leaves_no_empty_conversation(self):
+        """检索在流里做，失败只能作为 error 事件发出；新对话没答出任何东西就不该留在历史里，执行记录也要收口。"""
+        clear_graph()
         root = MagicMock()
         before = len(self.client.get("/api/conversations",
                                      auth=self.auth).json()["conversations"])
@@ -376,11 +378,43 @@ class ChatTests(unittest.TestCase):
              patch("app.main.rewrite_question", side_effect=lambda q, h: q):
             response = self.client.post("/api/ask", json={"question": "检索会失败"},
                                         auth=self.auth)
-        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.status_code, 200)
+        events = [json.loads(line) for line in response.text.splitlines() if line]
+        self.assertIn("conversation", events[0])
+        self.assertIn("检索失败", events[-1]["error"])
+        self.assertFalse(any("sources" in e or "delta" in e for e in events))
         root.patch.assert_called_once()
         self.assertIn("检索失败", root.end.call_args.kwargs["error"])
         after = self.client.get("/api/conversations", auth=self.auth).json()["conversations"]
         self.assertEqual(len(after), before)
+        run = graph.execution(events[0]["execution_id"])
+        self.assertEqual(run["outcome"], "failed")
+        self.assertIsNotNone(run["finished_at"])
+
+    def test_retrieval_stages_are_streamed_before_the_sources(self):
+        """等待期间页面要看到「检索 → 重排 → 思考」在推进：阶段事件来自 retrieve 的 progress 回调，只加不改既有事件。"""
+        def staged_retrieve(query, progress=None):
+            progress("retrieve")
+            progress("rerank")
+            return self.hits
+
+        def fake_stream(_self, messages, **kwargs):
+            return [FakeChunk("答案")]
+
+        with patch("app.main.retrieve", side_effect=staged_retrieve), \
+             patch.object(type(clients.llm), "stream", fake_stream), \
+             patch("app.main.rewrite_question", side_effect=lambda q, h: q):
+            response = self.client.post("/api/ask", json={"question": "退款政策是什么？"}, auth=self.auth)
+        events = [json.loads(line) for line in response.text.splitlines() if line]
+        self.assertEqual([next(iter(e)) for e in events],
+                         ["conversation", "stage", "stage", "sources", "stage", "delta"])
+        self.assertEqual([e["stage"] for e in events if "stage" in e], ["retrieve", "rerank", "think"])
+        self.assertEqual(events[3]["sources"], self.hits)
+
+    def test_follow_up_announces_the_rewrite_stage(self):
+        first = self.ask("退款政策是什么？")
+        events = self.ask("那超过期限呢？", first[0]["conversation"]["id"])
+        self.assertEqual(events[1], {"stage": "rewrite"})
 
     def test_broken_tracing_never_breaks_answers(self):
         with patch.object(tracing, "TRACING", True), \
