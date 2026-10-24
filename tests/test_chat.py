@@ -416,6 +416,19 @@ class ChatTests(unittest.TestCase):
         events = self.ask("那超过期限呢？", first[0]["conversation"]["id"])
         self.assertEqual(events[1], {"stage": "rewrite"})
 
+    def test_reasoning_chunks_are_reported_as_thinking(self):
+        """思考型模型正文前先来一串空 chunk：报 thinking 让页面知道模型在动，正文照常逐片吐。"""
+        def fake_stream(_self, messages, **kwargs):
+            return [FakeChunk(""), FakeChunk(""), FakeChunk("七天内可退。")]
+
+        with patch("app.main.retrieve", return_value=self.hits), \
+             patch.object(type(clients.llm), "stream", fake_stream), \
+             patch("app.main.rewrite_question", side_effect=lambda q, h: q):
+            response = self.client.post("/api/ask", json={"question": "退款政策是什么？"}, auth=self.auth)
+        events = [json.loads(line) for line in response.text.splitlines() if line]
+        self.assertEqual([e for e in events if "thinking" in e], [{"thinking": 1}])
+        self.assertEqual("".join(e.get("delta", "") for e in events), "七天内可退。")
+
     def test_broken_tracing_never_breaks_answers(self):
         with patch.object(tracing, "TRACING", True), \
              patch.object(tracing, "RunTree", side_effect=RuntimeError("langsmith unreachable")):

@@ -533,6 +533,24 @@ class AgentLoopTests(unittest.TestCase):
             events = list(agent_loop.run("问题", "片段", []))
         self.assertEqual([p for k, p in events if k == "delta"], ["结论：", "内存", "正常"])
 
+    def test_reasoning_chunks_are_reported_as_thinking(self):
+        """思考型模型正文前的空 chunk 不丢：每半秒最多报一次 thinking，正文照常逐片吐。"""
+        from langchain_core.messages import AIMessageChunk
+
+        class Streaming:
+            def bind_tools(_self, tools):
+                return _self
+
+            def stream(_self, messages):
+                for _ in range(3):
+                    yield AIMessageChunk(content="")
+                yield AIMessageChunk(content="结论")
+
+        with patch.object(agent_loop, "build_tools", return_value=[FakeTool("x")]), \
+             patch.object(agent_loop, "chat_model", return_value=Streaming()):
+            events = list(agent_loop.run("问题", "片段", []))
+        self.assertEqual(events, [("thinking", 1), ("delta", "结论")])
+
     def test_streamed_tool_call_is_assembled_and_executed(self):
         from langchain_core.messages import AIMessageChunk
         tool = FakeTool("container_stats")

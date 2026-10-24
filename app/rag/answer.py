@@ -1,4 +1,6 @@
 """Prompts, query rewriting and answer generation."""
+import time
+
 from langsmith import traceable
 
 from app import clients
@@ -75,10 +77,20 @@ def build_messages(question: str, context: str, history):
 
 
 def stream_answer(messages, model: str | None = None):
-    """Yield answer fragments as they arrive. `model` overrides the default chat model."""
+    """Yield ("delta", text) as answer text arrives. `model` overrides the default chat model.
+
+    思考型模型出正文前先来一串空 chunk（reasoning 文字被 ChatOpenAI 丢掉了），
+    每半秒最多报一次 ("thinking", n)，页面据此显示模型还在动。
+    """
     llm = clients.llm
     client = llm if not model or model == llm.model_name else chat_model(
         model=model, timeout=120, max_retries=1)
+    thinking, reported = 0, 0.0
     for chunk in client.stream(messages):
         if chunk.content:
-            yield chunk.content
+            yield "delta", chunk.content
+        else:
+            thinking += 1
+            if time.monotonic() - reported >= 0.5:
+                reported = time.monotonic()
+                yield "thinking", thinking

@@ -2104,6 +2104,9 @@ async function ask() {
                   : msg.stage === 'rerank' ? '找到候选片段，正在重排…'
                   : msg.stage === 'think' ? (candidates ? `检索到 ${candidates} 个候选片段，模型正在判断相关性并组织回答…` : '模型思考中…')
                   : '处理中…');
+        } else if (msg.thinking) {
+          // 思考型模型出正文前的推理片段数：数字在涨就说明模型在动
+          setStatus(`模型思考中（已推理 ${msg.thinking} 步）…`);
         } else if (msg.sources) {
           bot.dataset.retr = ((performance.now() - t0) / 1000).toFixed(1);
           candidates = msg.sources.length;

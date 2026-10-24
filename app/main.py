@@ -807,7 +807,7 @@ def ask(payload: Question):
     execution_id = graph.start_execution(conversation_id, question, payload.playbook_id)
 
     def stream():
-        """NDJSON: conversation, stage…, sources, stage, tool activity, then answer fragments.
+        """NDJSON: conversation, stage…, sources, stage, tool activity, thinking, then answer fragments.
 
         检索放在流里做：首行先发出去，等待期间页面能看到「改写 → 检索 → 重排 → 思考」在推进，
         而不是对着一个转圈等十几秒。代价是检索失败不能再回 502，只能作为 error 事件发出。
@@ -877,10 +877,11 @@ def ask(payload: Question):
                 try:
                     # Re-attach to the root run: this body runs after the response returned.
                     with traced_under(root):
-                        for fragment in stream_answer(messages, model=model_name):
-                            answer += fragment
-                            first_token_at = first_token_at or time.monotonic()
-                            yield line(delta=fragment)
+                        for kind, fragment in stream_answer(messages, model=model_name):
+                            if kind == "delta":
+                                answer += fragment
+                                first_token_at = first_token_at or time.monotonic()
+                            yield json.dumps({kind: fragment}, ensure_ascii=False) + "\n"
                 except Exception as exc:
                     failure = f"大模型调用失败：{exc.__class__.__name__}"
                     yield line(error=failure)

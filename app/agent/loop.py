@@ -318,16 +318,27 @@ def _call(bound, view, emit):
     page shows the answer growing instead of a ten-second blank followed by the
     whole thing at once. Tool-call chunks are accumulated silently. Models or
     test doubles without `stream` fall back to a single invoke.
+
+    思考型模型（DeepSeek 一类）正文之前先吐几百个 reasoning 片段；ChatOpenAI 不保留它们的文字，
+    到这里只剩空 chunk。数一数、隔半秒报一次 ("thinking", n)，页面好让人知道模型在动而不是卡住。
     """
     if not hasattr(bound, "stream"):
         return bound.invoke(view), False
     acc, streamed = None, False
+    thinking, reported = 0, 0.0
     for chunk in bound.stream(view):
         acc = chunk if acc is None else acc + chunk
         text = chunk.content if isinstance(chunk.content, str) else ""
-        if text and not getattr(chunk, "tool_call_chunks", None):
+        if getattr(chunk, "tool_call_chunks", None):
+            continue
+        if text:
             emit(("delta", text))
             streamed = True
+        else:
+            thinking += 1
+            if time.monotonic() - reported >= 0.5:
+                reported = time.monotonic()
+                emit(("thinking", thinking))
     if acc is None:
         return AIMessage(content=""), False
     content = acc.content if isinstance(acc.content, str) else ""
@@ -427,6 +438,7 @@ def run(question: str, context: str, history, allow_web: bool = False,
       ("tool_call",   {"tool": ..., "args": {...}})
       ("tool_result", {"tool": ..., "preview": ..., "lines": n})
       ("web_sources", [{"index": "W1", "location": 标题, "url": ..., "text": 摘要, "web": True}])
+      ("thinking",    已收到的推理片段数)   ← 思考型模型出正文前，每半秒最多一次
       ("delta",       "答案文本片段")
       ("error",       "错误说明")
 
