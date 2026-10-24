@@ -407,6 +407,18 @@ class ExecTests(_McpCase):
         self.assertEqual(result["command"], "MCP holiday / holiday_calendar")
         self.assertIn("2026-10-01", result["output"])
         self.assertIn("isOffDay", result["output"])
+        self.assertNotIn("尚未公布", result["output"])
+
+    def test_unpublished_year_is_spelled_out_not_left_as_an_empty_list(self):
+        """数据源里「还没公布」长两种样子：文件里 days 为 []，或干脆没有这一年的文件（404）。模型看到的要一样。"""
+        (self.data / "2027.json").write_text(json.dumps({"year": 2027, "days": []}), encoding="utf-8")
+        self.approve_all()
+        for year in (2027, 2028):      # 2028 没有文件
+            with self.subTest(year=year):
+                result = ops.run_tool("holiday__holiday_calendar", {"year": year})
+                self.assertTrue(result["ok"], result)
+                self.assertIn("尚未公布", result["output"])
+                self.assertIn("推算", result["output"])
 
     def test_numeric_strings_are_coerced_but_wrong_values_refused(self):
         self.approve_all()

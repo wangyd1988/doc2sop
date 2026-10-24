@@ -96,6 +96,34 @@ class ShippedPacksTests(unittest.TestCase):
         """它用来演示 SOP 从实践里长出来：grow 会和已有 SOP（含停用）去重，所以包里不能预置同路径的 SOP。"""
         self.assertEqual(self.found["model-selfcheck"]["sops"], [])
 
+    def test_leave_pack_does_not_hard_code_a_year(self):
+        """示例问题、文档、录制脚本都不写死年份：年底来的人不该看到「2026 年国庆」这种过期的提问。
+
+        年份由 Agent 按「下一个该节日所在的年份」决定，规则写在工具 desc 和 SOP 检查点里；
+        那一年还没公布时，工具输出会写明「尚未公布」。"""
+        year = re.compile(r"20[2-9]\d\s*年")
+        pack = self.found["leave-planning"]
+        for text in pack["examples"]:
+            self.assertIsNone(year.search(text), text)
+        for path in (SHIPPED / "leave-planning" / "pack.yaml", SHIPPED / "leave-planning" / "tools.yaml",
+                     SHIPPED / "leave-planning" / "sops.json", REPO / "README.md",
+                     REPO / "docs" / "五分钟演示.md", REPO / "docs" / "场景包.md",
+                     REPO / "deploy" / "demo" / "record.js"):
+            with self.subTest(file=path.name):
+                self.assertIsNone(year.search(path.read_text(encoding="utf-8")), f"{path.name} 写死了年份")
+        tools, _ = ops.load_tools(SHIPPED / "leave-planning" / "tools.yaml")
+        year_param = tools["holiday_calendar"]["params"]["year"]
+        self.assertTrue(year_param["required"])
+        self.assertNotIn("default", year_param)
+        self.assertIn("下一个该节日所在的年份", tools["holiday_calendar"]["desc"])
+        self.assertIn("尚未公布", tools["holiday_calendar"]["http"]["notes"]["empty"]["days"])
+        self.assertIn("尚未公布", tools["holiday_calendar"]["http"]["notes"]["status"]["404"])
+        self.assertIn("尚未公布", pack["sops"][0]["steps"][0]["checkpoint"])
+        # 录制脚本不再钉死「3 天」，断言的是「请 N 天」这个模式
+        script = (REPO / "deploy" / "demo" / "record.js").read_text(encoding="utf-8")
+        self.assertNotIn("3\\s*天", script)
+        self.assertIn("请假?", script)
+
 
 def write_pack(root, pack_id="demo-pack", tools=("t_one", "t_two"), sops=None, docs=None,
                version=1, examples=("示例问题一", "示例问题二"), category="演示"):

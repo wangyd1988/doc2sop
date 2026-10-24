@@ -226,6 +226,55 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(tools, {})
         self.assertIn("default", problems[0])
 
+    def test_required_int_has_no_default_and_refuses_to_guess(self):
+        """「哪一年」这种参数不能有默认值——写死 2026 到了明年就悄悄查错年；缺了要说清楚，不能悄悄换成别的数。"""
+        tools, problems = self.load(
+            "tools:\n"
+            "  - name: cal\n"
+            "    binary: free\n"
+            "    argv: [free, -s, '{year}']\n"
+            "    params:\n"
+            "      year: {type: int, required: true, min: 2007, max: 2035}\n")
+        self.assertEqual(problems, [])
+        spec = tools["cal"]["params"]["year"]
+        self.assertTrue(spec["required"])
+        self.assertNotIn("default", spec)
+        self.assertEqual(ops.build_argv(tools["cal"], {"year": "2027"}), ["free", "-s", "2027"])
+        for bad, hint in [({}, "缺少必填参数：year"), ({"year": None}, "缺少必填参数：year"),
+                          ({"year": ""}, "缺少必填参数：year"), ({"year": "abc"}, "参数 year 不合法")]:
+            with self.subTest(args=bad), self.assertRaises(ValueError) as caught:
+                ops.build_argv(tools["cal"], bad)
+            self.assertIn(hint, str(caught.exception))
+        path = self.write("tools:\n  - name: cal\n    binary: free\n    argv: [free, -s, '{year}']\n"
+                          "    params:\n      year: {type: int, required: true, min: 2007, max: 2035}\n")
+        with patch.dict(ops._state, {"path": path, "mtime": None, "tools": {}}):
+            # /exec 走的就是这条路：拒绝执行，原因原样给模型
+            result = ops.run_tool("cal", {})
+            self.assertFalse(result["ok"])
+            self.assertIn("缺少必填参数：year", result["error"])
+            # 发布给应用的参数里也没有 default，应用侧据此把它生成为必填字段
+            self.assertNotIn("default", ops.all_tools()["cal"]["params"]["year"])
+
+    def test_int_with_default_still_loads_and_falls_back(self):
+        """老写法（生产机 ops_tools.yaml 里的 year: default: 2026）必须原样可用：缺参回落默认值，越界夹到范围内。"""
+        tools, problems = self.load(
+            "tools:\n"
+            "  - name: cal\n"
+            "    binary: free\n"
+            "    argv: [free, -s, '{year}']\n"
+            "    params:\n"
+            "      year: {type: int, default: 2026, min: 2007, max: 2035}\n")
+        self.assertEqual(problems, [])
+        self.assertEqual(tools["cal"]["params"]["year"]["default"], 2026)
+        self.assertEqual(ops.build_argv(tools["cal"], {}), ["free", "-s", "2026"])
+        self.assertEqual(ops.build_argv(tools["cal"], {"year": "abc"}), ["free", "-s", "2026"])
+        self.assertEqual(ops.build_argv(tools["cal"], {"year": 1990}), ["free", "-s", "2007"])
+        # required 带着 default 也行：default 仍要在范围内
+        _, problems = self.load(
+            "tools:\n  - name: cal\n    binary: free\n    argv: [free, -s, '{year}']\n"
+            "    params:\n      year: {type: int, required: true, default: 1999, min: 2007, max: 2035}\n")
+        self.assertIn("不在 min..max 之间", problems[0])
+
     def test_one_bad_entry_does_not_drop_the_good_ones(self):
         tools, problems = self.load(
             "tools:\n"
@@ -388,6 +437,16 @@ class ToolLayerTests(unittest.TestCase):
         self.assertTrue(fields["name"].is_required())
         self.assertEqual(fields["lines"].default, 100)
         self.assertEqual(fields["name"].description, "容器名")
+
+    def test_required_int_without_default_is_required_for_the_model(self):
+        """宿主机对必填 int（哪一年）不再下发 default，模型就必须自己填，不会悄悄落到某个写死的年份。"""
+        with patch.object(agent_tools.ops_client, "available_tools", return_value={
+                "holiday_calendar": {"desc": "节假日", "params": {
+                    "year": {"type": "int", "required": True, "min": 2007, "max": 2035, "desc": "年份"}}}}):
+            tool = agent_tools.build_tools()[0]
+        field = tool.args_schema.model_fields["year"]
+        self.assertTrue(field.is_required())
+        self.assertIs(field.annotation, int)
 
     def test_a_new_host_tool_needs_no_code_change(self):
         """宿主机加一个工具，应用侧不改代码、不重建镜像也能用上。"""
@@ -1341,6 +1400,59 @@ class HttpToolTests(unittest.TestCase):
             result = ops.run_tool("item", {"item_id": "a1"})
         self.assertFalse(result["ok"])
         self.assertIn("OPS_SECRET_KEY", result["error"])
+
+    HOLIDAY = ("tools:\n"
+               "  - name: cal\n"
+               "    http:\n"
+               "      url: 'https://cdn.example.com/holiday/{year}.json'\n"
+               "      pick: [year, days]\n"
+               "      notes:\n"
+               "        empty: {days: 该年安排尚未公布}\n"
+               "        '404': 数据源还没有这一年的文件\n"
+               "    params:\n"
+               "      year: {type: int, required: true, min: 2007, max: 2035}\n")
+
+    def test_notes_explain_empty_fields_and_status_codes(self):
+        """「days 为 []」和「404」对节假日数据源都是「尚未公布」：由管理员在配置里写明，输出里直接给出，模型不用猜。"""
+        self._write(self.HOLIDAY)
+        with patch.object(ops, "_http_get", return_value=(200, b'{"year": 2027, "days": []}')):
+            result = ops.run_tool("cal", {"year": 2027})
+        self.assertTrue(result["ok"])
+        self.assertIn('"days": []', result["output"])
+        self.assertTrue(result["output"].rstrip().endswith("该年安排尚未公布"))
+        with patch.object(ops, "_http_get", return_value=(404, b"Couldn't find the requested file")):
+            result = ops.run_tool("cal", {"year": 2028})
+        self.assertFalse(result["ok"])
+        self.assertIn("接口返回 404", result["output"])
+        self.assertTrue(result["output"].rstrip().endswith("数据源还没有这一年的文件"))
+        # 有数据、状态正常：一个字都不多附
+        body = json.dumps({"year": 2026, "days": [{"date": "2026-10-01", "isOffDay": True}]}).encode()
+        with patch.object(ops, "_http_get", return_value=(200, body)):
+            output = ops.run_tool("cal", {"year": 2026})["output"]
+        self.assertNotIn("尚未公布", output)
+        self.assertNotIn("数据源", output)
+        # 必填的年份缺了：拒绝执行并说清楚，而不是悄悄查某个默认年份
+        result = ops.run_tool("cal", {})
+        self.assertFalse(result["ok"])
+        self.assertIn("缺少必填参数：year", result["error"])
+
+    def test_notes_must_reference_picked_fields_or_status_codes(self):
+        for bad, hint in [("notes: [a]", "必须是映射"),
+                          ("notes: {empty: {nope: x}}", "不在 pick 里"),
+                          ("notes: {empty: 文字}", "映射"),
+                          ("notes: {whatever: x}", "三位状态码")]:
+            with self.subTest(bad=bad):
+                tools, problems = self.load(
+                    "tools:\n  - name: cal\n    http:\n      url: 'https://cdn.example.com/{year}.json'\n"
+                    f"      pick: [days]\n      {bad}\n"
+                    "    params:\n      year: {type: int, required: true, min: 2007, max: 2035}\n")
+                self.assertEqual(tools, {})
+                self.assertIn(hint, problems[0])
+        # 页面申请的接口工具带不了 notes：那是管理员对数据源含义的解释，不该由申请人填
+        with self.assertRaises(ops.ConfigError) as caught:
+            ops.propose_tool({"name": "cal2", "desc": "x", "params": {},
+                              "http": {"url": "https://api.example.org/today", "notes": {"404": "x"}}})
+        self.assertIn("notes", str(caught.exception))
 
     def test_http_tools_are_advertised_with_their_params(self):
         self._write(self.GOOD)

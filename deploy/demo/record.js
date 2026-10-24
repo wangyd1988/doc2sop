@@ -285,16 +285,18 @@ async function openAndAsk(h, chipText, caption) {
   await h.page.waitForSelector('#askBtn[disabled]', { timeout: 15000 });
 }
 
-/* 第一幕：照着 SOP 办事。止于粗体结论「请 3 天年假」，后面的「需要跟进」提醒不入镜。 */
+/* 第一幕：照着 SOP 办事。止于粗体结论「请 N 天年假」，后面的「需要跟进」提醒不入镜。
+   N 不钉死：问题不带年份，Agent 查的是下一个国庆所在的年份，要请几天取决于那一年的补班安排。 */
+const LEAVE_DAYS = /请假?\s*[0-9一二两三四五六七八九十]+\s*天/;
 async function sceneSop(h) {
   await openAndAsk(h, '国庆', '照着 SOP 办事：问一句，它按《请假拼假核对》查节假日和补班日');
   const st = await watchAnswer(h, {
-    conclusion: /3\s*天/, follow: /需要跟进|已过去|已经过去/,
-    caption: '补班日也要算：凭直觉是 2 天，按 SOP 查数据是 <b>3 天</b>',
+    conclusion: LEAVE_DAYS, follow: /需要跟进|已过去|已经过去/,
+    caption: '补班日也要算：周末里的补班日照样要请假，按 SOP 查数据才不会少算',
   });
-  if (!/3\s*天/.test(st.text) || !/SOP/.test(st.text))
-    throw new RecordError('第一幕：回答里没有同时出现「3 天」和「SOP」。回答开头：' + st.text.slice(0, 120));
-  if (!h.marks.strong) throw new RecordError('第一幕：没等到含「3 天」的结论');
+  if (!LEAVE_DAYS.test(st.text) || !/SOP/.test(st.text))
+    throw new RecordError('第一幕：回答里没有同时出现「请 N 天」和「SOP」。回答开头：' + st.text.slice(0, 120));
+  if (!h.marks.strong) throw new RecordError('第一幕：没等到含「请 N 天」的结论');
   if (st.steps < 2) throw new RecordError(`第一幕：只调用了 ${st.steps} 个工具，不像是按 SOP 执行`);
   await sleep(3000);
 }

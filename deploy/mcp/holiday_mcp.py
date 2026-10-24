@@ -25,6 +25,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -46,7 +47,8 @@ def tools():
         {"name": "holiday_calendar",
          "title": "法定节假日",
          "description": "查询某一年国务院公布的法定节假日安排，包括放假日期和周末补班日期"
-                        "（isOffDay=false 表示补班，要上班）。days 为空说明当年安排尚未公布。",
+                        "（isOffDay=false 表示补班，要上班）。用户没说年份就按下一个该节日所在的年份查。"
+                        "days 为空表示该年安排尚未公布，输出里会写明；此时按法定假日天数和往年调休规律推算并注明。",
          "inputSchema": {"type": "object",
                          "properties": {"year": {"type": "integer", "minimum": 2007,
                                                  "maximum": 2035, "description": "年份，例如 2027"}},
@@ -71,13 +73,25 @@ def tools():
     ]
 
 
+UNPUBLISHED = "该年节假日安排尚未公布（国务院通常在前一年 11–12 月公布次年安排），只能按法定假日天数和往年调休规律推算。"
+
+
 def _holidays(year):
+    """读一年的数据；数据源还没有这一年的文件（404）等同于「安排尚未公布」，和 days 为空一个待遇。"""
     data_dir = os.environ.get("HOLIDAY_MCP_DATA_DIR")
     if data_dir:
-        with open(os.path.join(data_dir, f"{year}.json"), encoding="utf-8") as handle:
-            return json.load(handle)
-    with urllib.request.urlopen(HOLIDAY_URL.format(year=year), timeout=10) as response:
-        return json.load(response)
+        try:
+            with open(os.path.join(data_dir, f"{year}.json"), encoding="utf-8") as handle:
+                return json.load(handle)
+        except FileNotFoundError:
+            return {"year": year, "days": []}
+    try:
+        with urllib.request.urlopen(HOLIDAY_URL.format(year=year), timeout=10) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return {"year": year, "days": []}
+        raise
 
 
 def call(name, args):
@@ -86,6 +100,9 @@ def call(name, args):
         year = int(args["year"])
         data = _holidays(year)
         picked = {"year": data.get("year", year), "days": data.get("days", [])}
+        if not picked["days"]:
+            # 空数组的含义由 server 说清楚，模型不用猜；放进同一份 JSON，客户端拍平时不会重复附带
+            picked["note"] = UNPUBLISHED
         return json.dumps(picked, ensure_ascii=False, indent=1), picked
     if name == "date_info":
         day = datetime.date.fromisoformat(str(args["day"]))

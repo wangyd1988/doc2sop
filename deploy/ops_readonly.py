@@ -137,12 +137,14 @@ def _check_param(tool, key, raw):
             "required": bool(raw.get("required", False))}
     if kind == "int":
         try:
-            spec["default"] = int(raw.get("default", 100))
+            # 必填的 int 可以没有默认值（模型必须给，比如「哪一年」）；老写法 default 照常可用
+            if "default" in raw or not spec["required"]:
+                spec["default"] = int(raw.get("default", 100))
             spec["min"] = int(raw.get("min", 1))
             spec["max"] = int(raw.get("max", 10000))
         except (TypeError, ValueError):
             raise ConfigError(f"{tool}.params.{key} 的 default/min/max 必须是整数") from None
-        if not spec["min"] <= spec["default"] <= spec["max"]:
+        if "default" in spec and not spec["min"] <= spec["default"] <= spec["max"]:
             raise ConfigError(f"{tool}.params.{key} 的默认值不在 min..max 之间")
         return spec
 
@@ -276,9 +278,30 @@ def _check_http_tool(raw, name):
         if not PICK_PATH.match(path):
             raise ConfigError(f"{name}.http.pick 的路径不合法：{path[:40]!r}")
 
+    # 可选 notes：pick 出的字段为空、或接口返回某个状态码时，附在输出末尾的一句解释。
+    # 「days 为 []」和「404」在数据源那边都表示「该年安排尚未公布」，由管理员在这里写明，
+    # 模型就不用自己猜一个空数组是什么意思。只能写在 YAML 里，页面申请的工具带不了。
+    notes = {"empty": {}, "status": {}}
+    raw_notes = http.get("notes") or {}
+    if not isinstance(raw_notes, dict):
+        raise ConfigError(f"{name}.http.notes 必须是映射")
+    for key, value in raw_notes.items():
+        key = str(key)
+        if key == "empty":
+            if not isinstance(value, dict):
+                raise ConfigError(f"{name}.http.notes.empty 必须是「pick 路径: 说明」的映射")
+            for path, text in value.items():
+                if str(path) not in pick:
+                    raise ConfigError(f"{name}.http.notes.empty 的字段 {str(path)[:40]!r} 不在 pick 里")
+                notes["empty"][str(path)] = str(text).strip()
+        elif re.fullmatch(r"[1-5]\d\d", key):
+            notes["status"][key] = str(value).strip()
+        else:
+            raise ConfigError(f"{name}.http.notes 的键只能是 empty 或三位状态码，不是 {key[:40]!r}")
+
     return {**_common(raw, name), "type": "http", "binary": "", "argv": [],
             "params": params,
-            "http": {"url": url, "query": query, "headers": headers, "pick": pick}}
+            "http": {"url": url, "query": query, "headers": headers, "pick": pick, "notes": notes}}
 
 
 # ---- MCP 工具条目 -----------------------------------------------------------
@@ -1054,6 +1077,8 @@ def propose_tool(raw, author="web"):
         http = raw.get("http") if isinstance(raw.get("http"), dict) else {}
         if http.get("headers"):
             raise ConfigError("页面申请的接口工具不能设置请求头；需要鉴权的接口请让管理员在宿主机配置")
+        if http.get("notes"):
+            raise ConfigError("页面申请的接口工具不能附带 notes 说明；请让管理员在宿主机配置")
         if "${" in json.dumps(http, ensure_ascii=False):
             raise ConfigError("页面申请的接口工具不能引用宿主机环境变量")
 
@@ -1239,6 +1264,11 @@ def _value(key, spec, args):
         try:
             number = int(supplied)
         except (TypeError, ValueError):
+            if spec["required"]:
+                # 必填的 int 没有默认值可退：缺了或给的不是整数都得说清楚，不能悄悄换成别的值
+                if supplied is None or str(supplied).strip() == "":
+                    raise ValueError(f"缺少必填参数：{key}") from None
+                raise ValueError(f"参数 {key} 不合法：{str(supplied)[:40]!r}，应为整数") from None
             number = spec["default"]
         return str(max(spec["min"], min(number, spec["max"])))
 
@@ -1375,18 +1405,27 @@ def _run_http(spec, args):
 
     text = body[:MAX_HTTP_BYTES].decode("utf-8", errors="replace")
     ok = 200 <= status < 300
+    notes = spec["http"].get("notes") or {}
+    remarks = []
     # 只在成功时摘字段；出错时原样保留厂商的报错正文（Invalid token、404 page not found……），
     # 否则模型看到的是一串 null，解释不了为什么失败。
     if ok and spec["http"]["pick"]:
         try:
             data = json.loads(text)
-            text = json.dumps({path: _pick(data, path) for path in spec["http"]["pick"]},
-                              ensure_ascii=False, indent=1)
+            picked = {path: _pick(data, path) for path in spec["http"]["pick"]}
+            text = json.dumps(picked, ensure_ascii=False, indent=1)
+            remarks += [note for path, note in (notes.get("empty") or {}).items()
+                        if picked.get(path) in (None, [], {}, "")]
         except ValueError:
             pass
     text = _scrub(text.strip(), secrets_used)
     if not ok:
         text = f"接口返回 {status}：{text or '（无正文）'}"
+        if str(status) in (notes.get("status") or {}):
+            remarks.append(notes["status"][str(status)])
+    if remarks:
+        # 管理员写的解释跟在数据后面：空数组、404 对这个接口意味着什么，模型不用猜
+        text += "\n" + "\n".join(remarks)
     truncated = len(text) > MAX_OUTPUT
     if 300 <= status < 400:
         text = f"接口返回 {status} 跳转，已拒绝跟随（只允许访问配置里写明的主机）"
