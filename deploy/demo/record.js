@@ -327,7 +327,6 @@ async function sceneGrow(h) {
     throw new RecordError('第二幕：90 s 内没有出现 💡 卡片。' + why);
   }
   h.mark('proposal');
-  await h.toBottom();   // 回答结束后页面停在正文末尾，卡片插在来源和工具条下面，要滚一下才看得见
   await h.cap('它提议把这条路径沉淀成 SOP，人点一下「<b>保存</b>」');
   await sleep(1500);
   await prop.locator('details > summary').first().click();
