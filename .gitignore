@@ -26,6 +26,12 @@ deploy/ops_tools.trust.yaml
 # 公司内部活动的投递材料，不随开源仓库发布
 docs/1024-*
 
+# 演示 GIF 的录制中间产物（deploy/demo/record.js）：无损素材、剪辑片、调色板、时刻记录
+docs/media/raw/
+
+# Node
+node_modules/
+
 # Python
 __pycache__/
 *.py[cod]
