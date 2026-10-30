@@ -179,9 +179,13 @@ PLAN_RULES = """
 **待办清单（plan）**：多步骤的任务（按 SOP 执行、要分几步查的问题、跨文档要拆成几个子问题的）先用 plan 列清单，
 每做完一步就更新一次（每次传整张清单）；已经预填了清单的，按清单逐项做、逐项勾掉，不要漏步。简单问题不用列清单。"""
 
-# forced / agentic 模式不预检索：提示词里的「知识库片段」一节换成这句。
-NO_PREFETCH = ("知识库片段：（本轮没有预先检索知识库。问题需要资料时调用 kb_search 检索；"
-               "问知识库里有什么时用 kb_catalog）\n\n")
+# forced / agentic 模式不预检索：提示词里的「知识库片段」一节换成这段。
+# 系统提示词里「只问规则、方法、原理的问题不要调用工具」说的是查实际数据的工具；不讲清楚的话，模型会把这类问题
+# 当成不用查，一次都没检索就答「知识库里没有」（生产模型上 26 题里有 6 题这样）。
+NO_PREFETCH = ("知识库片段：（本轮没有预先检索知识库。除了打招呼、闲聊和确认上一轮的话，先调用 kb_search 检索再回答——"
+               "规则、方法、原理、概念类问题和通用技术问题同样要查，知识库里也有这类资料；"
+               "「不要调用工具」说的是查实际数据的工具，不含知识库工具。"
+               "没检索过，不要说知识库里没有，调用之前也不要先下结论。问知识库里有什么时用 kb_catalog）\n\n")
 
 
 def _today():
@@ -433,18 +437,21 @@ def _rejects_tool_choice(exc) -> bool:
     return "tool_choice" in text or "tool choice" in text
 
 
-def _note_ignored(model, choice) -> None:
-    """模型这次没按 tool_choice 调 kb_search：连续 IGNORES_BEFORE_MARK 次才记成不支持这种写法。"""
+def _note_ignored(model, choice, detail="") -> None:
+    """模型这次没按 tool_choice 调 kb_search：连续 IGNORES_BEFORE_MARK 次才记成不支持这种写法。
+
+    detail 说明它回了什么（正文还是空回复），只进日志：上游把 required 当软提示时会直接回正文。
+    """
     key = (str(model or ""), choice)
     with _tool_choice_lock:
         _ignored[key] = count = _ignored.get(key, 0) + 1
         if count >= IGNORES_BEFORE_MARK:
             del _ignored[key]
     if count >= IGNORES_BEFORE_MARK:
-        _mark_no_tool_choice(model, f"连续 {count} 次没有按 tool_choice 调用 kb_search", choice)
+        _mark_no_tool_choice(model, f"连续 {count} 次没有按 tool_choice 调用 kb_search，最近一次{detail}", choice)
     else:
-        log.info("model %s ignored tool_choice=%s (%d/%d), falling back for this turn",
-                 model or "(default)", choice, count, IGNORES_BEFORE_MARK)
+        log.info("model %s ignored tool_choice=%s (%d/%d, %s), falling back for this turn",
+                 model or "(default)", choice, count, IGNORES_BEFORE_MARK, detail)
 
 
 def _note_obeyed(model, choice) -> None:
@@ -486,7 +493,10 @@ def _forced(setup, view, emit):
             _note_obeyed(setup.model_key, choice)
             setup.stats["forced_with"] = choice
             return AIMessage(content=reply.content or "", tool_calls=calls, id=reply.id)
-        _note_ignored(setup.model_key, choice)
+        others = [c.get("name") for c in reply.tool_calls]
+        _note_ignored(setup.model_key, choice,
+                      f"调了 {others}" if others else
+                      f"回了 {len(reply.content)} 字正文" if reply.content else "空回复")
         return None
     return None
 

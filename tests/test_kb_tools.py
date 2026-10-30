@@ -523,6 +523,18 @@ class KbLoopTests(KbLoopCase):
         self.assertEqual(model.binds[0]["tools"], ["plan"])
         self.assertIn(agent_loop.PLAN_RULES, self.system_and_prompt(model)[0])
 
+    def test_without_prefetch_the_prompt_says_to_search_before_answering(self):
+        """系统提示词让规则类问题别调工具（指数据类）。不预检索时要讲清楚知识库工具不在此列：
+        生产模型曾据此一次没查就答「知识库里没有」。预检索过的提示词不变。"""
+        model = Scripted([([], "答")])
+        self.run_loop(model, context=None, kb_tools=True)
+        self.assertIn(agent_loop.NO_PREFETCH, self.system_and_prompt(model)[1])
+        for words in ("先调用 kb_search 检索再回答", "不含知识库工具", "没检索过，不要说知识库里没有"):
+            self.assertIn(words, agent_loop.NO_PREFETCH)
+        model = Scripted([([], "答")])
+        self.run_loop(model, kb_tools=True)
+        self.assertNotIn("本轮没有预先检索", self.system_and_prompt(model)[1])
+
     def test_prefetch_mode_supplements_and_numbers_after_the_prefetched_hits(self):
         model = Scripted([(kb_call("磁盘告警线"), ""), ([], "答 [3]")])
         long_text = "\n".join(f"第 {i} 行" for i in range(200))      # 日志式压缩不能作用在知识片段上
