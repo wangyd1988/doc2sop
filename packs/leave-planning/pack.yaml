@@ -5,8 +5,8 @@ version: 2
 summary: 查法定节假日与补班安排，按《休假管理制度》算出拼假到底要请几天、请哪几天。
 roles: [行政, 人事, 全员]
 requires:
-  - 能访问公网：节假日数据来自 jsdelivr CDN 上的 holiday-cn 数据集
-  - 工具服务所在机器有 GNU date 命令（随附的演示 sidecar 已满足）
+  - 节假日数据来自公网：jsdelivr CDN 上的 holiday-cn 数据集，工具服务要能访问它
+  - 星期和周数由工具服务内置计算（date_info 是内置函数），不依赖任何命令或系统
 # 文档入库时直接用这个分类，省掉一次「判断分类」的模型调用
 category: 行政制度
 # 示例问题故意不写年份：Agent 按「下一个该节日所在的年份」查，明年安排没公布就如实说明并推算（见 tools.yaml 的 desc）

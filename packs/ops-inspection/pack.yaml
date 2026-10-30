@@ -5,8 +5,8 @@ version: 1
 summary: 按《日常巡检规范》依次看磁盘、内存、负载、容器状态与资源占用，按「正常 / 告警 / 严重」给结论。
 roles: [运维, 单机 Docker 服务的负责人]
 requires:
-  - 工具必须跑在被巡检的宿主机上：用 deploy/ops_readonly.py 部署，并在它的 ops_tools.yaml 里 include 本包的 tools.yaml
-  - 宿主机有 docker CLI 且工具服务能读 /var/run/docker.sock；free / df / uptime 来自 procps 与 coreutils
+  - 数据来自工具服务所在的 Linux 宿主机：磁盘、内存、负载来自 df / free / uptime（coreutils、procps），容器状态来自 docker CLI（工具服务要能读 /var/run/docker.sock）
+  - 所以工具服务要部署在被巡检的宿主机上（deploy/ops_readonly.py），并在它的 ops_tools.yaml 里 include 本包的 tools.yaml；工具都声明了 os: linux，在别的系统上显示「不适用于这台机器」
   - 随附的演示 sidecar 跑在容器里，查到的只是容器自己，所以本包不在 DEMO_PACKS 默认列表里
 category: 运维规范
 examples:
