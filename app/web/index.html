@@ -316,6 +316,10 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .tl-servers b { color: var(--text); font-weight: 600; }
 .tl-servers .off { color: var(--danger); }
 .tl-pick input { margin-bottom: 6px; }
+.tl-os { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; font-size: 12px; color: var(--muted); margin: -2px 0 8px; }
+.tl-os label { display: flex; align-items: center; gap: 4px; color: var(--text); }
+.tl-os input { width: auto; margin: 0; }
+.tl-pick #tlNewConn { margin: 0 0 6px; }
 .tl-pform { border: 1px dashed var(--border); border-radius: 10px; padding: 8px 10px 4px; margin-bottom: 8px; }
 .tl-param { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px; align-items: center; margin-bottom: 6px;
             padding-bottom: 6px; border-bottom: 1px solid var(--border); }
@@ -1805,9 +1809,18 @@ $('pbPanel').addEventListener('dblclick', e => {
    命令模板只在宿主机那份手写配置里定义，这个界面碰不到。            */
 let tlEditing = null, tlProposing = false, tlProposeKind = 'command', tlSearch = '';
 let tlScripts = [], tlScriptSel = '', tlScriptDir = '';
+// 申请表单用：工具服务跑在什么系统上（默认勾它）、管理员建好的连接（只有名字和地址模板，没有凭据）
+let tlHost = {}, tlConns = {};
 
 /* MCP 工具的只读依据：server 自己声明的，还是管理员批准时确认的。两者都没有的不能执行。 */
 const TL_RO = {declared: ['ok', '只读 · server 声明'], attested: ['ok', '只读 · 管理员确认'], none: ['warn', '未确认只读']};
+const TL_OS = {linux: 'Linux', darwin: 'macOS', windows: 'Windows'};
+/* 不能用的原因：系统不符是「不适用于这台机器」，不是「缺命令」。老工具服务不回 reason，按原来的说法兜底。 */
+function tlWhyNot(t) {
+  if (t.applicable === false) return t.reason || '不适用于这台机器';
+  if (t.type === 'mcp') return t.reason || 'MCP 工具暂不可用';
+  return t.reason || `本机没有 ${t.binary}，该工具不可用`;
+}
 function tlParamHint(p) {
   if (p.type === 'json') return '（结构化）';
   if (p.type === 'enum' && (p.enum || []).length) return '（' + p.enum.map(esc).join(' / ') + '）';
@@ -1821,13 +1834,16 @@ function tlCard(name, t) {
   const mcp = t.type === 'mcp', ro = TL_RO[t.readonly] || TL_RO.none;
   const field = 'width:100%;box-sizing:border-box;font:inherit;font-size:12.5px;padding:7px;'
               + 'border-radius:7px;border:1px solid var(--border);background:var(--panel-2);color:var(--text)';
-  return `<div class="pb ${t.enabled ? '' : 'off'} ${t.runnable ? '' : 'bad'}"
+  return `<div class="pb ${t.enabled ? '' : 'off'} ${t.runnable ? '' : t.applicable === false ? 'off' : 'bad'}"
        data-search="${searchable(name, t.label, t.desc, t.command, t.group,
                                  params.map(([k, p]) => [k, p.desc]))}">
     <div class="pb-top">
       <span class="nm">${esc(t.label || name)}</span>
       ${t.label ? `<span class="src">${esc(name)}</span>` : ''}
       ${mcp ? `<span class="src tl-mcp" title="来自 MCP server ${esc(t.mcp?.server || '')}">MCP</span><span class="src tl-ro ${ro[0]}">${ro[1]}</span>` : ''}
+      ${t.type === 'builtin' ? '<span class="src" title="随工具服务发布的纯计算，不依赖本机装了什么命令">内置</span>' : ''}
+      ${(t.os || []).length ? `<span class="src" title="只适用于这些系统">${esc(t.os.map(o => TL_OS[o] || o).join(' / '))}</span>` : ''}
+      ${t.conn ? `<span class="src" title="地址和凭据来自管理员配置的连接">连接 ${esc(t.conn)}</span>` : ''}
       ${mcp && !t.schema_locked ? '<span class="src" title="手写条目没有 schema 指纹，server 改了参数形状也不会自动停用">未锁定 schema</span>' : ''}
       ${(t.overridden || []).length ? '<span class="src">已在页面改过</span>' : ''}
       ${t.enabled && t.runnable ? `<button class="run" data-tluse="${esc(name)}" title="把「用这个工具查…」填进对话框">💬 用它提问</button>` : ''}
@@ -1852,7 +1868,7 @@ function tlCard(name, t) {
             p.desc ? '：' + esc(p.desc) : ''}</span>`).join('')}</div>` : ''}
       ${mcp && Object.keys(t.restrict || {}).length ? `<div class="tl-params"><span>管理员收紧：${
           Object.entries(t.restrict).map(([k, r]) => `<code>${esc(k)}</code> ${esc(JSON.stringify(r))}`).join('，')}</span></div>` : ''}
-      ${t.runnable ? '' : `<div class="pb-warn">⚠ ${mcp ? esc(t.reason || 'MCP 工具暂不可用') : `本机没有 ${esc(t.binary)}，该工具不可用`}</div>`}
+      ${t.runnable ? '' : `<div class="pb-warn">⚠ ${esc(tlWhyNot(t))}</div>`}
     </div>
   </div>`;
 }
@@ -1895,6 +1911,31 @@ function tlParamsPayload(text) {
   }
   return out;
 }
+const TL_URL_HINT = {full: '接口地址，如 https://api.example.com/v1/status?city={city}（只允许 GET）',
+                     path: '路径，如 /api/v1/query?query={q}（拼在连接的地址后面，只允许 GET）'};
+/* 地址里的查询串拆成 query 映射：工具服务要求查询参数单独写，值要么是固定值，要么整个是 {参数名} */
+function tlSplitUrl(raw) {
+  const at = raw.indexOf('?');
+  if (at < 0) return {url: raw, query: {}};
+  const query = {};
+  for (const part of raw.slice(at + 1).split('&').filter(Boolean)) {
+    const eq = part.indexOf('=');
+    const key = eq < 0 ? part : part.slice(0, eq), value = eq < 0 ? '' : part.slice(eq + 1);
+    try { query[decodeURIComponent(key)] = decodeURIComponent(value); } catch { query[key] = value; }
+  }
+  return {url: raw.slice(0, at), query};
+}
+/* 待审条目两种写法都有：新写法 impl: {type, …}，老写法 binary/argv、script、http。统一成一句给人读的话 */
+function tlPendingWhat(t) {
+  const im = t.impl || {}, http = im.type === 'http' ? im : (t.http || {});
+  const kind = im.type || (t.script ? 'script' : t.http ? 'http' : 'command');
+  const os = [].concat(im.os || t.os || []).map(o => TL_OS[o] || o).join(' / ');
+  const what = kind === 'script' ? '脚本 ' + (im.script || t.script)
+             : kind === 'http' ? 'GET ' + (http.conn ? `[连接 ${http.conn}] ` : '') + (http.url || '')
+               + (Object.keys(http.query || {}).length ? '?' + Object.entries(http.query).map(([k, v]) => `${k}=${v}`).join('&') : '')
+             : (im.argv || t.argv || []).join(' ');
+  return what + (os ? `（${os}）` : '');
+}
 function tlProposeForm() {
   const common =
     `<input id="tlNewName" placeholder="工具名，如 host_time（小写字母、数字、下划线）" maxlength="64">
@@ -1922,18 +1963,32 @@ function tlProposeForm() {
             这和「上传文档自动变工具」不同，不是上传代码。<br>
             批准后，脚本内容一旦被改动，工具会自动停用，直到在宿主机上重新确认。`;
   } else if (tlProposeKind === 'http') {
-    body = `<input id="tlNewUrl" placeholder="接口地址，如 https://api.example.com/v1/status?city={city}（只允许 GET）" maxlength="300">
+    const conns = Object.entries(tlConns);
+    body = (conns.length ? `<select id="tlNewConn">
+             <option value="">不用连接：填完整地址（只能是不需要凭据的接口）</option>
+             ${conns.map(([n, c]) => `<option value="${esc(n)}">连接 ${esc(n)}${c.label ? '（' + esc(c.label) + '）' : ''}：${esc(c.base)}${
+               (c.headers || []).length ? '，带请求头 ' + esc(c.headers.join('、')) : ''}</option>`).join('')}
+           </select>` : '')
+         + `<input id="tlNewUrl" placeholder="${TL_URL_HINT.full}" maxlength="300">
             <div id="tlParams">${tlParamRows('')}</div>`;
     note = `适合查询公开或内网的<b>只读接口</b>，例如天气、汇率、状态页、工单查询。
             地址里可以用 <code>{参数名}</code> 占位，下面会出现对应的参数设置。<br>
-            页面申请的接口<b>不能带请求头和凭据</b>；需要登录鉴权的接口，请管理员在宿主机配置文件里添加，
-            密钥只放在宿主机环境变量中，模型和页面都看不到。`;
+            页面申请的接口<b>不能带请求头和凭据</b>。要鉴权就${conns.length
+              ? '在上面选一个管理员建好的<b>连接</b>（地址前缀和凭据都在连接里），地址只填路径'
+              : '请管理员先在宿主机配置文件里建一个<b>连接</b>（地址前缀 + 凭据引用），这里就能选它'}；
+            密钥只放在宿主机上，模型和页面都看不到。`;
   } else {
+    const hostOs = TL_OS[tlHost.os] ? tlHost.os : 'linux';
     body = `<input id="tlNewCmd" placeholder="完整命令，如 kubectl get pod -n {namespace} -o wide" maxlength="200">
+            <div class="tl-os">适用系统：${Object.entries(TL_OS).map(([k, v]) =>
+              `<label><input type="checkbox" data-tlos="${k}" ${k === hostOs ? 'checked' : ''}> ${v}</label>`).join('')}
+              <span>都不勾表示不限</span></div>
             <div id="tlParams">${tlParamRows('')}</div>`;
     note = `工具名会作为函数名发给模型，按 function calling 规范<b>只能用英文</b>；中文写在「显示名」里。<br>
             命令里用 <code>{参数名}</code> 表示由模型填的参数，每个参数要选类型：模型填进来的值会按类型校验，不合法就拒绝执行。
-            不能含管道、重定向和写操作动词。要跑一段逻辑，请改用「脚本」。`;
+            不能含管道、重定向和写操作动词。要跑一段逻辑，请改用「脚本」。<br>
+            提交时<b>不检查</b>工具服务所在机器装没装这个命令。批准后，系统和「适用系统」不符的显示「不适用于这台机器」，
+            缺命令的显示「本机没有…」。`;
   }
 
   return `<div class="pb-pick tl-pick">
@@ -1942,7 +1997,8 @@ function tlProposeForm() {
     ${common}
     ${body}
     <div class="tl-note">${note}<br>提交后<b>不会生效</b>，要在宿主机上批准——页面定义不了宿主机执行什么。<br>
-      <b>MCP 工具不在这里申请</b>：管理员在宿主机配置里声明 MCP server 后，它上面的工具会自动出现在「待审申请」里，批准后才可用。</div>
+      <b>MCP 工具和内置函数不在这里申请</b>：管理员在宿主机配置里声明 MCP server 后，它上面的工具会自动出现在「待审申请」里，批准后才可用；
+      内置函数随工具服务的代码发布，管理员在配置里按名字引用即可。</div>
     <div class="pb-edit"><div class="row">
       <button class="ok" id="tlDoPropose">提交申请</button>
       <button class="cancel" id="tlCancelPropose">取消</button>
@@ -1968,8 +2024,7 @@ function tlWaiting(items) {
         return `<div class="cmd">[${esc(i.id)}] ${esc(t.name || '')}　${esc(t.mcp.tool || '')}${tags}
           <div class="cmd" style="margin:2px 0 0 14px">批准：ops_readonly.py approve ${esc(i.id)}${flag}</div></div>`;
       }
-      const what = t.script ? '脚本 ' + t.script
-                 : t.http ? 'GET ' + (t.http.url || '') : (t.argv || []).join(' ');
+      const what = tlPendingWhat(t);
       return `<div class="cmd">[${esc(i.id)}] ${esc(t.name || '')}　${esc(what)}</div>`;
     }).join('')}
   </div>`;
@@ -1990,6 +2045,7 @@ async function loadTools() {
   if (MANAGE) return renderManage();
   const d = await (await fetch('/api/tools')).json();
   const tc = {live: d.live || 0, total: d.count || 0};
+  tlHost = d.host || {}; tlConns = d.connections || {};
   setBadge('tlBadge', tc, '可用');
   // 工具停用/启用会改变 SOP 是否生效，顺带刷新 SOP 徽标。
   fetch('/api/playbooks').then(r => r.json()).then(p => setBadge('pbBadge', {live: p.live || 0, total: p.count || 0}, '生效')).catch(() => {});
@@ -2110,19 +2166,25 @@ $('tlPanel').addEventListener('click', async e => {
     const base = {name: $('tlNewName').value.trim(), label: $('tlNewLabel').value.trim(),
                   desc: $('tlNewDesc').value.trim(), params: {}};
     let payload;
+    // 按实现类型分栏填写，发出去的是老写法（新老工具服务都认）；新字段只有 os 和 http.conn
     if (tlProposeKind === 'script') {
       const script = $('tlNewScript') ? $('tlNewScript').value : '';
       if (!script) return fail('请先选择一个脚本');
       payload = {...base, script};
     } else if (tlProposeKind === 'http') {
-      const url = $('tlNewUrl').value.trim();
-      if (!/^https?:\/\//.test(url)) return fail('接口地址要以 http:// 或 https:// 开头');
-      payload = {...base, http: {url}, params: tlParamsPayload(url)};
+      const conn = $('tlNewConn') ? $('tlNewConn').value : '';
+      const raw = $('tlNewUrl').value.trim();
+      if (conn && !raw.startsWith('/')) return fail('选了连接时，地址只填路径，以 / 开头（主机名和凭据都在连接里）');
+      if (!conn && !/^https?:\/\//.test(raw)) return fail('接口地址要以 http:// 或 https:// 开头');
+      const {url, query} = tlSplitUrl(raw);
+      payload = {...base, http: {url, ...(Object.keys(query).length ? {query} : {}), ...(conn ? {conn} : {})},
+                 params: tlParamsPayload(raw)};
     } else {
       const cmd = $('tlNewCmd').value.trim();
       const parts = cmd.split(/\s+/).filter(Boolean);
       if (!parts.length) return fail('请填写完整命令');
-      payload = {...base, binary: parts[0], argv: parts, params: tlParamsPayload(cmd)};
+      const os = [...$('tlPanel').querySelectorAll('[data-tlos]:checked')].map(box => box.dataset.tlos);
+      payload = {...base, binary: parts[0], argv: parts, ...(os.length ? {os} : {}), params: tlParamsPayload(cmd)};
     }
     try {
       const d = await tlSend('/api/tools/propose', payload);
@@ -2142,6 +2204,7 @@ $('tlPanel').addEventListener('click', async e => {
 
 $('tlPanel').addEventListener('change', e => {
   if (e.target.id === 'tlNewScript') { tlScriptSel = e.target.value; loadTools(); }
+  if (e.target.id === 'tlNewConn') { const box = $('tlNewUrl'); if (box) box.placeholder = e.target.value ? TL_URL_HINT.path : TL_URL_HINT.full; }
   const pf = e.target.dataset.pf, row = e.target.closest('[data-tlparam]');
   if (!pf || !row) return;
   const st = (tlParamState[row.dataset.tlparam] ||= {type: 'name', required: true, def: '', desc: ''});
@@ -2373,7 +2436,8 @@ const TAB = {
   settings: {title: '模型设置'},
 };
 function tlRow(name, t) {
-  const st = t.enabled && t.runnable ? ['ok', '可用'] : !t.runnable ? ['bad', '不可运行'] : ['', '已停用'];
+  const st = t.enabled && t.runnable ? ['ok', '可用'] : t.applicable === false ? ['', '不适用于这台机器']
+           : !t.runnable ? ['bad', '不可运行'] : ['', '已停用'];
   mCache['tl:' + name] = {name, t};
   return `<div class="mrow ${mItem === name ? 'on' : ''}" data-mitem="${esc(name)}">
     <div class="t">${esc(t.label || name)}${t.label ? `<code>${esc(name)}</code>` : ''}</div>
@@ -2419,7 +2483,7 @@ async function renderManage() {
     const d = await (await fetch(LAZY[cfg.panel].url)).json();
     groups = d.groups || []; live = d.live || 0; count = d.count || 0;
     if (mTab === 'sop') { pbTools = d.tools || {}; proposals = d.pending || 0; origins = d.origins || null; }
-    if (mTab === 'tools') mcpServers = d.mcp_servers || {};
+    if (mTab === 'tools') { mcpServers = d.mcp_servers || {}; tlHost = d.host || {}; tlConns = d.connections || {}; }
     setBadge(cfg.panel + 'Badge', {live, total: count}, cfg.unit.slice(1));
     if (mTab === 'tools') pending = await fetch('/api/tools/pending').then(r => r.json()).then(r => r.pending || []).catch(() => []);
     if (d.error) toast('工具接口不可用：' + d.error, 'err');

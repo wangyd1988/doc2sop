@@ -1,5 +1,5 @@
 # 行政-请假拼假 用到的工具。格式与 deploy/ops_tools.yaml 完全一致（见其头部注释），
-# 这里只是它的一个子集：两个只读工具，都不需要宿主机有任何基础设施。
+# 这里只是它的一个子集：一个公网接口、一个内置函数，都不需要宿主机有任何基础设施。
 tools:
   - name: holiday_calendar
     label: 法定节假日
@@ -29,8 +29,8 @@ tools:
     label: 日期是星期几
     group: 日历
     desc: 查某个日期是星期几、当年第几周。推算请假天数、跨周末时用它，不要自己心算星期。
-    binary: date
-    argv: [date, -d, "{day}", "+%Y-%m-%d %A 第%V周"]
+    # 内置函数：随工具服务发布的纯计算，不依赖 date 命令，输出和原来的 date -d 版本逐字一致
+    impl: {type: builtin, func: date_info}
     params:
       day:
         type: str

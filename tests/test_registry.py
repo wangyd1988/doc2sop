@@ -45,10 +45,11 @@ else:
 
 
 def advertised(config):
-    """工具服务对这份配置下发的 /tools（假装命令本机都有），按 HTTP 往返一遍。"""
+    """工具服务对这份配置下发的 /tools（假装命令本机都有、本机就是目标平台 Linux），按 HTTP 往返一遍。"""
     state = {"path": Path(config), "mtime": None, "omtime": None, "tmtime": None, "imtime": None,
              "mmtime": None, "includes": [], "tools": {}, "problems": [], "mcp_servers": {}}
-    with patch.dict(ops._state, state), patch.object(ops.shutil, "which", return_value="/usr/bin/true"):
+    with patch.dict(ops._state, state), patch.object(ops.shutil, "which", return_value="/usr/bin/true"), \
+            patch.object(ops, "HOST_OS", "linux"):
         ops.refresh(force=True)
         return json.loads(json.dumps(ops.available_tools(), ensure_ascii=False)), dict(ops._state["tools"])
 

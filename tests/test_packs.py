@@ -65,14 +65,16 @@ class ShippedPacksTests(unittest.TestCase):
                 self.assertEqual(sorted(tools), sorted(pack["tools"]))
 
     def test_demo_packs_need_no_infrastructure(self):
-        """默认演示的两个包只用公网 HTTP 和 date 命令；运维包才需要 docker，所以不在默认名单。"""
+        """默认演示的两个包只用公网 HTTP 和内置函数，不依赖工具服务所在机器装了什么；运维包才需要 docker，所以不在默认名单。"""
         for pack_id in DEMO:
             tools, _ = ops.load_tools(SHIPPED / pack_id / "tools.yaml")
             for name, spec in tools.items():
                 with self.subTest(pack=pack_id, tool=name):
-                    self.assertTrue(spec.get("type") == "http" or spec["binary"] == "date")
+                    self.assertIn(spec.get("type"), ("http", "builtin"))
         ops_tools, _ = ops.load_tools(SHIPPED / "ops-inspection" / "tools.yaml")
         self.assertIn("docker", {spec["binary"] for spec in ops_tools.values()})
+        # 运维包的命令都是 Linux 写法（df -h、free -m）：声明了 os，在别的系统上是「不适用」而不是「缺命令」
+        self.assertEqual({tuple(spec["os"]) for spec in ops_tools.values()}, {("linux",)})
 
     def test_gateway_tools_only_use_ops_secret_variables(self):
         tools, _ = ops.load_tools(SHIPPED / "model-selfcheck" / "tools.yaml")

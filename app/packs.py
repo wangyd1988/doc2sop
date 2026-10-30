@@ -5,7 +5,7 @@
     packs/<id>/
     ├── pack.yaml    名称、一句话说明、适用岗位、前提、入库分类、示例问题
     ├── docs/        要入库的文档
-    ├── tools.yaml   与 deploy/ops_tools.yaml 同格式的工具定义子集
+    ├── tools.yaml   与 deploy/ops_tools.yaml 同格式的工具定义子集（不能有脚本型工具和 connections）
     └── sops.json    预先整理好的 SOP，不用再现场抽取
 
 应用对三样东西的态度不一样：
@@ -117,15 +117,20 @@ def _read_pack(folder: Path) -> dict:
     tools_path = folder / "tools.yaml"
     if tools_path.is_file():
         try:
-            entries = _yaml(tools_path).get("tools")
+            document = _yaml(tools_path)
+            entries = document.get("tools")
             if not isinstance(entries, list):
                 raise PackError("tools.yaml 缺少 tools 列表")
+            if document.get("connections"):
+                # 凭据发到哪个地址是宿主机管理员的决定；包里的工具只能用 conn: 引用管理员建好的连接
+                problems.append("tools.yaml 里不能声明 connections：连接只能由管理员写在宿主机的主配置文件里")
             for entry in entries:
                 name = str((entry or {}).get("name", "")).strip() if isinstance(entry, dict) else ""
                 if not TOOL_NAME.match(name):
                     problems.append(f"tools.yaml 里有工具名不合法：{name[:40]!r}")
                     continue
-                if entry.get("script"):
+                impl = entry.get("impl") if isinstance(entry.get("impl"), dict) else {}
+                if entry.get("script") or impl.get("type") == "script":
                     # 脚本要宿主机 root 放进 scripts/ 并 trust，不是一个目录能自带的东西
                     problems.append(f"tools.yaml 里的 {name} 是脚本型工具，场景包不支持")
                     continue

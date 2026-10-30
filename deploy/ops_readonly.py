@@ -5,16 +5,22 @@ The agent must never get a shell. It can only name a tool and supply typed
 arguments; this service maps that to a fixed argv template and runs it with no
 shell involved. Anything not on the allowlist is refused.
 
-Runs on the host (it needs docker/kubectl), binds loopback only, and requires a
-shared token. Standard library only, so it runs on any box with Python 3.9+.
-That includes the MCP client: the host may declare stdio MCP servers, and their
-tools go through the same approve-before-use flow as everything else.
+A tool is a capability (name, description, typed parameters) plus an
+implementation: a builtin function shipped in this file, a command or script
+run here, a read-only HTTP call (optionally through a shared connection that
+holds the address and credential references), or a tool on an MCP server.
+
+Runs on the host (command tools need docker/kubectl), binds loopback only, and
+requires a shared token. Standard library only, so it runs on any box with
+Python 3.9+. That includes the MCP client: the host may declare stdio MCP
+servers, and their tools go through the same approve-before-use flow as
+everything else.
 
     OPS_TOKEN=... python ops_readonly.py --port 8799
 """
 import argparse
 import atexit
-import difflib
+import datetime
 import glob
 import hashlib
 import json
@@ -50,8 +56,30 @@ PATTERNS = {"name": NAME, "k8s_name": K8S_NAME, "resource": RESOURCE, "date": DA
 
 # 接口型工具的凭据只能来自宿主机环境变量，且必须以这个前缀命名：
 # 这样即便配置写得马虎，也不可能把 OPS_TOKEN 之类的服务自身凭据发到外部接口。
+# 配置里按名字引用：${prom_token} 就是环境变量 OPS_SECRET_PROM_TOKEN；老写法 ${OPS_SECRET_X} 照常可用。
 SECRET_PREFIX = "OPS_SECRET_"
 SECRET_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+SECRET_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+ENV_BASE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}(.*)$")
+# 连接：一个数据源的地址和凭据引用，多个工具共用。本期只给接口型工具用。
+CONN_NAME = re.compile(r"^[a-z][a-z0-9_]{0,30}$")
+CONN_TYPES = ("http",)
+
+# 命令型、脚本型工具可以声明适用的系统；和工具服务所在机器不符时是「不适用」，不是「缺命令」。
+OS_NAMES = ("linux", "darwin", "windows")
+
+
+def _host_os():
+    if sys.platform.startswith("linux"):
+        return "linux"
+    if sys.platform == "darwin":
+        return "darwin"
+    if sys.platform in ("win32", "cygwin"):
+        return "windows"
+    return sys.platform
+
+
+HOST_OS = _host_os()
 URL_PARAM = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
 HEADER_NAME = re.compile(r"^[A-Za-z0-9-]{1,60}$")
 QUERY_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,60}$")
@@ -75,14 +103,16 @@ DEFAULT_CONFIG = Path(__file__).resolve().parent / "ops_tools.yaml"
 # bash -c "任意" 、env FOO=x 任意、xargs 任意、find -exec 任意……
 # 所以普通工具不许用它们当 binary。要跑脚本，走下面的脚本型工具（哈希锁定）。
 INTERPRETERS = {
-    "bash", "sh", "dash", "zsh", "ksh", "csh", "tcsh", "fish", "rbash", "ash",
-    "python", "python2", "python3", "perl", "ruby", "node", "nodejs", "php",
-    "lua", "luajit", "tclsh", "expect", "rscript",
+    "bash", "sh", "dash", "zsh", "ksh", "csh", "tcsh", "fish", "rbash", "ash", "busybox",
+    "python", "python2", "python3", "pypy", "ipython", "perl", "ruby", "node", "nodejs", "deno", "bun",
+    "php", "lua", "luajit", "tclsh", "expect", "rscript",
     "awk", "gawk", "mawk", "nawk", "sed",
     "env", "xargs", "find", "watch", "timeout", "nohup", "stdbuf", "setsid",
     "unshare", "chroot", "flock", "nice", "ionice", "parallel", "script",
     "ssh", "sshpass", "scp", "rsync", "socat", "ncat", "nc",
     "eval", "exec", "command", "source", "make", "sudo", "su", "doas",
+    # 命令型工具可以声明 os: windows 了，Windows 上能执行任意命令的也一并挡掉
+    "cmd", "powershell", "pwsh", "cscript", "wscript", "mshta",
 }
 
 # Refuse these even if a template somehow produced them.
@@ -182,7 +212,7 @@ def _check_script_tool(raw, name):
             "desc": str(raw.get("desc", "")).strip(),
             "binary": str(path), "argv": [str(path)], "params": {},
             "enabled": bool(raw.get("enabled", True)),
-            "type": "script", "script": script}
+            "type": "script", "script": script, "os": _check_os(name, raw.get("os"))}
 
 
 def _common(raw, name):
@@ -203,11 +233,39 @@ def _check_params(name, raw):
     return params
 
 
+def _secret_env(ref):
+    """凭据引用 → 环境变量名：${prom_token} → OPS_SECRET_PROM_TOKEN，${OPS_SECRET_X} 原样。别的都不是凭据。"""
+    if ref.startswith(SECRET_PREFIX):
+        return ref
+    if SECRET_NAME.match(ref):
+        return SECRET_PREFIX + ref.upper()
+    return None
+
+
 def _check_secret_refs(name, text):
     for ref in SECRET_REF.findall(text):
-        if not ref.startswith(SECRET_PREFIX):
-            raise ConfigError(f"{name} 引用了环境变量 {ref}；接口凭据必须以 {SECRET_PREFIX} 开头，"
-                              f"以免把服务自身的令牌发到外部")
+        if _secret_env(ref) is None:
+            raise ConfigError(f"{name} 引用了环境变量 {ref}；凭据只能写成 ${{小写名字}}（对应环境变量 "
+                              f"{SECRET_PREFIX}大写名字）或 ${{{SECRET_PREFIX}…}}，以免把服务自身的令牌发到外部")
+
+
+def _check_os(name, raw):
+    """适用的系统：不写就是不限。写了就和工具服务所在机器比（见 _not_here）。"""
+    if raw is None or raw == "" or raw == []:
+        return []
+    out = []
+    for value in raw if isinstance(raw, list) else [raw]:
+        text = str(value).strip().lower()
+        if text not in OS_NAMES:
+            raise ConfigError(f"{name}.os 只能是 {'、'.join(OS_NAMES)}（可以写成列表），不是 {str(value)[:20]!r}")
+        if text not in out:
+            out.append(text)
+    return out
+
+
+def _no_os(raw, name, kind):
+    if raw.get("os") is not None:
+        raise ConfigError(f"{name} 是{kind}工具，不能声明 os：只有命令型、脚本型工具和机器有关")
 
 
 def _check_http_tool(raw, name):
@@ -228,8 +286,16 @@ def _check_http_tool(raw, name):
     params = _check_params(name, raw)
 
     url = str(http.get("url", "")).strip()
-    env_base = re.match(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}(.*)$", url)
-    if env_base:
+    # 用了连接：地址前缀和凭据都在连接里（见 _check_connections），这里只写路径
+    conn = str(http.get("conn") or "").strip()
+    env_base = None if conn else ENV_BASE.match(url)
+    if conn:
+        if not CONN_NAME.match(conn):
+            raise ConfigError(f"{name}.http.conn 不合法：{conn[:40]!r}")
+        if not url.startswith("/"):
+            raise ConfigError(f"{name} 用了连接 {conn}，地址只写路径（以 / 开头）：主机名和凭据都在连接里")
+        rest = url
+    elif env_base:
         rest = env_base.group(2)
     else:
         literal = re.match(r"^https?://([^/?#]+)(.*)$", url)
@@ -257,7 +323,8 @@ def _check_http_tool(raw, name):
         whole_param = PLACEHOLDER.match(value)
         if whole_param and whole_param.group(1) not in params:
             raise ConfigError(f"{name}.http.query 用到了未声明的参数 {whole_param.group(1)}")
-        if not whole_param and URL_PARAM.search(value):
+        # 先去掉凭据引用再找 {参数}：${weather_key} 里的 {weather_key} 不是模型参数
+        if not whole_param and URL_PARAM.search(SECRET_REF.sub("", value)):
             raise ConfigError(f"{name}.http.query 的值要么是固定值，要么整个是 {{参数名}}")
         _check_secret_refs(name, value)
         query[key] = value
@@ -269,7 +336,7 @@ def _check_http_tool(raw, name):
             raise ConfigError(f"{name}.http.headers 的名字不合法：{key[:40]!r}")
         if URL_PARAM.search(SECRET_REF.sub("", value)):
             raise ConfigError(f"{name} 的请求头 {key} 不能使用模型参数，"
-                              f"只能写固定值或 ${{{SECRET_PREFIX}...}}")
+                              f"只能写固定值或凭据引用 ${{名字}} / ${{{SECRET_PREFIX}...}}")
         _check_secret_refs(name, value)
         headers[key] = value
 
@@ -301,7 +368,8 @@ def _check_http_tool(raw, name):
 
     return {**_common(raw, name), "type": "http", "binary": "", "argv": [],
             "params": params,
-            "http": {"url": url, "query": query, "headers": headers, "pick": pick, "notes": notes}}
+            "http": {"url": url, "conn": conn, "query": query, "headers": headers, "pick": pick,
+                     "notes": notes}}
 
 
 # ---- MCP 工具条目 -----------------------------------------------------------
@@ -449,7 +517,12 @@ def _check_mcp_tool(raw, name):
 
 
 def _check_tool(raw):
-    """Validate one entry. Everything that could widen privilege is checked here."""
+    """Validate one entry. Everything that could widen privilege is checked here.
+
+    两种写法：老写法（binary/argv、script、http、mcp 直接写在工具上），和分层写法——工具 = 能力（name、
+    label、group、desc、params、enabled）+ 实现 impl: {type: builtin | command | script | http | mcp, …}。
+    分层写法先摊成老写法再走同一套校验，两种写法的安全规则只有一份。
+    """
     if not isinstance(raw, dict):
         raise ConfigError("每个工具必须是映射")
     name = str(raw.get("name", "")).strip()
@@ -459,19 +532,49 @@ def _check_tool(raw):
             f"按 function calling 的规范只能用小写字母、数字和下划线，不能用中文；"
             f"中文名请写在 label 字段里，界面会显示它。")
 
+    if raw.get("impl") is not None:
+        return _check_impl(raw, name)
     if raw.get("mcp") is not None:
+        _no_os(raw, name, " MCP 型")
         return _check_mcp_tool(raw, name)
     if raw.get("script"):
         spec = _check_script_tool(raw, name)
         spec["group"] = _common(raw, name)["group"]
         return spec
     if raw.get("http") is not None:
+        _no_os(raw, name, "接口型")
         return _check_http_tool(raw, name)
+    return _check_command_tool(raw, name)
 
+
+def _interpreter(binary):
+    """binary 是不是解释器一类。按文件名比：去掉路径、.exe、-dbg、ABI 后缀（3.13t、3.7m）和版本号再比。
+
+    只用 split / rstrip 这类线性操作：页面申请里的 binary 长度没有上限，回溯型正则会被一条申请拖住整个服务。
+    """
+    head = re.split(r"[\\/]", binary)[-1].lower()
+    for suffix in (".exe", "-dbg", "-debug"):
+        if head.endswith(suffix):
+            head = head[:-len(suffix)]
+    names = {head}
+    trimmed = head.rstrip("dmt")
+    if trimmed[-1:].isdigit():
+        head = trimmed
+    names.add(head.rstrip("0123456789."))
+    return bool(names & INTERPRETERS)
+
+
+MAX_ARGV = 64
+MAX_ARG_LEN = 4096
+
+
+def _check_command_tool(raw, name):
     binary = str(raw.get("binary", "")).strip()
     if not binary:
         raise ConfigError(f"{name} 缺少 binary")
-    if binary.lower() in INTERPRETERS:
+    if len(binary) > 255:
+        raise ConfigError(f"{name} 的 binary 太长")
+    if _interpreter(binary):
         raise ConfigError(
             f"{name} 的 binary 是 {binary}，它能执行任意命令，不能直接作为工具。"
             f"要跑一段脚本，请把脚本放到 scripts 目录，再用 script 字段引用它。")
@@ -480,6 +583,8 @@ def _check_tool(raw):
     if not isinstance(argv, list) or not argv:
         raise ConfigError(f"{name}.argv 必须是非空列表")
     argv = [str(part) for part in argv]
+    if len(argv) > MAX_ARGV or any(len(part) > MAX_ARG_LEN for part in argv):
+        raise ConfigError(f"{name}.argv 太长：最多 {MAX_ARGV} 项，每项最多 {MAX_ARG_LEN} 个字符")
     params = _check_params(name, raw)
 
     if argv[0] != binary:
@@ -493,7 +598,199 @@ def _check_tool(raw):
             raise ConfigError(f"{name}.argv 含写操作动词 {part}")
 
     return {**_common(raw, name), "binary": binary, "argv": argv, "params": params,
-            "type": "command"}
+            "type": "command", "os": _check_os(name, raw.get("os"))}
+
+
+# impl 里每种实现认哪些字段。不认识的一律报错而不是忽略：比如写了 via: ssh 却被悄悄当成本机执行，
+# 比加载失败危险得多（远程主机、target、sql 都是后面几期的事）。
+IMPL_FIELDS = {
+    "builtin": ("func",),
+    "command": ("argv", "binary", "os"),
+    "script": ("script", "os"),
+    "http": ("url", "conn", "method", "query", "headers", "pick", "notes"),
+    "mcp": ("server", "tool"),
+}
+LEGACY_FIELDS = ("binary", "argv", "script", "http", "mcp")
+
+
+def _check_impl(raw, name):
+    impl = raw["impl"]
+    if not isinstance(impl, dict):
+        raise ConfigError(f"{name}.impl 必须是映射：{{type: {' | '.join(IMPL_FIELDS)}, …}}")
+    kind = str(impl.get("type", "")).strip()
+    if kind not in IMPL_FIELDS:
+        raise ConfigError(f"{name}.impl.type 只能是 {'、'.join(IMPL_FIELDS)} 之一，不是 {kind[:20]!r}")
+    mixed = [key for key in LEGACY_FIELDS if raw.get(key) is not None]
+    if mixed:
+        raise ConfigError(f"{name} 同时写了 impl 和老写法的 {'、'.join(mixed)}，两种写法只能选一种")
+    if raw.get("os") is not None:
+        raise ConfigError(f"{name}.os 要写在 impl 里：适用哪种系统是实现的事，不是能力的事")
+    unknown = sorted(str(key) for key in impl if key != "type" and key not in IMPL_FIELDS[kind])
+    if unknown:
+        raise ConfigError(f"{name}.impl 里有不认识的字段 {'、'.join(unknown)}"
+                          f"（{kind} 型只认 {'、'.join(IMPL_FIELDS[kind])}）")
+    body = {key: value for key, value in impl.items() if key != "type"}
+    base = {key: value for key, value in raw.items() if key != "impl"}
+    if kind == "builtin":
+        return _check_builtin_tool(base, name, body)
+    if kind == "command":
+        argv = body.get("argv")
+        if not isinstance(argv, list) or not argv:
+            raise ConfigError(f"{name}.impl.argv 必须是非空列表，第一项就是要执行的命令")
+        binary = body.get("binary") or argv[0]
+        return _check_command_tool({**base, "binary": binary, "argv": argv, "os": body.get("os")}, name)
+    if kind == "script":
+        spec = _check_script_tool({**base, "script": str(body.get("script") or ""), "os": body.get("os")}, name)
+        spec["group"] = _common(base, name)["group"]
+        return spec
+    if kind == "http":
+        return _check_http_tool({**base, "http": body}, name)
+    return _check_mcp_tool({**base, "mcp": body}, name)
+
+
+# ---- 内置函数（builtin）--------------------------------------------------------
+# 纯计算，随工具服务的代码发布：没有副作用，不碰网络和文件，也不依赖本机装了什么命令，所以在哪台机器上都能用。
+# 只能在代码里定义；配置按名字引用（impl: {type: builtin, func: date_info}），页面不能申请。
+
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def _builtin_date_info(values):
+    """星期几、当年第几周，输出和 date -d DAY '+%Y-%m-%d %A 第%V周' 逐字一致（C / en_US 语言环境）。"""
+    text = values["day"]
+    year, month, day = (int(part) for part in text.split("-"))
+    # GNU date 认 0000 年，Python 不认。公历 400 年一个周期（146097 天，正好整周），借 400 年算，星期、周数都一样
+    try:
+        value = datetime.date(year or 400, month, day)
+    except ValueError:
+        raise ValueError(f"日期不存在：{text}") from None
+    return f"{text} {WEEKDAYS[value.weekday()]} 第{value.isocalendar()[1]:02d}周"
+
+
+BUILTINS = {
+    "date_info": {
+        "label": "日期是星期几", "group": "日历",
+        "desc": "查某个日期是星期几、当年第几周。推算请假天数、跨周末时用它，不要自己心算星期。",
+        "params": {"day": {"type": "str", "pattern": "date", "required": True, "desc": "日期，格式 YYYY-MM-DD"}},
+        "run": _builtin_date_info,
+    },
+}
+
+
+def _check_builtin_tool(base, name, body):
+    """参数由函数决定。配置可以不写 params（用函数自带的），写了就要和函数对得上：名字、类型、预置正则一致。"""
+    func = str(body.get("func", "")).strip()
+    builtin = BUILTINS.get(func)
+    if builtin is None:
+        raise ConfigError(f"{name}.impl.func 不是内置函数：{func[:40]!r}（现有：{'、'.join(sorted(BUILTINS))}）")
+    expected = _check_params(name, {"params": builtin["params"]})
+    if base.get("params") is None:
+        params = expected
+    else:
+        params = _check_params(name, base)
+        if sorted(params) != sorted(expected):
+            raise ConfigError(f"{name} 的参数要和内置函数 {func} 一致：{'、'.join(sorted(expected)) or '（无参数）'}")
+        for key, spec in params.items():
+            if (spec["type"], spec.get("pattern")) != (expected[key]["type"], expected[key].get("pattern")):
+                want = expected[key].get("pattern") or expected[key]["type"]
+                raise ConfigError(f"{name}.params.{key} 的类型要和内置函数 {func} 一致（{want}）")
+    common = _common(base, name)
+    return {**common, "label": common["label"] or builtin["label"], "desc": common["desc"] or builtin["desc"],
+            "group": common["group"] or builtin["group"],
+            "type": "builtin", "builtin": func, "binary": "", "argv": [], "params": params}
+
+
+def _run_builtin(spec, args):
+    args = args or {}
+    try:
+        values = {key: _value(key, param, args) for key, param in spec["params"].items()}
+        values = {key: int(value) if spec["params"][key]["type"] == "int" else value
+                  for key, value in values.items()}
+        output = str(BUILTINS[spec["builtin"]]["run"](values))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception as exc:   # 内置函数出错是工具服务自己的 bug，也不能把 /exec 弄崩
+        return {"ok": False, "error": f"内置函数 {spec['builtin']} 执行失败：{exc.__class__.__name__}: {exc}"}
+    truncated = len(output) > MAX_OUTPUT
+    call = ", ".join(f"{key}={value}" for key, value in values.items())
+    return {"ok": True, "command": f"{_display(spec)}({call})",
+            "output": output[:MAX_OUTPUT] + ("\n…（输出已截断）" if truncated else "")}
+
+
+# ---- 连接 --------------------------------------------------------------------
+# 一个数据源的地址前缀和凭据引用，写在主文件顶层 connections 里，多个工具用 conn: 共用。
+# 地址和凭据去哪儿是宿主机管理员的决定：被 include 的文件、页面申请都只能引用已有的连接，不能新建。
+
+def _check_conn_base(name, base):
+    env_base = ENV_BASE.match(base)
+    if env_base:
+        _check_secret_refs(f"连接 {name}", base)
+        rest = env_base.group(2)
+    else:
+        literal = re.match(r"^https?://([^/?#]+)(.*)$", base)
+        if not literal:
+            raise ConfigError(f"连接 {name} 的 base 必须以 http:// 或 https:// 开头，或者以 ${{名字}} 开头")
+        if re.search(r"[{}$@]", literal.group(1)):
+            raise ConfigError(f"连接 {name} 的 base 主机名部分不能有参数、变量或用户名密码（凭据写在 headers 里）")
+        rest = literal.group(2)
+    if rest and not rest.startswith("/"):
+        raise ConfigError(f"连接 {name} 的 base 主机名后面必须直接是路径（以 / 开头）")
+    if re.search(r"[{}$?#]", rest):
+        raise ConfigError(f"连接 {name} 的 base 只能是地址前缀，不能带参数、查询串或变量")
+    return base.rstrip("/")
+
+
+def _check_connections(document, problems):
+    """主文件顶层 connections → {name: 连接}。坏条目跳过并记 problem，不拖垮别的连接和工具。"""
+    raw = document.get("connections")
+    if raw is None:
+        return {}
+    if not isinstance(raw, list):
+        problems.append("connections 必须是列表：- {name, type: http, base, headers}")
+        return {}
+    out = {}
+    for entry in raw:
+        try:
+            if not isinstance(entry, dict):
+                raise ConfigError("connections 的每一项必须是映射")
+            name = str(entry.get("name", "")).strip()
+            if not CONN_NAME.match(name):
+                raise ConfigError(f"连接名不合法：{name[:40]!r}，只能用小写字母、数字、下划线")
+            if name in out:
+                raise ConfigError(f"连接名重复：{name}")
+            kind = str(entry.get("type", "")).strip()
+            if kind not in CONN_TYPES:
+                raise ConfigError(f"连接 {name} 的 type 必须是 {'、'.join(CONN_TYPES)}"
+                                  f"（数据库等其他类型在后续版本）")
+            base = _check_conn_base(name, str(entry.get("base", "")).strip())
+            headers = entry.get("headers") or {}
+            if not isinstance(headers, dict):
+                raise ConfigError(f"连接 {name} 的 headers 必须是映射")
+            clean = {}
+            for key, value in headers.items():
+                key, value = str(key), str(value)
+                if not HEADER_NAME.match(key):
+                    raise ConfigError(f"连接 {name} 的请求头名字不合法：{key[:40]!r}")
+                if URL_PARAM.search(SECRET_REF.sub("", value)):
+                    raise ConfigError(f"连接 {name} 的请求头 {key} 只能写固定值或凭据引用 ${{名字}}")
+                _check_secret_refs(f"连接 {name} 的请求头 {key}", value)
+                clean[key] = value
+            out[name] = {"name": name, "type": kind, "label": str(entry.get("label", "")).strip()[:MAX_LABEL],
+                         "base": base, "headers": clean}
+        except ConfigError as exc:
+            problems.append(str(exc))
+    return out
+
+
+def _bind_connection(spec, connections):
+    """接口型工具用了连接：把连接挂到 spec 上，执行时从这里取地址和请求头。连接不存在就不能用。"""
+    conn = spec.get("http", {}).get("conn") if spec.get("type") == "http" else ""
+    if not conn:
+        return spec
+    if conn not in connections:
+        raise ConfigError(f"{spec['name']} 引用了未声明的连接 {conn}；连接只能由管理员写在主配置文件的 connections 里")
+    spec["connection"] = connections[conn]
+    return spec
 
 
 def _yaml():
@@ -610,19 +907,20 @@ def _mcp_file():
 
 def load_tools(path):
     """Parse the definition file. A bad entry is skipped; a bad file raises."""
-    tools, problems, _ = _load_all(path)
+    tools, problems, _, _ = _load_all(path)
     return tools, problems
 
 
 def _load_all(path):
-    """load_tools 的完整版：多返回主文件声明的 MCP server 配置。
+    """load_tools 的完整版：多返回主文件声明的 MCP server 配置和连接。
 
     除了自己的 `tools:`，主文件还可以用顶层 `include:` 引入别的定义文件（例如一个场景包的
     tools.yaml）。被包含的文件和主文件同等可信——它们是管理员亲手写进主文件的路径，所以同样
     只能由宿主机 root 维护；它们自己不能再 include，避免链条越拉越长看不清。
 
     MCP server 只认主文件顶层的 `mcp_servers:`：它是宿主机上要跑的一段代码，必须是 root 在
-    主文件里亲手写下的。被包含的文件里出现 mcp_servers 会被忽略并报出来。
+    主文件里亲手写下的。被包含的文件里出现 mcp_servers 会被忽略并报出来。连接（connections）同理只认主文件：
+    被包含的文件里的工具只能用 conn: 引用主文件的连接，不能自己新建。
     """
     document = _read_yaml(path)
     entries = document.get("tools")
@@ -631,6 +929,7 @@ def _load_all(path):
     patterns = _include_patterns(document)
     files, problems = _expand_includes(patterns, os.path.dirname(os.path.abspath(str(path))))
     servers = _check_mcp_servers(document, problems)
+    connections = _check_connections(document, problems)
 
     # 批准文件最先读：同名时它说了算（漂移后重新批准的条目要盖过主文件里的旧条目）。
     sources = []
@@ -652,6 +951,8 @@ def _load_all(path):
             problems.append(f"{included} 里的 include 已忽略：被包含的文件不能再包含别的文件")
         if sub.get("mcp_servers"):
             problems.append(f"{included} 里的 mcp_servers 已忽略：MCP server 只能在主文件里声明")
+        if sub.get("connections"):
+            problems.append(f"{included} 里的 connections 已忽略：连接（地址和凭据）只能在主文件里声明")
         sub_entries = sub.get("tools")
         if not isinstance(sub_entries, list):
             problems.append(f"{included} 缺少 tools 列表")
@@ -687,9 +988,14 @@ def _load_all(path):
                     continue
                 if spec["group"] == spec["mcp"]["server"]:
                     spec["group"] = server["label"]
+            try:
+                _bind_connection(spec, connections)
+            except ConfigError as exc:
+                problems.append(str(exc) if origin == str(path) else f"{exc}（{origin}）")
+                continue
             spec["origin"] = origin
             tools[spec["name"]] = spec
-    return tools, problems, servers
+    return tools, problems, servers, connections
 
 
 # 覆盖层只允许改这几个字段：一个是开关（缩权方向），两个是给人和模型看的文字。
@@ -729,7 +1035,8 @@ def _apply_overrides(tools, overrides):
 
 
 _state = {"path": DEFAULT_CONFIG, "mtime": None, "omtime": None, "tmtime": None, "imtime": None,
-          "mmtime": None, "includes": [], "tools": {}, "problems": [], "mcp_servers": {}}
+          "mmtime": None, "includes": [], "tools": {}, "problems": [], "mcp_servers": {},
+          "connections": {}}
 
 
 def _mtimes():
@@ -761,7 +1068,7 @@ def refresh(force=False):
         return _state["tools"]
 
     try:
-        tools, problems, servers = _load_all(_state["path"])
+        tools, problems, servers, connections = _load_all(_state["path"])
         includes = _include_patterns(_read_yaml(_state["path"]))
     except ConfigError as exc:
         _state["problems"] = [str(exc)]
@@ -774,7 +1081,8 @@ def refresh(force=False):
         problems = problems + [f"覆盖层已忽略：{exc}"]
 
     _state.update(mtime=mtime, omtime=omtime, tmtime=tmtime, mmtime=mmtime, includes=includes,
-                  problems=problems, tools=_apply_overrides(tools, overrides), mcp_servers=servers)
+                  problems=problems, tools=_apply_overrides(tools, overrides), mcp_servers=servers,
+                  connections=connections)
     # 模式列表可能刚变，用它重新算一次被包含文件的印章，下一次请求才不会白白重载
     _state["imtime"] = _mtimes()[3]
     # server 配置变了就启停对应子进程；这里只换对象，真正拉进程的是后台线程或下一次调用
@@ -819,23 +1127,61 @@ def _mcp_readonly(spec, live=None):
     return "none"
 
 
+def _not_here(spec):
+    """工具声明的系统和工具服务所在机器不符时的原因（给人看）；相符或没声明时是空串。"""
+    wanted = spec.get("os") or []
+    if not wanted or HOST_OS in wanted:
+        return ""
+    return f"不适用于这台机器：工具声明 os: {', '.join(wanted)}，工具服务运行在 {HOST_OS} 上"
+
+
 def _runnable(spec):
-    """Command/script tools need their binary here; HTTP tools only need the network."""
-    if spec.get("type") == "http":
+    """Command/script tools need the right OS and their binary here; HTTP and builtin tools need nothing local."""
+    if spec.get("type") in ("http", "builtin"):
         return True
     if spec.get("type") == "mcp":
         return _mcp_state(spec)[0]
+    if _not_here(spec):
+        return False
     return bool(spec.get("binary") and shutil.which(spec["binary"]))
 
 
+def _unusable_reason(spec):
+    """不能用的原因，给页面看。系统不符排在缺命令前面：linux 的工具在 Windows 上是不适用，不是缺 df。"""
+    if spec.get("type") in ("http", "builtin"):
+        return ""
+    if spec.get("type") == "mcp":
+        return _mcp_state(spec)[1]
+    reason = _not_here(spec)
+    if reason:
+        return reason
+    if not (spec.get("binary") and shutil.which(spec["binary"])):
+        return f"本机没有 {spec['binary']}，该工具不可用"
+    return ""
+
+
 def _http_display(spec):
-    """What the UI and logs show for an HTTP tool. Never includes secret values."""
+    """What the UI and logs show for an HTTP tool. Never includes secret values.
+
+    用了连接的显示连接的地址前缀（字面量或 ${名字}，不是取出来的值）和它带的请求头的名字。
+    """
     http = spec["http"]
-    text = "GET " + http["url"]
+    connection = spec.get("connection")
+    if connection:
+        prefix = connection["base"]
+    elif http.get("conn"):
+        prefix = f"[连接 {http['conn']}]"
+    else:
+        prefix = ""
+    text = "GET " + prefix + http["url"]
     if http["query"]:
         text += "?" + "&".join(f"{k}={v}" for k, v in http["query"].items())
-    if http["headers"]:
-        text += f"  （请求头：{'、'.join(http['headers'])}）"
+    headers = list((connection or {}).get("headers") or {})
+    headers += [h for h in http["headers"] if h not in headers]
+    if headers:
+        text += f"  （请求头：{'、'.join(headers)}）"
+    if http.get("conn"):
+        text += f"  （连接 {http['conn']}）"
     return text
 
 
@@ -846,6 +1192,8 @@ def _display(spec):
         return _http_display(spec)
     if spec.get("type") == "mcp":
         return f"MCP {spec['mcp']['server']} / {spec['mcp']['tool']}"
+    if spec.get("type") == "builtin":
+        return f"内置函数 {spec['builtin']}"
     return " ".join(spec["argv"])
 
 
@@ -991,13 +1339,34 @@ def describe_tools():
                 "script": spec.get("script", ""),
                 "enabled": spec["enabled"],
                 "runnable": _runnable(spec),
-                "overridden": spec.get("overridden", [])}
+                "overridden": spec.get("overridden", []),
+                # 系统不符和缺命令分开报：前者是「不适用于这台机器」，不是坏了
+                "os": list(spec.get("os") or []),
+                "applicable": not _not_here(spec)}
+        if not item["runnable"] and spec.get("type") != "mcp":
+            item["reason"] = _unusable_reason(spec)
+        if spec.get("type") == "builtin":
+            item["builtin"] = spec["builtin"]
+        if spec.get("type") == "http":
+            item["conn"] = spec["http"].get("conn", "")
         if spec.get("type") == "mcp":
             runnable, reason, live = _mcp_state(spec)
             item.update(mcp=spec["mcp"], reason=reason, readonly=_mcp_readonly(spec, live),
                         schema_locked=bool(spec["schema_hash"]), restrict=spec["restrict"],
                         input_schema=_live_schema(spec), params=_mcp_params(spec))
         out[name] = item
+    return out
+
+
+def describe_connections():
+    """页面上看得到的连接：名字、类型、地址前缀（字面量或 ${名字}）、请求头的名字、谁在用。永远没有凭据的值。"""
+    tools = all_tools()
+    out = {}
+    for name, conn in sorted(_state.get("connections", {}).items()):
+        out[name] = {"type": conn["type"], "label": conn["label"], "base": conn["base"],
+                     "headers": sorted(conn["headers"]),
+                     "used_by": sorted(n for n, spec in tools.items()
+                                       if (spec.get("connection") or {}).get("name") == name)}
     return out
 
 
@@ -1080,38 +1449,6 @@ def list_scripts():
     return out
 
 
-def suggest_binaries(wanted, limit=3):
-    """Commands on PATH that look like the one they typed.
-
-    Turns a blunt "no such command" into "did you mean date?", which is the
-    difference between a usable form and a guessing game.
-    """
-    wanted = str(wanted or "").strip()
-    if not wanted:
-        return []
-    names = set()
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
-        if not directory:
-            continue
-        try:
-            names.update(os.listdir(directory))
-        except OSError:
-            continue
-    names.discard(wanted)
-    # 先看是不是多写了后缀（datetime -> date），再退回模糊匹配。
-    prefix = sorted((n for n in names if len(n) >= 3 and wanted.startswith(n)),
-                    key=len, reverse=True)
-    fuzzy = difflib.get_close_matches(wanted, names, n=limit * 2, cutoff=0.6)
-    return (prefix + [n for n in fuzzy if n not in prefix])[:limit]
-
-
-def _missing_binary(binary):
-    hint = suggest_binaries(binary)
-    return (f"本机没有 {binary} 这个命令"
-            + (f"，你是不是想用 {hint[0]}？" if hint else "。")
-            + (f"（相近的还有：{'、'.join(hint[1:])}）" if len(hint) > 1 else ""))
-
-
 def _form_wording(message, name):
     """校验器的措辞面向配置文件（argv、params.x.pattern）；页面上没有这些字段名，换成栏目名。"""
     swaps = [
@@ -1127,6 +1464,8 @@ def _form_wording(message, name):
          r"参数 \1 的类型只能是：\2"),
         (re.compile(rf"^{re.escape(name)} 的参数名不合法：(.+)$"),
          r"参数名 \1 不合法：只能用小写字母、数字、下划线"),
+        (re.compile(rf"^{re.escape(name)}\.os 只能是 (.+?)（可以写成列表），不是 (.+)$"),
+         r"适用系统只能是 \1，不是 \2"),
     ]
     for pattern, repl in swaps:
         if pattern.match(message):
@@ -1134,47 +1473,59 @@ def _form_wording(message, name):
     return message.replace(f"{name}.argv", "命令").replace(f"{name}.params.", "参数 ")
 
 
+def _proposal_kind(raw):
+    """申请的实现类型：新写法看 impl.type，老写法看写了哪个字段。"""
+    impl = raw.get("impl")
+    if impl is not None:
+        return str(impl.get("type", "")).strip() if isinstance(impl, dict) else ""
+    if raw.get("mcp") is not None:
+        return "mcp"
+    if raw.get("script"):
+        return "script"
+    if raw.get("http") is not None:
+        return "http"
+    return "command"
+
+
 def propose_tool(raw, author="web"):
-    """Queue a new tool for review. Proposals are never loaded as usable tools."""
-    # 页面上最常见的两类错误一次说全，别让人改一处、提交、再撞下一处。
-    # 措辞用表单上的栏目名，而不是配置文件里的字段名。
+    """Queue a new tool for review. Proposals are never loaded as usable tools.
+
+    按实现类型申请，不查工具服务这台机器的 PATH：命令在哪种系统上跑由 os 声明；批准后系统不符的
+    显示「不适用于这台机器」，缺命令的显示「本机没有 …」，都不挡申请。builtin 随代码发布、MCP 工具
+    来自 server 的发现，都不能申请。措辞用表单上的栏目名，而不是配置文件里的字段名。
+    """
     raw = raw if isinstance(raw, dict) else {}
     name = str(raw.get("name", "")).strip()
-    binary = str(raw.get("binary", "")).strip()
-    problems = []
     if not TOOL_NAME.match(name):
-        problems.append(
+        raise ConfigError(
             f"工具名「{name[:40]}」不能用：它会作为函数名发给模型，只能用小写英文字母、"
             f"数字和下划线，例如 host_time。中文请填在「中文显示名」那一栏。")
-    if binary and not shutil.which(binary):
-        # 批准之后才发现跑不了，是最差的体验：现在就说清楚，并给出替代。
-        problems.append(_missing_binary(binary)
-                        + " 申请的工具必须现在就能跑；要先装软件再用，请直接写进配置文件。")
-    if problems:
-        if len(problems) == 1:
-            raise ConfigError(problems[0])
-        raise ConfigError("\n".join(f"{i}. {p}" for i, p in enumerate(problems, 1)))
 
-    if raw.get("mcp") is not None:
+    kind = _proposal_kind(raw)
+    if kind == "mcp":
         # MCP 工具不由页面申请：它来自 server 的发现，而 server 只能由管理员在宿主机声明。
         raise ConfigError("页面不能申请 MCP 工具；在宿主机配置 mcp_servers 后，发现到的工具会自动进入待审列表")
-
-    if raw.get("http") is not None:
+    if kind == "builtin":
+        raise ConfigError("页面不能申请内置函数：内置函数随工具服务的代码发布，管理员在配置里按名字引用即可")
+    if kind == "http":
         # 页面申请的接口工具不能带凭据：否则一条申请就能把宿主机上的密钥发到任意地址，
-        # 只差审批时的一次疏忽。需要鉴权的接口，由管理员直接写进配置文件。
-        http = raw.get("http") if isinstance(raw.get("http"), dict) else {}
+        # 只差审批时的一次疏忽。要鉴权就选一个管理员建好的连接，凭据留在连接里。
+        http = raw.get("impl") if raw.get("impl") is not None else raw.get("http")
+        http = http if isinstance(http, dict) else {}
         if http.get("headers"):
-            raise ConfigError("页面申请的接口工具不能设置请求头；需要鉴权的接口请让管理员在宿主机配置")
+            raise ConfigError("页面申请的接口工具不能设置请求头；需要鉴权的接口请选一个已有连接，或让管理员在宿主机配置")
         if http.get("notes"):
             raise ConfigError("页面申请的接口工具不能附带 notes 说明；请让管理员在宿主机配置")
         if "${" in json.dumps(http, ensure_ascii=False):
-            raise ConfigError("页面申请的接口工具不能引用宿主机环境变量")
+            raise ConfigError("页面申请的接口工具不能引用宿主机环境变量或凭据；要带凭据请选一个已有连接")
 
+    tools = all_tools()   # 顺带把连接刷新到最新
     try:
-        spec = _check_tool(raw)  # 其余规则（argv 首项、写动词、占位符）与正式配置一致
+        # 其余规则（argv 首项、写动词、占位符、连接是否存在）与正式配置一致
+        spec = _bind_connection(_check_tool(raw), _state.get("connections", {}))
     except ConfigError as exc:
         raise ConfigError(_form_wording(str(exc), name)) from None
-    if spec["name"] in all_tools():
+    if spec["name"] in tools:
         raise ConfigError(f"已存在同名工具：{spec['name']}")
     with _pending_lock:
         entries = list_pending()
@@ -1218,6 +1569,7 @@ def approve_pending(ident, attest_readonly=False):
         return _approve_mcp(item, spec, attest_readonly)
     if spec["name"] in all_tools():
         raise ConfigError(f"已存在同名工具：{spec['name']}")
+    _bind_connection(spec, _state.get("connections", {}))   # 连接可能在申请之后被删了
     if spec.get("type") == "script":
         # 批准脚本 = 认可此刻的脚本内容，把它的哈希登记为可信。
         trust_script(spec["script"])
@@ -1401,10 +1753,13 @@ def _http_get(url, headers):
         return exc.code, exc.read(MAX_HTTP_BYTES + 1) if exc.fp else b""
 
 
-def _secret(name):
-    value = os.environ.get(name, "")
-    if not name.startswith(SECRET_PREFIX) or not value:
-        raise ValueError(f"宿主机没有配置 {name}，该工具暂不可用")
+def _secret(ref):
+    """取一个凭据的值：${prom_token} 读 OPS_SECRET_PROM_TOKEN，${OPS_SECRET_X} 读它自己。没配就不能用。"""
+    env = _secret_env(ref)
+    value = os.environ.get(env, "") if env else ""
+    if not value:
+        shown = ref if env in (None, ref) else f"{ref}（环境变量 {env}）"
+        raise ValueError(f"宿主机没有配置 {shown}，该工具暂不可用")
     return value
 
 
@@ -1444,8 +1799,13 @@ def build_request(spec, args):
     secrets_used = []
 
     url = http["url"]
-    env_base = re.match(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}(.*)$", url)
-    if env_base:
+    connection = spec.get("connection")
+    if http.get("conn") and not connection:
+        raise ValueError(f"连接 {http['conn']} 不存在，该工具暂不可用")
+    env_base = None if connection else ENV_BASE.match(url)
+    if connection:
+        base, rest = _connection_base(connection, secrets_used), url
+    elif env_base:
         base = _secret(env_base.group(1)).rstrip("/")
         secrets_used.append(base)
         if not re.match(r"^https?://[^/?#]+(/[^?#]*)?$", base):
@@ -1466,16 +1826,36 @@ def build_request(spec, args):
         full += "?" + urllib.parse.urlencode(query)
 
     headers = {"User-Agent": "ops-readonly/1", "Accept": "application/json, */*"}
-    for key, raw in http["headers"].items():
+    # 连接的请求头在前，工具自己写的同名请求头覆盖它
+    for key, raw in list(((connection or {}).get("headers") or {}).items()) + list(http["headers"].items()):
         headers[key] = _fill_secrets(raw, secrets_used)
     return full, headers, [s for s in secrets_used if s]
 
 
+def _connection_base(connection, secrets_used):
+    """连接的地址前缀：字面量原样；${名字} 开头的取凭据的值——地址本身也当敏感信息，输出里脱敏。"""
+    base = connection["base"]
+    env_base = ENV_BASE.match(base)
+    if not env_base:
+        return base
+    value = _secret(env_base.group(1)).rstrip("/")
+    secrets_used.append(value)
+    if not re.match(r"^https?://[^/?#@]+(/[^?#]*)?$", value):
+        raise ValueError(f"连接 {connection['name']} 的地址 {env_base.group(1)} 不是合法的 http(s) 地址")
+    return value + env_base.group(2)
+
+
 def _scrub(text, secrets_used):
-    """Never hand a secret back to the model, even if the API echoes it."""
-    for secret in sorted(set(secrets_used), key=len, reverse=True):
+    """Never hand a secret back to the model, even if the API echoes it.
+
+    放进查询串的凭据在 URL 里是编码过的（+ / = 会变成 %2B %2F %3D），回显的也可能是编码后的样子，两种都换掉。
+    """
+    forms = set()
+    for secret in set(secrets_used):
         if len(secret) >= 6:
-            text = text.replace(secret, "***")
+            forms.update((secret, urllib.parse.quote(secret, safe=""), urllib.parse.quote_plus(secret)))
+    for secret in sorted(forms, key=len, reverse=True):
+        text = text.replace(secret, "***")
     return text
 
 
@@ -2152,6 +2532,8 @@ def run_tool(name, args):
         return _run_http(spec, args)
     if spec.get("type") == "mcp":
         return _run_mcp(spec, args)
+    if spec.get("type") == "builtin":
+        return _run_builtin(spec, args)
 
     # 先校验参数再看本机有没有这个命令：不可信输入是安全边界，要最先挡掉。
     try:
@@ -2162,6 +2544,11 @@ def run_tool(name, args):
     # Defence in depth: the template is fixed, but verify anyway.
     if any(part in FORBIDDEN for part in argv[1:]):
         return {"ok": False, "error": "拒绝执行：命中写操作黑名单"}
+
+    # 声明了别的系统：同名命令在这台机器上即使存在，参数和输出也未必是那个意思，不跑
+    reason = _not_here(spec)
+    if reason:
+        return {"ok": False, "error": reason}
 
     # 脚本型工具：执行前再比一次哈希。配置 mtime 不变也挡得住"脚本被偷换内容"。
     if spec.get("type") == "script":
@@ -2213,7 +2600,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/tools/full":
             return self._send(200, {"tools": describe_tools(),
                                     "pending": len(list_pending()),
-                                    "mcp_servers": mcp_status()})
+                                    "mcp_servers": mcp_status(),
+                                    "connections": describe_connections(),
+                                    "host": {"os": HOST_OS}})
         if self.path == "/tools/pending":
             return self._send(200, {"pending": list_pending()})
         if self.path == "/tools/scripts":
@@ -2281,6 +2670,23 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def _legacy_view(tool):
+    """待审条目按老写法的字段看：分层写法把 impl 摊开，打印只认一套字段。"""
+    impl = tool.get("impl")
+    if not isinstance(impl, dict):
+        return tool
+    body = {key: value for key, value in impl.items() if key != "type"}
+    view = {key: value for key, value in tool.items() if key != "impl"}
+    kind = impl.get("type")
+    if kind == "command":
+        view.update(argv=body.get("argv") or [], os=body.get("os"))
+    elif kind == "script":
+        view.update(script=body.get("script"), os=body.get("os"))
+    elif kind in ("http", "mcp"):
+        view[kind] = body
+    return view
+
+
 def _print_pending():
     items = list_pending()
     if not items:
@@ -2288,7 +2694,7 @@ def _print_pending():
         return 0
     print(f"待审申请 {len(items)} 条：\n")
     for item in items:
-        tool = item.get("tool") or {}
+        tool = _legacy_view(item.get("tool") or {})
         print(f"  [{item.get('id')}] {tool.get('name')}"
               f"    {item.get('author')} 于 {item.get('created_at')} 提交")
         print(f"      说明：{tool.get('desc')}")
@@ -2308,9 +2714,13 @@ def _print_pending():
         elif isinstance(tool.get("http"), dict):
             http = tool["http"]
             query = "&".join(f"{k}={v}" for k, v in (http.get("query") or {}).items())
-            print(f"      接口：GET {http.get('url', '')}{'?' + query if query else ''}")
+            conn = f"[连接 {http['conn']}] " if http.get("conn") else ""
+            print(f"      接口：GET {conn}{http.get('url', '')}{'?' + query if query else ''}")
         else:
             print(f"      命令：{' '.join(str(p) for p in tool.get('argv') or [])}")
+        if tool.get("os"):
+            print(f"      适用系统：{tool['os'] if isinstance(tool['os'], str) else ', '.join(map(str, tool['os']))}"
+                  f"（工具服务运行在 {HOST_OS} 上）")
         params = tool.get("params") or {}
         if params:
             print(f"      参数：{', '.join(params)}")
@@ -2406,6 +2816,10 @@ def main():
     print(f"只读运维接口启动于 {args.host}:{args.port}")
     print(f"可用工具 {len(tools)} 个：{', '.join(sorted(tools))}")
     missing = sorted(set(all_tools()) - set(tools))
+    elsewhere = [name for name in missing if _not_here(all_tools()[name])]
+    missing = [name for name in missing if name not in elsewhere]
+    if elsewhere:
+        print(f"（不适用于这台机器（声明的 os 不是 {HOST_OS}）：{', '.join(elsewhere)}）")
     if missing:
         print(f"（本机缺少对应命令或 MCP server 尚未连上，暂不可用：{', '.join(missing)}）")
     waiting = len(list_pending())

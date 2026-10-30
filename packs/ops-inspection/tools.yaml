@@ -1,10 +1,12 @@
 # 运维-日常巡检 用到的工具。格式与 deploy/ops_tools.yaml 完全一致（见其头部注释），
-# 都是命令型只读工具，要求工具服务跑在被巡检的宿主机上。
+# 都是命令型只读工具，要求工具服务跑在被巡检的宿主机上。df -h、free -m 这些写法只对 Linux 成立，
+# 所以都声明了 os: linux：工具服务装在别的系统上时，它们显示「不适用于这台机器」，而不是「缺命令」。
 tools:
   - name: host_disk
     label: 磁盘用量
     group: 宿主机
     desc: 查看宿主机各挂载点的磁盘使用率。容器写日志失败、镜像拉不下来时先看这个。
+    os: linux
     binary: df
     argv: [df, -h]
     params: {}
@@ -13,6 +15,7 @@ tools:
     label: 宿主机内存
     group: 宿主机
     desc: 查看宿主机剩余内存与 swap 使用情况。怀疑内存不足、容器被 OOM 杀掉时用它。
+    os: linux
     binary: free
     argv: [free, -m]
     params: {}
@@ -21,6 +24,7 @@ tools:
     label: 开机时长与负载
     group: 宿主机
     desc: 查看宿主机已经开机多久、当前 1/5/15 分钟平均负载。怀疑系统过载或刚重启过时用它。
+    os: linux
     binary: uptime
     argv: [uptime]
     params: {}
@@ -29,6 +33,7 @@ tools:
     label: 容器清单
     group: 容器
     desc: 列出宿主机上所有容器及其运行状态。想知道某个服务是否在跑、是否反复重启时先用它。
+    os: linux
     binary: docker
     argv: [docker, ps, -a, --no-trunc, --format,
            "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"]
@@ -38,6 +43,7 @@ tools:
     label: 容器资源占用
     group: 容器
     desc: 查看所有容器当前的 CPU 与内存占用，用于判断是否资源不足。
+    os: linux
     binary: docker
     argv: [docker, stats, --no-stream, --format,
            "{{.Name}}\tCPU={{.CPUPerc}}\tMEM={{.MemUsage}} ({{.MemPerc}})"]

@@ -1106,40 +1106,28 @@ class ManagementTests(unittest.TestCase):
         with self.assertRaises(ops.ConfigError):
             ops.propose_tool(self.GOOD)
 
-    def test_a_missing_command_is_refused_with_a_suggestion(self):
-        """命令写错时当场说清原因并给替代，而不是批准后才发现跑不了。"""
-        with patch.object(ops.shutil, "which", return_value=None), \
-             patch.object(ops, "suggest_binaries", return_value=["date", "dateutils"]):
-            with self.assertRaises(ops.ConfigError) as caught:
-                ops.propose_tool({"name": "clock", "desc": "看时间",
-                                  "binary": "datetime", "argv": ["datetime"],
-                                  "params": {}})
-        message = str(caught.exception)
-        self.assertIn("datetime", message)
-        self.assertIn("date", message)
-        self.assertEqual(ops.list_pending(), [])  # 没写错的东西不进队列
+    def test_proposals_do_not_check_this_machines_path(self):
+        """申请不再看工具服务这台机器的 PATH（解耦 P1）：命令要跑在哪种系统上由 os 声明，批准后才看本机能不能跑。"""
+        with patch.object(ops.shutil, "which", return_value=None):
+            item = ops.propose_tool({"name": "clock", "desc": "看时间",
+                                     "binary": "datetime", "argv": ["datetime"], "params": {}})
+            self.assertEqual(item["tool"]["binary"], "datetime")
+            self.assertEqual([i["tool"]["name"] for i in ops.list_pending()], ["clock"])
+            ops.approve_pending(item["id"])
+            # 批准后本机没有这个命令：管理页说清原因，模型看不到它
+            self.assertEqual(ops.describe_tools()["clock"]["reason"], "本机没有 datetime，该工具不可用")
+            self.assertNotIn("clock", ops.available_tools())
 
-    def test_name_and_command_errors_are_reported_together(self):
-        """改一处、提交、再撞下一处，体验很差：一次说全。"""
-        with patch.object(ops.shutil, "which", return_value=None), \
-             patch.object(ops, "suggest_binaries", return_value=["date"]):
+    def test_a_bad_name_is_explained_in_form_wording(self):
+        with patch.object(ops.shutil, "which", return_value=None):
             with self.assertRaises(ops.ConfigError) as caught:
                 ops.propose_tool({"name": "时间", "desc": "几点了",
-                                  "binary": "datetime", "argv": ["datetime"],
-                                  "params": {}})
+                                  "binary": "datetime", "argv": ["datetime"], "params": {}})
         message = str(caught.exception)
-        self.assertIn("1. 工具名", message)
-        self.assertIn("2. 本机没有 datetime", message)
-        self.assertIn("date", message)
-
-    def test_suggestions_catch_the_usual_typos(self):
-        with patch.dict(ops.os.environ, {"PATH": "/fake"}), \
-             patch.object(ops.os, "listdir",
-                          return_value=["date", "df", "who", "uptime", "ss"]):
-            self.assertEqual(ops.suggest_binaries("datetime")[0], "date")
-            self.assertIn("date", ops.suggest_binaries("dat"))
-            self.assertIn("uptime", ops.suggest_binaries("uptim"))
-            self.assertEqual(ops.suggest_binaries("zzzzzzzz"), [])
+        self.assertIn("工具名「时间」不能用", message)
+        self.assertIn("中文显示名", message)
+        self.assertNotIn("本机没有", message)
+        self.assertEqual(ops.list_pending(), [])
 
     def test_approval_writes_it_into_the_main_file_and_takes_effect(self):
         item = ops.propose_tool(self.GOOD)
