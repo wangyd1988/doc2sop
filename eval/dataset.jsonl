@@ -19,3 +19,9 @@
 {"id": "multi-05", "question": "为什么关闭思考的参数要实测验证，不能直接相信？", "expected_points": ["有些实现只是不再单独返回思考", "模型照样在思考", "推理内容会混进正式答案"], "expected_sources": ["示例-大模型推理性能.md"], "type": "multi_hop"}
 {"id": "refusal-01", "question": "知识库里有没有讲过 Kafka 的分区再均衡机制？", "expected_points": ["明确说明知识库中没有相关内容", "不编造答案"], "expected_sources": [], "type": "refusal"}
 {"id": "refusal-02", "question": "PostgreSQL 的 VACUUM FULL 和普通 VACUUM 有什么区别？", "expected_points": ["明确说明知识库中没有相关内容", "不编造答案"], "expected_sources": [], "type": "refusal"}
+{"id": "rephrase-01", "question": "机器夜里自己重启过，第二天巡检时从哪一项能看出来？", "expected_points": ["看开机时长", "开机时长明显短于预期说明夜间发生过重启"], "expected_sources": ["日常巡检规范.md"], "type": "rephrase"}
+{"id": "rephrase-02", "question": "换了带思考的模型后，回答开头总冒出一大段推理，关掉思考的参数为什么不管用？", "expected_points": ["有些实现只是不再把思考单独返回", "模型照样在思考", "推理内容混进正式答案"], "expected_sources": ["示例-大模型推理性能.md"], "type": "rephrase"}
+{"id": "rephrase-03", "question": "请假那几天里赶上周末要上班的那一天，要不要算进请假天数？", "expected_points": ["调休补班日是工作日", "这天请假要计入请假天数"], "expected_sources": ["休假管理制度.md"], "type": "rephrase"}
+{"id": "context-01", "question": "单机 Docker 日常巡检一共看哪几项？每项的告警线分别是多少？", "expected_points": ["根分区超过 80% 告警、超过 90% 严重", "可用内存低于总量 15% 告警", "15 分钟负载持续高于 CPU 核数告警", "业务容器不是 running 记为严重", "容器内存超过上限 80% 告警"], "expected_sources": ["日常巡检规范.md"], "type": "context"}
+{"id": "context-02", "question": "模型网关调不通时自查分哪几步？每一步具体看什么？", "expected_points": ["先看网关本身是否健康", "再看这把 key 能用哪些模型", "最后看 key 的额度和限制：预算、429 限流、过期或封禁"], "expected_sources": ["大模型网关使用说明.md"], "type": "context"}
+{"id": "context-03", "question": "想把年假和国庆连在一起休，提交前要按什么顺序核对？要提前多久申请？", "expected_points": ["先查当年法定节假日安排和补班日", "再逐日确认星期几", "最后比较请假天数与连休天数", "与法定节假日连休需提前 10 个工作日申请"], "expected_sources": ["休假管理制度.md"], "type": "context"}

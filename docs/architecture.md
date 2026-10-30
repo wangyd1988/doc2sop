@@ -79,12 +79,22 @@ flowchart LR
 提问
  └─ 问题改写      多轮时补全指代，首轮直接跳过
  └─ 向量化        云 A → 云 B → 云 C
- └─ 向量检索      Chroma 取 TOP_K，过滤低分片段
- └─ 生成回答      系统提示 + 历史 + 片段，流式返回
+ └─ 混合检索      向量 + 关键词融合、低分过滤、重排，取 TOP_K
+ └─ 生成回答      系统提示 + 历史 + 片段，流式返回；有工具可绑时走 Agent（模型 ⇄ 工具循环）
  └─ 写入记忆      答案与引用一起存库
 ```
 
 每一步都是 LangSmith 里的一个节点，耗时自动拆分。
+
+**知识检索工具化（`KB_TOOLS`，默认关）。** 打开后知识库检索也是工具：`kb_search`（复用上面的混合检索，可按分类、文档过滤）、
+`kb_read`（按片段 id「文档键:序号」读前后各几段，或按文档 + 页码读整页，拼接时去掉切分留的重叠）、`kb_catalog`（目录）。
+没有工具服务、也没开联网的部署也会因此走 Agent 分支。`KB_RETRIEVAL_MODE` 决定首轮：`prefetch` 照上面先检索一次、不够时模型补查；
+`forced` 不预检索，第一轮强制调 `kb_search`（模型不支持 `tool_choice` 时当场退回 `prefetch`）；`agentic` 全由模型决定。
+补查的片段接着预检索的 `[1]…[k]` 编号，经 `kb_sources` 事件追加卡片、随回答落库；结构化结果放在工具消息的 `artifact` 里，
+往后几轮回放只给文档名。知识类、流程类工具绑上时一轮最多 8 次工具调用（只有数据类、外网类时仍是 4 次）。
+
+**待办清单（`PLAN_TOOL`，默认关）。** 流程类工具 `plan`：模型维护整张清单（每次整体替换），经 `plan` 事件画成勾选列表；
+点「▶ 执行」时代码先按 SOP 步骤预填。流程类调用不算观察到系统、不进 SOP、不记进图谱。
 
 ## 组织运行图谱（graph.db）
 
@@ -167,8 +177,10 @@ app/
 ├── models.py          网关可用模型列表与校验
 ├── tracing.py         LangSmith 追踪
 ├── agent/
-│   ├── loop.py        LangGraph Agent：模型 ⇄ 工具循环，检查点记住每轮完整过程
+│   ├── loop.py        LangGraph Agent：模型 ⇄ 工具循环，检查点记住每轮完整过程；三种检索模式、forced 的退回
 │   ├── registry.py    工具注册表：统一契约（MCP 的 Tool 格式）与类别策略，合并工具服务和应用内的工具
+│   ├── kb_tools.py    知识类工具 kb_search / kb_read / kb_catalog：补查、读前后文、目录，片段续编号
+│   ├── plan.py        流程类工具 plan：本轮的待办清单，「▶ 执行」时按 SOP 步骤预填
 │   ├── tools.py       按 JSON Schema 生成工具签名（契约里的 inputSchema；老工具服务按 params 推）
 │   ├── extract.py     从文档抽取 SOP
 │   ├── grow.py        从一次自由排查长出 SOP 提议（回答后后台判断、生成、去重）

@@ -6,11 +6,13 @@
 
 | | 文件 | 对应语料 | 是否进仓库 |
 |---|---|---|---|
-| 公开 | `dataset.jsonl` | `sample_kb/` 的 6 篇示例文档 | 是，任何人 clone 都能复现 |
+| 公开 | `dataset.jsonl` | `sample_kb/` 下的示例文档 | 是，任何人 clone 都能复现 |
 | 私有 | `dataset.local.jsonl` | 你自己的真实文档 | 否，已在 `.gitignore` 中 |
 
 公开这套不依赖任何私有数据：上传 `sample_kb/` 下的文档即可跑出相同结果。
 如果你的知识库装的是工作资料，把题目写进 `dataset.local.jsonl`，它不会被提交。
+
+**公开这套测不出检索改动。** 它只有十几个片段，`TOP_K=8` 等于每次返回半个库；比较检索模式、补查效果要用私有真实语料。
 
 ## 怎么跑
 
@@ -30,6 +32,26 @@ python eval/run_eval.py --user admin --password '...' \
   --out eval/result.json
 ```
 
+### 对比三种检索模式
+
+`--mode prefetch|forced|agentic` 按请求打开知识类工具（`KB_TOOLS`）并指定检索模式，服务端配置不用改。
+这要带评测令牌：应用启动时生成在 `DATA_DIR/eval_token`（权限 600），只有宿主机上读得到；也可以在 `.env` 里配 `EVAL_TOKEN`。
+
+```bash
+for mode in prefetch forced agentic; do
+  python eval/run_eval.py --user admin --password '...' --dataset eval/dataset.local.jsonl \
+    --mode $mode --eval-token-file /opt/kb-app/data/eval_token --out eval/result.$mode.json
+done
+```
+
+`--mode` 时多三个指标：
+
+| 指标 | 怎么算 |
+|---|---|
+| 补查率 | 第一次检索之后模型又调了 `kb_search` / `kb_read` 的题占比（`prefetch` 下第一次是代码预检索，其余模式是模型的第一次 `kb_search`） |
+| 补查后命中率 | 补查过的题里，最终来源（预检索 + 补查）命中期望文档的比例；同时给出这些题补查前的命中率 |
+| 平均模型轮次 | 每题调用模型的次数（服务端在回答末尾的 `stats` 事件里给出） |
+
 ## 数据格式
 
 一行一条 JSON：
@@ -40,17 +62,19 @@ python eval/run_eval.py --user admin --password '...' \
 | `question` | 提问原文 |
 | `expected_points` | 答案里应当出现的关键信息点 |
 | `expected_sources` | 期望命中的来源文件名；空数组表示「知识库里本就没有」 |
-| `type` | `fact` / `concept` / `multi_hop` / `refusal` |
+| `type` | `fact` / `concept` / `multi_hop` / `rephrase` / `context` / `refusal` |
 
 ## 题目构成
 
-当前 20 条：
+当前 27 条：
 
 | 类型 | 条数 | 考什么 |
 |---|---|---|
 | `fact` | 7 | 能否准确取回具体数值和定义 |
 | `concept` | 7 | 能否解释清楚原理，不只是复读原文 |
-| `multi_hop` | 4 | 需要综合多处内容或跨文档 |
+| `multi_hop` | 5 | 需要综合多处内容或跨文档 |
+| `rephrase` | 3 | 提问的说法和文档不一样，第一次检索可能查不到，要换个说法再查 |
+| `context` | 3 | 答案散在相邻几段里，只拿到一个片段答不全，要读前后文 |
 | `refusal` | 2 | 知识库里没有时能否老实说没有 |
 
 **`refusal` 是最重要的一类。** RAG 最危险的失败不是答不出，而是知识库里没有却编造一个。
