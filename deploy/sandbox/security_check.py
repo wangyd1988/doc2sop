@@ -9,9 +9,10 @@
     接口      不带令牌、令牌不对都是 401；夹带 docker 参数、文件名带路径都是 400，一个容器都不起
     断网      连外网（IP 直连、域名、HTTP）、连宿主机上的应用 8765、工具服务 8799、沙箱服务 8797、模型网关隧道 14000、
               docker 网关、云元数据、宿主机自己的 IP，DNS 解析，全部失败
-    文件      根文件系统、/data、/dev/shm、/run 等都写不进去，只有 /tmp 能写（实际能写多少另外报出来）；
+    文件      根文件系统、/data、/run 等都写不进去，只有 /tmp 能写（/dev/shm 和 /tmp 实际能写多少另外报出来）；
               读不到宿主机上的文件（.env、docker.sock、/var/lib/docker）；读不到别的执行的数据
-    身份      nobody、没有任何 capability、NoNewPrivs；环境变量只有 PATH、LANG、HOME，没有凭据
+    身份      nobody、没有任何 capability（/proc 的说法之外再实际试 setuid(0)、chown、绑 80 端口）、NoNewPrivs；
+              环境变量只有 PATH、LANG、HOME，没有凭据
     资源      fork 炸弹、内存炸弹、死循环、超大输出都按上限收手；跑完宿主机上的生产容器没被重启
     隔离      容器的 runtime 是 runsc，各项限制确实加上了；容器里看到的内核不是宿主机的
     并发      满了排队；排队的也满了就 429
@@ -30,7 +31,7 @@ import urllib.request
 
 LABEL = "doc2sop.sandbox"
 RUNS_DIR = "/var/lib/doc2sop-sandbox/runs"
-PRODUCTION = ("kb-app", "demo-app", "demo-ops")
+PRODUCTION = "kb-app"           # 应用容器：它必须在跑，而且跑完用例后没被重启（别的在跑的容器同样核对）
 LOCAL_PORTS = (8765, 8766, 8797, 8799, 14000)
 
 results = []
@@ -98,7 +99,9 @@ def docker(*args, timeout=30):
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
-def started_at(names):
+def running_containers():
+    """宿主机上此刻在跑的容器（沙箱自己的除外）：名字 -> 启动时间和重启次数。跑完再比一次，看有没有被重启。"""
+    names = [n for n in docker("ps", "--format", "{{.Names}}").split() if not n.startswith("doc2sop-sbx-")]
     return {name: docker("inspect", "--format", "{{.State.StartedAt}} {{.RestartCount}}", name) for name in names}
 
 
@@ -183,7 +186,7 @@ FILES = r'''
 import json, os
 out = {}
 for path in ("/", "/etc", "/usr", "/usr/local/lib/python3.12/site-packages", "/var/tmp", "/root", "/home",
-             "/data", "/dev", "/dev/shm", "/run", "/sys", "/proc"):
+             "/data", "/dev", "/run", "/sys", "/proc", "/dev/shm"):
     target = os.path.join(path, "sbx-write-test")
     try:
         with open(target, "w") as handle:
@@ -224,9 +227,12 @@ print(json.dumps(out))
 def check_files(client):
     result = client.run(FILES, [{"name": "only-this-run.txt", "content": "x"}])
     seen = last_json(result["stdout"]) or {}
-    writable = [k for k, v in seen.items() if v == "WRITABLE"]
-    record("文件：根文件系统、/data、/dev/shm 等都写不进去", bool(seen) and not writable,
+    # /dev/shm 不是根文件系统：--ipc none 时 docker 不挂它；gVisor 若自己给一个，也是沙箱内存里的 tmpfs，用完即弃，只报告
+    writable = [k for k, v in seen.items() if v == "WRITABLE" and k != "/dev/shm"]
+    record("文件：根文件系统、/data 等都写不进去", bool(seen) and not writable,
            f"可写：{writable}" if writable else "")
+    note("/dev/shm", "可写（沙箱内存里的 tmpfs，算在 256MB 里）" if seen.get("/dev/shm") == "WRITABLE"
+         else f"写不进去（{seen.get('/dev/shm')}）")
     record("文件：/tmp 能写（唯一的临时工作目录）", seen.get("/tmp") == "ok", f"/tmp={seen.get('/tmp')}")
     note("/tmp 的上限（tmpfs size=16m；超出的部分也算在 256MB 内存里）",
          f"写到 {seen.get('tmp_written_mb')}MB 时 {seen.get('tmp_fill_error') or '没有报错'}")
@@ -237,7 +243,7 @@ def check_files(client):
 
 
 IDENTITY = r'''
-import ctypes, json, os
+import ctypes, json, os, socket
 status = open("/proc/self/status").read()
 fields = {line.split(":")[0]: line.split(":", 1)[1].strip() for line in status.splitlines()
           if line.startswith(("Cap", "NoNewPrivs"))}
@@ -245,9 +251,20 @@ try:
     nnp = ctypes.CDLL(None, use_errno=True).prctl(39, 0, 0, 0, 0)    # PR_GET_NO_NEW_PRIVS
 except Exception as exc:
     nnp = type(exc).__name__
+# 不靠 /proc 的说法，直接试三件要 capability 的事：都该失败
+tries = {}
+for label, action in (("setuid0", lambda: os.setuid(0)),
+                      ("chown", lambda: (open("/tmp/c", "w").close(), os.chown("/tmp/c", 0, 0))),
+                      ("bind80", lambda: socket.socket().bind(("127.0.0.1", 80)))):
+    try:
+        action()
+        tries[label] = "ALLOWED"
+    except Exception as exc:
+        tries[label] = type(exc).__name__
 init_env = open("/proc/1/environ", "rb").read().decode("utf-8", "replace").split("\0")
 print(json.dumps({"uid": os.getuid(), "gid": os.getgid(), "groups": os.getgroups(), "status": fields,
-                  "no_new_privs": nnp, "env": dict(os.environ), "init_env": [e for e in init_env if e]}))
+                  "no_new_privs": nnp, "tries": tries, "env": dict(os.environ),
+                  "init_env": [e for e in init_env if e]}))
 '''
 
 
@@ -256,15 +273,16 @@ def check_identity(client, token):
     seen = last_json(result["stdout"]) or {}
     status = seen.get("status") or {}
     caps = {k: v for k, v in status.items() if k.startswith("Cap") and k != "CapAmb"}
+    tries = seen.get("tries") or {}
+    no_caps = all(int(v, 16) == 0 for v in caps.values()) and bool(tries) and "ALLOWED" not in tries.values()
     record("身份：nobody（65534），没有 capability，NoNewPrivs",
-           seen.get("uid") == 65534 and seen.get("gid") == 65534 and seen.get("no_new_privs") == 1
-           and bool(caps) and all(int(v, 16) == 0 for v in caps.values()),
-           f"uid={seen.get('uid')} gid={seen.get('gid')} no_new_privs={seen.get('no_new_privs')} {caps}")
+           seen.get("uid") == 65534 and seen.get("gid") == 65534 and seen.get("no_new_privs") == 1 and no_caps,
+           f"uid={seen.get('uid')} gid={seen.get('gid')} no_new_privs={seen.get('no_new_privs')} {caps} {tries}")
     env = seen.get("env") or {}
     text = json.dumps(seen.get("env")) + json.dumps(seen.get("init_env"))
     secretish = [k for k in env if re.search(r"TOKEN|KEY|SECRET|PASS|AUTH|CRED", k, re.I)]
     record("环境变量：只有 PATH、LANG、HOME，没有凭据",
-           set(env) <= {"PATH", "LANG", "HOME"} and not secretish and (not token or token not in text),
+           bool(env) and set(env) <= {"PATH", "LANG", "HOME"} and not secretish and (not token or token not in text),
            f"{sorted(env)}")
 
 
@@ -382,17 +400,17 @@ def check_bombs(client):
 
 
 def check_concurrency(client):
+    """按服务此刻的配置（并发、排队秒数、排队上限）同时发一批：至少并发数个跑成，多出来的说明「沙箱正忙」被拒。"""
     health = client.health()
-    if health.get("concurrency") != 1:
-        record("并发：满了排队、排满了拒绝", False, f"这条用例按并发 1 写的，现在是 {health.get('concurrency')}")
-        return
+    concurrency = int(health.get("concurrency") or 1)
+    queue_max = int((health.get("limits") or {}).get("queue_max") or 4)
     outcomes = []
 
     def one():
         status, body = client.post({"code": "import time\ntime.sleep(3)\nprint('ok')"})
         outcomes.append((status, body.get("error", "")))
 
-    threads = [threading.Thread(target=one) for _ in range(6)]
+    threads = [threading.Thread(target=one) for _ in range(concurrency + queue_max + 2)]
     for thread in threads:
         thread.start()
         time.sleep(0.1)
@@ -400,9 +418,10 @@ def check_concurrency(client):
         thread.join()
     statuses = sorted(status for status, _ in outcomes)
     busy = [error for status, error in outcomes if status == 429]
-    record("并发：满了排队、排满了拒绝",
-           statuses.count(200) >= 2 and busy and all("沙箱正忙" in e for e in busy) and set(statuses) <= {200, 429},
-           f"6 个同时来：{statuses}")
+    record("并发：满了排队、排满了拒绝并说明原因",
+           statuses.count(200) >= concurrency and bool(busy) and all("沙箱正忙" in e for e in busy)
+           and set(statuses) <= {200, 429},
+           f"并发 {concurrency}、排队上限 {queue_max}，同时来 {len(threads)} 个：{statuses}")
 
 
 def check_cleanup():
@@ -427,7 +446,7 @@ def main():
     except Exception as exc:
         print(f"错误：连不上沙箱服务 {args.url}：{exc}", file=sys.stderr)
         return 2
-    before = started_at(PRODUCTION)
+    before = running_containers()
     for case in (lambda: check_api(client), lambda: check_network(client), lambda: check_files(client),
                  lambda: check_identity(client, token), lambda: check_runtime(client),
                  lambda: check_isolation_between_runs(client), lambda: check_bombs(client),
@@ -438,9 +457,10 @@ def main():
             record("用例本身出错", False, f"{exc.__class__.__name__}: {exc}")
     time.sleep(1)
     check_cleanup()
-    after = started_at(PRODUCTION)
-    record("宿主机：生产容器没有被重启", before == after and all(before.values()),
-           "; ".join(f"{k} {v}" for k, v in after.items()))
+    after = running_containers()
+    changed = {name: (was, after.get(name)) for name, was in before.items() if after.get(name) != was}
+    record("宿主机：跑之前在跑的容器都没被重启（应用容器 kb-app 在其中）", PRODUCTION in before and not changed,
+           f"{len(before)} 个容器：{', '.join(sorted(before))}" if not changed else f"变了：{changed}")
     failed = [name for name, passed, _ in results if not passed]
     print(f"\n{len(results) - len(failed)} 通过 / {len(failed)} 失败", flush=True)
     return 1 if failed else 0

@@ -56,6 +56,8 @@ class FakeDocker:
         self.fail_start = None      # docker run 本身抛的异常（比如 docker 不在）
         self.never_created = False  # docker run 报错退出、容器没建出来
         self.state_error = None     # docker inspect 时抛的异常（意外）
+        self.running = False        # docker run 客户端没了，容器却还在跑
+        self.exit_override = None   # 容器的退出码和 docker run 的对不上
         self.leftover = []
 
     def start(self, argv):
@@ -83,7 +85,9 @@ class FakeDocker:
         if self.never_created or name not in self.procs:
             return None
         code = self.procs[name].poll()
-        return {"ExitCode": 137 if name in self.killed else code, "OOMKilled": self.oom,
+        if self.exit_override is not None:
+            code = self.exit_override
+        return {"ExitCode": 137 if name in self.killed else code, "OOMKilled": self.oom, "Running": self.running,
                 "StartedAt": "2026-10-30T14:00:00.000000000Z", "Error": ""}
 
     def remove(self, name):
@@ -346,6 +350,20 @@ class RunTests(ServiceCase):
         self.assertEqual(self.service.leftovers(), [])
         self.docker.state_error = None
         self.assertEqual(self.service.run("print(1)")["status"], "ok")
+
+    def test_a_run_whose_client_went_away_is_not_reported_as_finished(self):
+        """docker run 客户端先没了（被杀、daemon 重启）：输出可能不全，不能当成跑完了。"""
+        self.docker.running = True
+        status, body = self.service.post({"code": "print(1)"})
+        self.assertEqual(status, 500)
+        self.assertIn("沙箱执行中断", body["error"])
+        self.assertIn("容器还在运行", body["error"])
+        self.docker.running, self.docker.exit_override = False, 0
+        status, body = self.service.post({"code": "import sys\nsys.exit(3)"})
+        self.assertEqual(status, 500)
+        self.assertIn("容器的退出码是 0", body["error"])
+        self.assertEqual(len(self.docker.removed), 2)
+        self.assertEqual(self.service.leftovers(), [])
 
     def test_logs_carry_the_shape_of_a_run_but_never_code_or_data(self):
         self.service.post({"code": "print('SECRET-CODE-123')", "files": [{"name": "a.txt", "content": "SECRET-DATA-456"}]},

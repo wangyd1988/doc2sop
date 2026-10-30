@@ -225,7 +225,10 @@ class Docker:
             runtimes = {}
         if not isinstance(runtimes, dict) or RUNTIME not in runtimes:
             problems.append(f"docker 里没有注册 {RUNTIME}（gVisor）这个 runtime：见 docs/正式部署.md「计算沙箱」")
-        done = self._run("image", "inspect", "--format", "{{.Id}}", image)
+        try:
+            done = self._run("image", "inspect", "--format", "{{.Id}}", image)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return problems + [f"查不了镜像 {image}：{exc}"]
         if done.returncode != 0:
             problems.append(f"本机没有镜像 {image}：先用 deploy/sandbox/Dockerfile 构建")
         return problems
@@ -383,6 +386,11 @@ class Sandbox:
                 detail = ((state or {}).get("Error") or streams.text("stderr").strip()
                           or f"docker run 退出码 {proc.returncode}")
                 raise Failed(f"沙箱启动失败：{str(detail).strip()[-500:]}")
+            if not reason and (state.get("Running") or proc.returncode != state.get("ExitCode")):
+                # docker run 客户端自己先没了（被杀、daemon 重启……）：输出可能不全，不能当成跑完了
+                where = "还在运行" if state.get("Running") else f"的退出码是 {state.get('ExitCode')}"
+                raise Failed(f"沙箱执行中断：docker run 提前退出（退出码 {proc.returncode}），容器{where}；"
+                             "输出可能不完整，容器已清理")
             status, exit_code = _status(reason, state)
             return {"ok": True, "status": status, "exit_code": exit_code,
                     "stdout": streams.text("stdout"), "stdout_truncated": streams.stdout_cut,
@@ -473,7 +481,7 @@ class Sandbox:
                 "running": running, "waiting": waiting,
                 "limits": {"memory": MEMORY, "cpus": CPUS, "pids": PIDS, "timeout_seconds": TIMEOUT,
                            "stdout_bytes": STDOUT_MAX, "code_chars": CODE_MAX, "files": FILES_MAX,
-                           "input_bytes": INPUT_MAX, "queue_seconds": self.queue_seconds}}
+                           "input_bytes": INPUT_MAX, "queue_seconds": self.queue_seconds, "queue_max": QUEUE_MAX}}
 
 
 # --- HTTP --------------------------------------------------------------------------------
@@ -500,6 +508,18 @@ class Handler(BaseHTTPRequestHandler):
         supplied = self.headers.get(TOKEN_HEADER, "")
         return bool(self.token) and hmac.compare_digest(supplied.encode("utf-8", "replace"), self.token)
 
+    def _drain(self, limit=1024 * 1024):
+        """不处理这个请求也先把（不大的）请求体读掉：不读就关连接，对方可能只收到 RST，看不到错误说明。"""
+        try:
+            length = int(self.headers.get("Content-Length", "") or 0)
+        except ValueError:
+            return
+        if 0 < length <= limit:
+            try:
+                self.rfile.read(length)
+            except OSError:
+                pass
+
     def do_GET(self):
         if self.path == "/health":
             return self._send(200, self.sandbox.health())
@@ -507,8 +527,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path != "/run":
+            self._drain()
             return self._send(404, {"ok": False, "error": "Not found"})
         if not self._authorised():
+            self._drain()
             return self._send(401, {"ok": False, "error": "令牌无效"})
         try:
             length = int(self.headers.get("Content-Length", ""))

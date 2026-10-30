@@ -209,12 +209,14 @@ class FilesTests(unittest.TestCase):
     def test_files_that_do_not_fit_are_listed_but_not_mounted(self):
         script = [(call("container_logs", "1", name="kb-app") + call("container_logs", "2", name="web01"), ""),
                   (call(sandbox.NAME, "3", code="print(1)"), ""), ([], "答")]
-        with patch.object(sandbox, "INPUT_MAX", 10):
-            events, seen, fake, _ = run_agent(script, output=["123456", "abcdef"])
-        self.assertIn("- /data/02-container_logs.txt：第 2 次数据调用 container_logs（name=web01），6 字、1 行"
-                      "——超过输入总量上限，没有挂载", seen["calls"][1]["exec"])
-        self.assertEqual([f["name"] for f in fake.requests[0]["files"]], ["01-container_logs.txt"])
-        self.assertIn("挂载了 1 个数据文件，另有 1 个超过输入总量上限没有挂载", results(events, sandbox.NAME)[0])
+        for limit in ({"INPUT_MAX": 10}, {"FILES_MAX": 1}):
+            with self.subTest(limit=limit), patch.multiple(sandbox, **limit):
+                events, seen, fake, _ = run_agent(script, output=["123456", "abcdef"])
+                self.assertIn("- /data/02-container_logs.txt：第 2 次数据调用 container_logs（name=web01），6 字、1 行"
+                              "——超过挂载上限", seen["calls"][1]["exec"])
+                self.assertEqual([f["name"] for f in fake.requests[0]["files"]], ["01-container_logs.txt"])
+                self.assertIn("挂载了 1 个数据文件，另有 1 个超过挂载上限没有挂载", results(events, sandbox.NAME)[0])
+        self.assertEqual((sandbox.FILES_MAX, sandbox.INPUT_MAX), (64, 4 * 1024 * 1024))   # 和沙箱服务的上限一致
 
     def test_file_names_only_use_safe_characters(self):
         self.assertEqual(sandbox.file_name(3, "holiday__holiday_calendar"), "03-holiday__holiday_calendar.txt")
@@ -229,10 +231,10 @@ class ResultTests(unittest.TestCase):
         text = sandbox.render({"status": "ok", "exit_code": 0, "stdout": "42\n", "duration_ms": 1500}, 2, 0)
         self.assertEqual(text.splitlines()[0], sandbox.HEADER)
         self.assertIn("退出状态 0，耗时 1.5 秒；挂载了 2 个数据文件。", text)
-        self.assertIn("stdout：\n42", text)
+        self.assertIn("stdout（共 2 字）：\n42", text)
         self.assertIn("stdout：（空。结果要用 print 输出）", sandbox.render({"status": "ok", "exit_code": 0}, 0, 0))
         cut = sandbox.render({"status": "ok", "exit_code": 0, "stdout": "x", "stdout_truncated": True}, 0, 0)
-        self.assertIn("…（stdout 超过 32KB，后面的已截断）", cut)
+        self.assertIn("stdout（共 1 字，超过 32KB 的部分已截断）：\nx", cut)
 
     def test_unfinished_runs_are_failures_that_say_why(self):
         for status, words in (("timeout", "代码运行超过 20 秒上限，已被终止"), ("oom", "代码用的内存超过 256MB 上限"),
@@ -245,6 +247,15 @@ class ResultTests(unittest.TestCase):
                 self.assertIn(sandbox.HEADER, text)
                 self.assertIn("stderr（末尾）：\nTraceback (most recent call last):\nValueError: x", text)
                 self.assertIn("partial", text)
+
+    def test_a_long_print_does_not_push_the_traceback_out_of_view(self):
+        """给模型的结果会截到 STORE_TOOL_CHARS 字：先打印一大堆再报错，堆栈也要留在模型看得到的那一段里。"""
+        text = sandbox.render({"status": "error", "exit_code": 1, "stdout": "row\n" * 5000,
+                               "stderr": "Traceback (most recent call last):\nKeyError: 'payroll-db'"}, 1, 0)
+        shown = agent_loop._clip(text, agent_loop.STORE_TOOL_CHARS)
+        self.assertIn("KeyError: 'payroll-db'", shown)
+        self.assertIn("stdout（共 19999 字）", shown)
+        self.assertTrue(shown.endswith("…（已截断）"))
 
     def test_code_is_checked_before_anything_is_sent(self):
         with configured(), patch.object(sandbox, "post") as post:
@@ -322,7 +333,7 @@ class RecordTests(unittest.TestCase):
         calls = graph.execution(run)["tool_calls"]
         self.assertEqual([(c["tool"], c["args"], c["ok"]) for c in calls], [(sandbox.NAME, {"code": "print(6 * 7)"}, True)])
         self.assertTrue(calls[0]["output"].startswith(sandbox.HEADER))
-        self.assertIn("stdout：\n42", calls[0]["output"])
+        self.assertIn("stdout（共 2 字）：\n42", calls[0]["output"])
         self.assertEqual(graph.finish_execution(run, "答：42"), "unknown")
         self.assertEqual(grow.data_calls(graph.execution(run)), [])
         with graph.lock:
