@@ -385,8 +385,9 @@ class KbCatalogTests(KbStoreCase):
 # --- loop：绑定、提示词、三种模式、forced 的退回、记忆回放、图谱 ------------------------------
 
 class Scripted:
-    """替身模型。bind_tools 记下绑了什么；指定了 tool_choice 时：forced 是第一轮的回复（AIMessage 或异常），
-    forced 为 None 表示这个模型不收 tool_choice（绑定就报 TypeError）。"""
+    """替身模型。bind_tools 记下绑了什么。forced 管指定了 tool_choice 的那次绑定：
+    None 表示这个模型不收 tool_choice（绑定就报 TypeError）；dict 按写法给（"required" / "kb_search"，缺的写法报 TypeError）；
+    其余（AIMessage 或异常）所有写法都一样。"""
 
     def __init__(self, script, forced=None, stream_forced=False):
         self.script = iter(script)
@@ -399,9 +400,10 @@ class Scripted:
         self.binds.append({"tools": [t.name for t in tools], "tool_choice": tool_choice})
         if tool_choice is None:
             return _Bound(self)
-        if self.forced is None:
+        reply = self.forced.get(tool_choice) if isinstance(self.forced, dict) else self.forced
+        if reply is None:
             raise TypeError("bind_tools() got an unexpected keyword argument 'tool_choice'")
-        return _Forced(self)
+        return _Forced(self, reply)
 
     def invoke(self, messages):
         return _Bound(self).invoke(messages)
@@ -418,16 +420,16 @@ class _Bound:
 
 
 class _Forced:
-    def __init__(self, model):
-        self.model = model
+    def __init__(self, model, reply):
+        self.model, self.reply = model, reply
         if model.stream_forced:
             self.stream = self._stream
 
     def invoke(self, messages):
         self.model.seen.append(list(messages))
-        if isinstance(self.model.forced, Exception):
-            raise self.model.forced
-        return self.model.forced
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return self.reply
 
     def _stream(self, messages):
         self.model.seen.append(list(messages))
@@ -521,15 +523,31 @@ class KbLoopTests(KbLoopCase):
         called = []
         events, retrieve = self.run_loop(model, context=None, kb_tools=True, force_search=True,
                                          prefetch=lambda emit: called.append(1) or [], results=[[hit("a:0", 1)]])
-        self.assertEqual(model.binds[1]["tool_choice"], "kb_search")
+        # 强制的那一轮只绑 kb_search；先试字符串写法 required，再备着指定函数名的写法
+        self.assertEqual(model.binds[1:], [{"tools": ["kb_search"], "tool_choice": "required"},
+                                           {"tools": ["kb_search"], "tool_choice": "kb_search"}])
         self.assertEqual(retrieve.call_args.args, ("模型自己写的检索语句",))
         self.assertEqual(called, [])                              # 照做了就不预检索
         self.assertNotIn("sources", [k for k, _ in events])
         self.assertEqual([c["index"] for k, p in events if k == "kb_sources" for c in p], [1])
         self.assertIn(agent_loop.NO_PREFETCH, self.system_and_prompt(model)[1])
         self.assertEqual(events[-1], ("stats", {"model_calls": 2, "tool_rounds": 1, "calls": {"knowledge": 1},
-                                                "forced": True, "fallback": False}))
+                                                "forced": True, "forced_with": "required", "fallback": False}))
         self.assertFalse(agent_loop.forced_unsupported("fake-model"))
+
+    def test_forced_tries_the_other_tool_choice_form(self):
+        """有的上游只认对象写法、不认 required（生产上的正好相反）：被点名拒绝的写法记下来，换另一种。"""
+        refused = HttpError(400, "invalid tool_choice: 'required' is not supported")
+        model = Scripted([([], "答 [1]")], forced={"required": refused,
+                                                  "kb_search": AIMessage(content="", tool_calls=kb_call("q"))})
+        events, _ = self.run_loop(model, context=None, kb_tools=True, force_search=True, results=[[hit("a:0", 1)]])
+        stats = events[-1][1]
+        self.assertEqual((stats["forced_with"], stats["fallback"], stats["model_calls"]), ("kb_search", False, 3))
+        self.assertTrue(agent_loop._choice_rejected("fake-model", "required"))
+        self.assertFalse(agent_loop.forced_unsupported("fake-model"))
+        model = Scripted([([], "答 [1]")], forced={"kb_search": AIMessage(content="", tool_calls=kb_call("q"))})
+        self.run_loop(model, context=None, kb_tools=True, force_search=True, results=[[hit("a:0", 1)]])
+        self.assertEqual([b["tool_choice"] for b in model.binds], [None, "kb_search"])   # 下一问不再试 required
 
     def check_fallback(self, model, marked):
         prefetched = [hit("a:0", 1), hit("a:1", 2)]
@@ -551,13 +569,17 @@ class KbLoopTests(KbLoopCase):
     def test_forced_falls_back_when_the_model_refuses_tool_choice(self):
         self.check_fallback(Scripted([([], "答 [1]")], forced=None), marked=True)        # 绑定就报错
         agent_loop._no_tool_choice.clear()
-        refused = HttpError(400, "Error code: 400 - tool_choice is not supported in thinking mode")
-        self.check_fallback(Scripted([([], "答 [1]")], forced=refused), marked=True)
+        # 生产上遇到的：上游只认字符串写法，对象写法报 400；这里两种写法都报，就退回
+        refused = HttpError(400, "json: cannot unmarshal object into Go struct field Request.tool_choice of type string")
+        model = Scripted([([], "答 [1]")], forced=refused)
+        self.check_fallback(model, marked=True)
+        self.assertEqual([b["tool_choice"] for b in model.binds], [None, "required", "kb_search"])
 
     def test_forced_falls_back_without_remembering_unrelated_errors(self):
-        """额度用完、内容审核也是 400：只退回本轮，不记，下一问照样强制检索。"""
-        self.check_fallback(Scripted([([], "答 [1]")], forced=HttpError(400, "ExceededBudget: budget exceeded")),
-                            marked=False)
+        """额度用完、内容审核也是 400：只退回本轮，不记、也不换写法，下一问照样强制检索。"""
+        model = Scripted([([], "答 [1]")], forced=HttpError(400, "ExceededBudget: budget exceeded"))
+        self.check_fallback(model, marked=False)
+        self.assertEqual(len(model.seen), 2)                      # 一次强制（失败）+ 一次正常作答
         self.check_fallback(Scripted([([], "答 [1]")], forced=HttpError(503)), marked=False)
 
     def test_remembered_models_are_retried_after_a_while(self):

@@ -368,32 +368,40 @@ def _call(bound, view, emit, quiet=False):
 
 # --- forced 模式：第一轮用 tool_choice 强制调 kb_search --------------------------------
 #
-# 不是每个模型都认 tool_choice 指定函数（思考模式的一些模型直接报 400，有的照样自己作答）。
-# 遇到这种模型就退回 prefetch：本轮当场按预检索的方式查一次接着答，并记住它一段时间，这期间的提问直接走 prefetch。
-# 只记明确和 tool_choice 有关的失败：网关的额度用完、内容审核、上下文超长也是 400，那些只退回本轮，不记。
+# 第一轮只绑 kb_search 一个工具，再用 tool_choice 强制调用。tool_choice 有两种写法，各家认的不一样：
+# 有的上游只认字符串（"required"，只绑一个工具时就等于强制调它），有的只认指定函数名的对象写法。按顺序试，
+# 某种写法被明确拒绝（报错点名 tool_choice）或模型不照做，就记住「这个模型 × 这种写法」一段时间、换下一种；
+# 都不行就退回 prefetch：本轮当场按预检索的方式查一次接着答，记住的这段时间里这个模型直接走 prefetch。
+# 网关的额度用完、内容审核、上下文超长也是 400，那些只退回本轮，不记、也不换写法。
 
+FORCED_CHOICES = ("required", kb.SEARCH_NAME)
 NO_TOOL_CHOICE_SECONDS = 1800
-_no_tool_choice: dict = {}          # 模型名 -> 到期时间（time.monotonic）
+_no_tool_choice: dict = {}          # (模型名, 写法) -> 到期时间（time.monotonic）
 _tool_choice_lock = threading.Lock()
 
 
-def forced_unsupported(model) -> bool:
-    """这个模型最近试过、不支持指定 tool_choice。"""
+def _choice_rejected(model, choice) -> bool:
+    key = (str(model or ""), choice)
     with _tool_choice_lock:
-        until = _no_tool_choice.get(str(model or ""))
+        until = _no_tool_choice.get(key)
         if until is not None and until <= time.monotonic():
-            del _no_tool_choice[str(model or "")]
+            del _no_tool_choice[key]
             return False
         return until is not None
 
 
-def _mark_no_tool_choice(model, reason):
+def forced_unsupported(model) -> bool:
+    """这个模型最近试过：强制检索的几种 tool_choice 写法都不认。"""
+    return all(_choice_rejected(model, choice) for choice in FORCED_CHOICES)
+
+
+def _mark_no_tool_choice(model, reason, choice=None):
+    """记住模型不认某种写法（choice 为 None 时所有写法都记）。"""
     with _tool_choice_lock:
-        new = str(model or "") not in _no_tool_choice
-        _no_tool_choice[str(model or "")] = time.monotonic() + NO_TOOL_CHOICE_SECONDS
-    if new:
-        log.warning("model %s does not honour tool_choice (%s); KB_RETRIEVAL_MODE=forced falls back to prefetch "
-                    "for %d minutes", model or "(default)", reason, NO_TOOL_CHOICE_SECONDS // 60)
+        for one in (FORCED_CHOICES if choice is None else (choice,)):
+            _no_tool_choice[(str(model or ""), one)] = time.monotonic() + NO_TOOL_CHOICE_SECONDS
+    log.warning("model %s does not honour tool_choice=%s (%s); trying another form or falling back to prefetch "
+                "for %d minutes", model or "(default)", choice or "*", reason, NO_TOOL_CHOICE_SECONDS // 60)
 
 
 def _rejects_tool_choice(exc) -> bool:
@@ -411,31 +419,32 @@ class TurnSetup:
     """这一轮循环的设置。默认值就是原来的行为：4 轮、不强制检索。"""
     max_rounds: int = BASE_ROUNDS
     force: bool = False                          # 第一轮要不要强制调 kb_search（forced 模式）
-    forced: object = None                        # bind_tools(..., tool_choice="kb_search") 的结果；None 表示绑不上
+    forced: list = field(default_factory=list)   # [(tool_choice 写法, 只绑了 kb_search 的模型)]，按顺序试
     prefetch: Callable | None = None             # forced 退回 prefetch 时由它检索：prefetch(emit) -> hits
     make_prompt: Callable | None = None          # 拿到片段后重拼本轮提问：make_prompt(context) -> str
     model_key: str = ""
     kb_ids: bool = False                         # 片段带不带 id（知识类工具绑上时带，kb_read 要用）
-    stats: dict = field(default_factory=lambda: {"model_calls": 0, "fallback": False})
+    stats: dict = field(default_factory=lambda: {"model_calls": 0, "fallback": False, "forced_with": None})
 
 
 def _forced(setup, view, emit):
-    """强制检索的那一轮：模型照做就返回只含 kb_search 调用的回复；不照做或报错返回 None（退回 prefetch）。"""
-    if setup.forced is None:
-        return None
-    setup.stats["model_calls"] += 1
-    try:
-        reply, _ = _call(setup.forced, view, emit, quiet=True)
-    except Exception as exc:
-        log.info("forced kb_search failed: %s", why(exc))
-        if _rejects_tool_choice(exc):
-            _mark_no_tool_choice(setup.model_key, why(exc))
-        return None
-    calls = [c for c in reply.tool_calls if c.get("name") == kb.SEARCH_NAME][:1]
-    if not calls:
-        _mark_no_tool_choice(setup.model_key, "模型没有按 tool_choice 调用 kb_search")
-        return None
-    return AIMessage(content=reply.content or "", tool_calls=calls, id=reply.id)
+    """强制检索的那一轮：模型照做就返回只含 kb_search 调用的回复；几种写法都不行返回 None（退回 prefetch）。"""
+    for choice, bound in setup.forced:
+        setup.stats["model_calls"] += 1
+        try:
+            reply, _ = _call(bound, view, emit, quiet=True)
+        except Exception as exc:
+            log.info("forced kb_search with tool_choice=%s failed: %s", choice, why(exc))
+            if not _rejects_tool_choice(exc):
+                return None
+            _mark_no_tool_choice(setup.model_key, why(exc), choice)
+            continue
+        calls = [c for c in reply.tool_calls if c.get("name") == kb.SEARCH_NAME][:1]
+        if calls:
+            setup.stats["forced_with"] = choice
+            return AIMessage(content=reply.content or "", tool_calls=calls, id=reply.id)
+        _mark_no_tool_choice(setup.model_key, "模型没有按 tool_choice 调用 kb_search", choice)
+    return None
 
 
 def _build_graph(bound, system, current_prompt, by_name, allow_web=False, record=None, setup=None):
@@ -549,7 +558,7 @@ def _stats(graph, config, setup, forced):
         final = {}
     return {"model_calls": setup.stats["model_calls"], "tool_rounds": final.get("rounds", 0),
             "calls": dict((final.get("usage") or {}).get("calls") or {}),
-            "forced": bool(forced), "fallback": setup.stats["fallback"]}
+            "forced": bool(forced), "forced_with": setup.stats["forced_with"], "fallback": setup.stats["fallback"]}
 
 
 def run(question: str, context: str | None, history, allow_web: bool = False,
@@ -640,12 +649,17 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
     setup = TurnSetup(max_rounds=MAX_ROUNDS if (kb_on or plan_on) else BASE_ROUNDS,
                       force=bool(force_search), prefetch=prefetch, make_prompt=make_prompt,
                       model_key=model_key, kb_ids=kb_on)
-    if force_search and kb_on and not forced_unsupported(model_key):
-        try:
-            setup.forced = client.bind_tools(bindable, tool_choice=kb.SEARCH_NAME)
-        except Exception as exc:
-            if _rejects_tool_choice(exc):
-                _mark_no_tool_choice(model_key, why(exc))
+    if force_search and kb_on:
+        # 强制的那一轮只绑 kb_search：tool_choice="required" 时也就只能调它
+        search = [tool for tool in bindable if tool.name == kb.SEARCH_NAME]
+        for choice in FORCED_CHOICES:
+            if _choice_rejected(model_key, choice):
+                continue
+            try:
+                setup.forced.append((choice, client.bind_tools(search, tool_choice=choice)))
+            except Exception as exc:
+                if _rejects_tool_choice(exc):
+                    _mark_no_tool_choice(model_key, why(exc), choice)
 
     thread_id = thread_id or uuid.uuid4().hex
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 2 * setup.max_rounds + 4}
