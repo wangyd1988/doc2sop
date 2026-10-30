@@ -260,22 +260,37 @@ def usable(known_tools):
     return [p for p in list_all(only_enabled=True) if all(step["tool"] in known_tools for step in p["steps"])]
 
 
-def short_names(items):
+def short_names(items=None):
     """SOP id → 英文短名（sop-前 8 位），给 sop_get、MCP 提示词和 SKILL.md 的目录名用。
 
     中文名不能当函数名、目录名；id 稳定（场景包的 SOP id 由包名和 SOP 名算出），短名也就稳定。
-    前 8 位撞上了就加长到不撞为止。
+    前 8 位撞上了就按 4 位一档加长到不撞为止。默认按库里全部 SOP 算（含停用的）：同一个 SOP 在哪儿都是同一个短名。
+    排序后只和前后邻居比公共前缀，几千个 SOP 也只要几毫秒。
     """
     def clean(playbook_id):
         return "".join(c for c in str(playbook_id).lower() if c.isascii() and c.isalnum()) or "x"
 
-    ids = sorted({p["id"] for p in items})
-    out = {}
-    for playbook_id in ids:
-        key, size = clean(playbook_id), 8
-        while size < len(key) and any(clean(other).startswith(key[:size]) for other in ids if other != playbook_id):
+    def common(a, b):
+        n = 0
+        while n < min(len(a), len(b)) and a[n] == b[n]:
+            n += 1
+        return n
+
+    if items is None:
+        with lock:
+            ids = [r["id"] for r in db.execute("SELECT id FROM playbooks").fetchall()]
+    else:
+        ids = [p["id"] for p in items]
+    keys = sorted((clean(i), i) for i in set(ids))
+    out, taken = {}, {}
+    for n, (key, playbook_id) in enumerate(keys):
+        need = max([common(key, keys[m][0]) for m in (n - 1, n + 1) if 0 <= m < len(keys)] or [0])
+        size = 8
+        while size < len(key) and size <= need:
             size += 4
-        out[playbook_id] = "sop-" + key[:size]
+        name = "sop-" + key[:size]
+        taken[name] = taken.get(name, 0) + 1
+        out[playbook_id] = name if taken[name] == 1 else f"{name}-{taken[name]}"
     return out
 
 
@@ -291,7 +306,7 @@ def as_prompt(known_tools, brief=False):
 
     lines = []
     if brief:
-        names = short_names(usable_)
+        names = short_names()
         for playbook in usable_:
             lines.append(f"SOP《{playbook['name']}》（{names[playbook['id']]}，{len(playbook['steps'])} 步）"
                          + (f"：适用 {playbook['trigger']}" if playbook["trigger"] else ""))

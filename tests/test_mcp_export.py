@@ -455,6 +455,22 @@ class SopFormTests(ExportCase):
                                         {"id": "abcdef0011223344"}])
         self.assertEqual(names_, {"0123456789abcdef": "sop-0123456789ab", "0123456789ffffff": "sop-0123456789ff",
                                   "abcdef0011223344": "sop-abcdef00"})
+        same = playbooks.short_names([{"id": "ab-cd-ef-12-34"}, {"id": "abcdef1234"}])   # 去掉符号后一样
+        self.assertEqual(sorted(same.values()), ["sop-abcdef1234", "sop-abcdef1234-2"])
+        many = [{"id": uuid.uuid4().hex} for _ in range(3000)]
+        started = time.monotonic()
+        names_ = playbooks.short_names(many)
+        self.assertLess(time.monotonic() - started, 1.0)                # 几千个 SOP 也不能拖慢每次调用
+        self.assertEqual(len(set(names_.values())), 3000)
+
+    def test_an_old_short_name_still_finds_its_sop(self):
+        """导出过的 SKILL.md 里是 8 位短名；以后有别的 SOP 撞了前 8 位、短名加长了，老名字照样找得到。"""
+        playbook = playbooks.get(self.disk)
+        short = {self.disk: "sop-" + self.disk[:12]}
+        found, error = sop_tools.find("sop-" + self.disk[:8], [playbook], short)
+        self.assertEqual((found["id"], error), (self.disk, ""))
+        self.assertIsNone(sop_tools.find("sop-" + self.disk[:6], [playbook], short)[0])
+        self.assertEqual(playbooks.short_names(), self.short)            # 不传就按库里全部 SOP 算
 
 
 class AgentSopThresholdTests(unittest.TestCase):
@@ -576,11 +592,12 @@ class GateTests(ExportCase):
         self.addCleanup(self.http.__exit__, None, None, None)
         self.token, self.secret = access.issue("网关测试", ["knowledge", "sop"])
 
-    def open_session(self, secret):
-        response = self.http.post("/mcp", json=INIT, headers=bearer(secret))
+    def open_session(self, secret, http=None):
+        http = http or self.http
+        response = http.post("/mcp", json=INIT, headers=bearer(secret))
         self.assertEqual(response.status_code, 200, response.text)
         session = response.headers["mcp-session-id"]
-        self.http.post("/mcp", json=rpc("notifications/initialized", None), headers=bearer(secret, session))
+        http.post("/mcp", json=rpc("notifications/initialized", None), headers=bearer(secret, session))
         return session
 
     def test_mcp_takes_a_token_and_only_a_token(self):
@@ -610,6 +627,63 @@ class GateTests(ExportCase):
         _, other = access.issue("另一个客户端", ["knowledge", "sop", "data"])
         response = self.http.post("/mcp", json=rpc("tools/list"), headers=bearer(other, session))
         self.assertEqual(response.status_code, 404)
+
+    def test_one_token_cannot_take_every_session(self):
+        with patch.object(mcp_server, "SESSIONS_PER_TOKEN", 2):
+            self.open_session(self.secret)
+            self.open_session(self.secret)
+            refused = self.http.post("/mcp", json=INIT, headers=bearer(self.secret))
+            self.assertEqual(refused.status_code, 429)
+            self.assertEqual(refused.json()["error"], "too_many_sessions")
+            _, other = access.issue("另一个客户端", ["knowledge"])
+            self.open_session(other)
+        with patch.object(mcp_server, "INFLIGHT_PER_TOKEN", 0):
+            self.assertEqual(self.http.post("/mcp", json=INIT, headers=bearer(other)).status_code, 429)
+
+    def test_revoking_a_token_frees_its_sessions_at_once(self):
+        """全局名额被一枚令牌占满时，吊销它马上就空出来，不用等会话闲置 30 分钟。"""
+        with patch.object(mcp_server, "MAX_SESSIONS", 2):
+            app, gate, _ = make_app()
+            with TestClient(app) as http:
+                hog, hog_secret = access.issue("占名额的", ["knowledge"])
+                self.open_session(hog_secret, http)
+                self.open_session(hog_secret, http)
+                _, other = access.issue("后来的", ["knowledge"])
+                self.assertEqual(http.post("/mcp", json=INIT, headers=bearer(other)).status_code, 503)
+                self.assertEqual(gate.tracker.live(hog["id"]), 2)
+                self.assertEqual(http.delete(f"/api/mcp/tokens/{hog['id']}", auth=BASIC).status_code, 200)
+                self.assertEqual(gate.tracker.live(hog["id"]), 0)
+                self.open_session(other, http)
+
+    def test_tracker_follows_the_sessions_and_drop_cuts_open_streams(self):
+        tracker = mcp_server.Tracker(idle=10)
+        tracker.end("t", "", None, "POST", 200, "s1")              # initialize 开了会话
+        tracker.end("t", "", None, "POST", 200, "s2")
+        tracker.end("t", "", None, "POST", 400, "s3")              # 没开成的不算
+        self.assertEqual(tracker.live("t"), 2)
+        tracker.begin("t", "s1", "flight")
+        tracker.end("t", "s1", "flight", "DELETE", 200, None)      # 客户端关了会话
+        self.assertEqual(tracker.live("t"), 1)
+        self.assertEqual(tracker.live("t", now=time.monotonic() + 11), 0)   # 闲置超时，和 SDK 一个规则
+
+        async def main():
+            cut = []
+
+            async def stream():
+                with anyio.CancelScope() as scope:
+                    tracker.begin("t", "", scope)
+                    await anyio.sleep(10)
+                cut.append(scope.cancelled_caught)
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(stream)
+                await anyio.sleep(0.05)
+                self.assertEqual(tracker.inflight("t"), 1)
+                tracker.drop("t")
+            return cut
+
+        self.assertEqual(anyio.run(main), [True])
+        self.assertEqual(tracker.inflight("t"), 0)
 
     def test_the_rest_of_the_app_still_needs_basic(self):
         for path in ("/", "/api/documents", "/api/mcp", "/api/mcp/tokens", "/api/mcp/calls", "/api/mcp/skills.zip"):

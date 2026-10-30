@@ -92,8 +92,8 @@ def visible(turn=None):
 
 
 def names():
-    """全部 SOP 的短名。按全部 SOP 算（不只看得到的），同一个 SOP 对谁都是同一个短名。"""
-    return playbooks.short_names(playbooks.list_all())
+    """全部 SOP 的短名（含停用的）：同一个 SOP 对谁都是同一个短名。"""
+    return playbooks.short_names()
 
 
 def callable_tools(turn=None) -> dict:
@@ -131,12 +131,19 @@ def blanks(playbook) -> list:
 
 
 def find(wanted, items, short):
-    """短名、id、中文名，或只对得上一个的部分中文名 → (SOP, 错误)。"""
+    """短名、id（或至少 8 位、只对得上一个的 id 前缀）、中文名，或只对得上一个的部分中文名 → (SOP, 错误)。
+
+    认 id 前缀是为了导出过的 SKILL.md：以后有别的 SOP 撞了前 8 位、短名加长了，老名字照样找得到。
+    """
     wanted = " ".join(str(wanted or "").split())
     low = wanted.lower().strip("《》")
     for p in items:
         if low in (short.get(p["id"], "").lower(), p["id"].lower()) or low == p["name"].lower():
             return p, ""
+    key = low[4:] if low.startswith("sop-") else low
+    prefixed = [p for p in items if len(key) >= 8 and p["id"].lower().startswith(key)]
+    if len(prefixed) == 1:
+        return prefixed[0], ""
     partial = [p for p in items if low and low in p["name"].lower()]
     if len(partial) == 1:
         return partial[0], ""
