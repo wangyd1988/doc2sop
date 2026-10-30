@@ -11,12 +11,13 @@
               docker 网关、云元数据、宿主机自己的 IP，DNS 解析，全部失败
     文件      根文件系统、/data、/run 等都写不进去，只有 /tmp 能写（/dev/shm 和 /tmp 实际能写多少另外报出来）；
               读不到宿主机上的文件（.env、docker.sock、/var/lib/docker）；读不到别的执行的数据
-    身份      nobody、没有任何 capability（/proc 的说法之外再实际试 setuid(0)、chown、绑 80 端口）、NoNewPrivs；
-              环境变量只有 PATH、LANG、HOME，没有凭据
+    身份      nobody、没有任何 capability（/proc 的说法之外再实际试 setuid(0)、chown、setgroups）、NoNewPrivs；
+              环境变量只有 PATH、LANG、HOME（Python 的 locale 处理可能补一个 LC_CTYPE），没有凭据
     资源      fork 炸弹、内存炸弹、死循环、超大输出都按上限收手；跑完宿主机上的生产容器没被重启
     隔离      容器的 runtime 是 runsc，各项限制确实加上了；容器里看到的内核不是宿主机的
     并发      满了排队；排队的也满了就 429
     清理      跑完没有残留的容器和临时目录
+    内存      整个检查期间每 0.1 秒记一次宿主机可用内存，报最低值（低于 250MB 另外标出来）；每个沙箱容器 cgroup 的峰值
 """
 import argparse
 import json
@@ -33,6 +34,9 @@ LABEL = "doc2sop.sandbox"
 RUNS_DIR = "/var/lib/doc2sop-sandbox/runs"
 PRODUCTION = "kb-app"           # 应用容器：它必须在跑，而且跑完用例后没被重启（别的在跑的容器同样核对）
 LOCAL_PORTS = (8765, 8766, 8797, 8799, 14000)
+LOW_MEMORY_MB = 250             # 检查期间宿主机可用内存低于这个数，单独标出来
+# 沙箱服务在本机：不走环境变量里的代理
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 results = []
 
@@ -75,13 +79,14 @@ class Client:
             headers["X-Sandbox-Token"] = token
         request = urllib.request.Request(self.url + "/run", body, headers)
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with OPENER.open(request, timeout=timeout) as response:
                 return response.status, json.load(response)
         except urllib.error.HTTPError as exc:
-            try:
-                return exc.code, json.load(exc)
-            except ValueError:
-                return exc.code, {}
+            with exc:
+                try:
+                    return exc.code, json.load(exc)
+                except ValueError:
+                    return exc.code, {}
 
     def run(self, code, files=None):
         status, result = self.post({"code": code, "files": files or []})
@@ -90,12 +95,15 @@ class Client:
         return result
 
     def health(self):
-        with urllib.request.urlopen(self.url + "/health", timeout=10) as response:
+        with OPENER.open(self.url + "/health", timeout=10) as response:
             return json.load(response)
 
 
 def docker(*args, timeout=30):
-    done = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout)
+    try:
+        done = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return ""
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
@@ -243,7 +251,7 @@ def check_files(client):
 
 
 IDENTITY = r'''
-import ctypes, json, os, socket
+import ctypes, json, os
 status = open("/proc/self/status").read()
 fields = {line.split(":")[0]: line.split(":", 1)[1].strip() for line in status.splitlines()
           if line.startswith(("Cap", "NoNewPrivs"))}
@@ -251,17 +259,21 @@ try:
     nnp = ctypes.CDLL(None, use_errno=True).prctl(39, 0, 0, 0, 0)    # PR_GET_NO_NEW_PRIVS
 except Exception as exc:
     nnp = type(exc).__name__
-# 不靠 /proc 的说法，直接试三件要 capability 的事：都该失败
+# 不靠 /proc 的说法，直接试三件要 capability 的事（CAP_SETUID、CAP_CHOWN、CAP_SETGID）：都该失败。
+# 不试绑低端口：docker 默认把容器里的 ip_unprivileged_port_start 设成 0，那一条不说明有没有 capability
 tries = {}
 for label, action in (("setuid0", lambda: os.setuid(0)),
                       ("chown", lambda: (open("/tmp/c", "w").close(), os.chown("/tmp/c", 0, 0))),
-                      ("bind80", lambda: socket.socket().bind(("127.0.0.1", 80)))):
+                      ("setgroups", lambda: os.setgroups([0]))):
     try:
         action()
         tries[label] = "ALLOWED"
     except Exception as exc:
         tries[label] = type(exc).__name__
-init_env = open("/proc/1/environ", "rb").read().decode("utf-8", "replace").split("\0")
+try:
+    init_env = open("/proc/1/environ", "rb").read().decode("utf-8", "replace").split("\0")
+except OSError as exc:
+    init_env = ["(读不到 /proc/1/environ：" + type(exc).__name__ + ")"]
 print(json.dumps({"uid": os.getuid(), "gid": os.getgid(), "groups": os.getgroups(), "status": fields,
                   "no_new_privs": nnp, "tries": tries, "env": dict(os.environ),
                   "init_env": [e for e in init_env if e]}))
@@ -282,34 +294,30 @@ def check_identity(client, token):
     text = json.dumps(seen.get("env")) + json.dumps(seen.get("init_env"))
     secretish = [k for k in env if re.search(r"TOKEN|KEY|SECRET|PASS|AUTH|CRED", k, re.I)]
     record("环境变量：只有 PATH、LANG、HOME，没有凭据",
-           bool(env) and set(env) <= {"PATH", "LANG", "HOME"} and not secretish and (not token or token not in text),
+           bool(env) and set(env) <= {"PATH", "LANG", "HOME", "LC_CTYPE"} and not secretish
+           and (not token or token not in text),
            f"{sorted(env)}")
 
 
-KERNEL = "print(open('/proc/version').read().strip())"
-
-
-def check_runtime(client):
-    """跑一段要几秒的代码，趁它在跑查容器：runtime、各项限制；顺便量一下内存。"""
+def check_runtime(client, monitor):
+    """跑一段要几秒的代码，趁它在跑查容器：runtime、各项限制、cgroup 里实际生效的上限、内存。"""
     holder = {}
 
     def slow():
         holder["result"] = client.run("import time\ntime.sleep(6)\nprint(open('/proc/version').read().strip())")
 
     thread = threading.Thread(target=slow)
-    baseline = available_mb()
     thread.start()
-    name, inspected, scope, lowest, peak = "", "", "", baseline, 0
+    name, inspected, limits = "", "", {}
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline and thread.is_alive():
-        lowest = min(lowest, available_mb())
         if not name:
             name = docker("ps", "--filter", f"label={LABEL}", "--format", "{{.Names}}").split("\n")[0]
             if name:
                 inspected = docker("inspect", "--format", "{{json .HostConfig}}", name)
-                scope = f"/sys/fs/cgroup/system.slice/docker-{docker('inspect', '--format', '{{.Id}}', name)}.scope"
-        if scope:
-            peak = max(peak, cgroup_mb(scope, "memory.peak"), cgroup_mb(scope, "memory.current"))
+        path = monitor.cgroups.get(name, "") if name else ""
+        if path and not limits:
+            limits = {key: cgroup_text(path, key) for key in ("memory.max", "memory.swap.max", "pids.max", "cpu.max")}
         time.sleep(0.2)
     thread.join()
     config = json.loads(inspected) if inspected else {}
@@ -328,8 +336,9 @@ def check_runtime(client):
     host_kernel = open("/proc/version").read().strip()
     inside = (holder.get("result") or {}).get("stdout", "").strip()
     record("隔离：容器里看到的内核不是宿主机的（gVisor）", bool(inside) and inside != host_kernel, inside[:80])
-    note("内存（一次空跑）", f"宿主机可用内存最多少了 {max(0, baseline - lowest)}MB（基线 {baseline}MB）；"
-                        f"容器 cgroup 峰值 {peak or '?'}MB（含 gVisor 自身，上限 256MB）")
+    note("cgroup 里实际生效的上限", f"{monitor.cgroups.get(name) or '没找到 cgroup'} {limits}")
+    note("内存（一次普通执行）", f"容器 cgroup 峰值 {monitor.peaks.get(name, {}).get('memory', '?')}MB"
+                          f"（含 gVisor 自身，上限 256MB），pids 峰值 {monitor.peaks.get(name, {}).get('pids', '?')}")
 
 
 def available_mb():
@@ -340,12 +349,74 @@ def available_mb():
     return 0
 
 
-def cgroup_mb(scope, name):
+def cgroup_text(path, name):
     try:
-        with open(os.path.join(scope, name)) as handle:
-            return int(handle.read().strip()) // (1024 * 1024)
-    except (OSError, ValueError):
+        with open(os.path.join(path, name)) as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
+def cgroup_number(path, name):
+    try:
+        return int(cgroup_text(path, name))
+    except ValueError:
         return 0
+
+
+def cgroup_dir(pid):
+    """一个宿主机进程所在的 cgroup v2 目录（/proc/<pid>/cgroup 的「0::」那行）；不猜 docker-<id>.scope 这种路径。"""
+    if not str(pid).isdigit() or int(pid) <= 0:
+        return ""
+    try:
+        with open(f"/proc/{int(pid)}/cgroup") as handle:
+            for line in handle:
+                if line.startswith("0::"):
+                    return "/sys/fs/cgroup" + line[3:].strip()
+    except OSError:
+        pass
+    return ""
+
+
+class Monitor(threading.Thread):
+    """整个检查期间：每 0.1 秒记一次宿主机可用内存的最低值；每 0.3 秒找一次新起的沙箱容器，
+    记下它 cgroup 的内存峰值和 pids 峰值（memory.peak / pids.peak 本身就是峰值，容器退出前读到就准）。"""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.done = threading.Event()
+        self.baseline = self.lowest = available_mb()
+        self.cgroups = {}       # 容器名 -> cgroup 目录（找不到是 ""），按发现的先后
+        self.peaks = {}         # 容器名 -> {"memory": MB, "pids": 个}
+
+    def run(self):
+        tick = 0
+        while not self.done.is_set():
+            self.lowest = min(self.lowest, available_mb())
+            if tick % 3 == 0:
+                for name in docker("ps", "--filter", f"label={LABEL}", "--format", "{{.Names}}").split():
+                    if name not in self.cgroups:
+                        self.cgroups[name] = cgroup_dir(docker("inspect", "--format", "{{.State.Pid}}", name))
+            for name, path in list(self.cgroups.items()):
+                memory = max(cgroup_number(path, "memory.peak"), cgroup_number(path, "memory.current")) if path else 0
+                if memory:
+                    peak = self.peaks.setdefault(name, {"memory": 0, "pids": 0})
+                    peak["memory"] = max(peak["memory"], memory // (1024 * 1024))
+                    peak["pids"] = max(peak["pids"], cgroup_number(path, "pids.peak"),
+                                       cgroup_number(path, "pids.current"))
+            tick += 1
+            self.done.wait(0.1)
+
+    def mark(self):
+        return len(self.cgroups)
+
+    def since(self, mark):
+        """mark 之后新起的容器的峰值，按起的先后。"""
+        return [(name, self.peaks.get(name)) for name in list(self.cgroups)[mark:]]
+
+    def stop(self):
+        self.done.set()
+        self.join(timeout=5)
 
 
 def check_isolation_between_runs(client):
@@ -371,9 +442,10 @@ BOMBS = {
 }
 
 
-def check_bombs(client):
+def check_bombs(client, monitor):
     for label, code in BOMBS.items():
         started = time.monotonic()
+        mark = monitor.mark()
         try:
             result = client.run(code)
         except Exception as exc:
@@ -395,8 +467,11 @@ def check_bombs(client):
         else:
             ok = status != "ok" and elapsed <= 60
             detail = f"{status}，{elapsed:.1f} 秒"
+        seen = monitor.since(mark)
         healthy = client.run("print(1 + 1)")["stdout"].strip() == "2"
         record(f"资源：{label}按上限收手，之后沙箱照常可用", ok and healthy, detail)
+        if seen and seen[0][1]:
+            note(f"{label}的容器 cgroup 峰值", f"内存 {seen[0][1]['memory']}MB，pids {seen[0][1]['pids']}")
 
 
 def check_concurrency(client):
@@ -447,20 +522,29 @@ def main():
         print(f"错误：连不上沙箱服务 {args.url}：{exc}", file=sys.stderr)
         return 2
     before = running_containers()
+    monitor = Monitor()
+    monitor.start()
     for case in (lambda: check_api(client), lambda: check_network(client), lambda: check_files(client),
-                 lambda: check_identity(client, token), lambda: check_runtime(client),
-                 lambda: check_isolation_between_runs(client), lambda: check_bombs(client),
+                 lambda: check_identity(client, token), lambda: check_runtime(client, monitor),
+                 lambda: check_isolation_between_runs(client), lambda: check_bombs(client, monitor),
                  lambda: check_concurrency(client)):
         try:
             case()
         except Exception as exc:
             record("用例本身出错", False, f"{exc.__class__.__name__}: {exc}")
     time.sleep(1)
+    monitor.stop()
     check_cleanup()
     after = running_containers()
     changed = {name: (was, after.get(name)) for name, was in before.items() if after.get(name) != was}
     record("宿主机：跑之前在跑的容器都没被重启（应用容器 kb-app 在其中）", PRODUCTION in before and not changed,
            f"{len(before)} 个容器：{', '.join(sorted(before))}" if not changed else f"变了：{changed}")
+    peaks = [p["memory"] for p in monitor.peaks.values() if p]
+    note("内存（整个检查期间）",
+         f"宿主机可用内存基线 {monitor.baseline}MB，最低 {monitor.lowest}MB；"
+         f"沙箱容器 cgroup 峰值最高 {max(peaks, default='?')}MB（读到 {len(peaks)}/{len(monitor.cgroups)} 个容器）")
+    if monitor.lowest < LOW_MEMORY_MB:
+        print(f"WARN  检查期间宿主机可用内存最低 {monitor.lowest}MB，低于 {LOW_MEMORY_MB}MB", flush=True)
     failed = [name for name, passed, _ in results if not passed]
     print(f"\n{len(results) - len(failed)} 通过 / {len(failed)} 失败", flush=True)
     return 1 if failed else 0
