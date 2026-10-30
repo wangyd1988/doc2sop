@@ -100,6 +100,23 @@ flowchart LR
 作为 `[W]` 来源接着编号）。两条出网通道——搜索词和链接——发出去之前都过 `egress.py` 的同一套规则：静态拦截、
 本轮数据类调用留下的污点、链接来源、可选的严格模式（`WEB_AFTER_DATA=deny`），见 `docs/工具.md`「出网规则」。
 
+## 对外 MCP 出口（`MCP_ENABLED`，默认关）
+
+```
+外部智能体（Claude Code、Copilot、Cursor…）
+ │  Streamable HTTP + 令牌（Authorization: Bearer）；生产上前面放反向代理和 TLS
+ ▼
+/mcp  TokenGate：只认令牌（不认 Basic）· 按令牌限流、限会话数 → 官方 MCP SDK 的会话管理器
+ │  工具：知识类 kb_* / sop_*、宿主机标了 export 的数据工具（照样转给工具服务 /exec，带 X-Ops-Caller）
+ │  提示词：每个启用的 SOP 一条；变了发 list_changed
+ ▼
+工具注册表（和项目 Agent 读同一张表、调同一个实现）
+```
+
+项目页面和对外出口是同一个注册表的两个出口，权限看「类别 × 出口」：外网（`web_search`、`web_fetch`）、计算、流程类不对外，
+所以对外出口不经过出网规则。令牌在管理页「对外接入」签发，只存哈希；每次调用审计（access.db）、记进图谱（`channel=mcp`）。
+详见 [`工具.md`](工具.md) 的「对外 MCP 出口」。
+
 ## 组织运行图谱（graph.db）
 
 文档 → SOP → 工具 原本是一条单向流，工具查到的真实数据和人对一次回答的判断答完就丢。
@@ -108,7 +125,7 @@ flowchart LR
 
 | 表 | 存什么 |
 |---|---|
-| `executions` | 一次提问 / 一次「▶ 执行」：会话、对应的回答消息、按哪个 SOP 跑的、结论质量（ok / anomaly / failed / unknown） |
+| `executions` | 一次提问 / 一次「▶ 执行」：会话、对应的回答消息、按哪个 SOP 跑的、结论质量（ok / anomaly / failed / unknown）；`channel` 是 web 或 mcp（对外 MCP 的一个会话一条，不算结论质量） |
 | `tool_calls` | 每次工具调用的参数、**完整返回**（页面和模型看到的都是截断 / 压缩过的）、成功与否、耗时 |
 | `entities` | 容器、命名空间、K8s 对象、工具、SOP、文档、阈值、执行……`(kind, name)` 唯一，记首次 / 最近见到的时间 |
 | `facts` | 主语 → 谓语 → 宾语（实体或字面量），带 `source_kind`（tool / doc / human / sop）和 `source_ref`（`tool_call:<id>` / `sop:<id>` / `feedback:<id>`） |
@@ -171,6 +188,8 @@ SOP 面板顶部有「待确认提议 N」，回放对话时卡片也会补画�
 ```
 app/
 ├── main.py            HTTP API 与鉴权
+├── mcp_server.py      对外 MCP 出口 /mcp（MCP_ENABLED）：令牌校验、类别 × 出口、提示词、变化通知、「对外接入」接口
+├── access.py          对外接入的令牌（只存哈希）、调用审计、按令牌限流（SQLite access.db）
 ├── config.py          环境变量配置
 ├── clients.py         模型客户端（经网关）
 ├── conversations.py   会话列表与界面回放（SQLite）
@@ -183,7 +202,8 @@ app/
 ├── agent/
 │   ├── loop.py        LangGraph Agent：模型 ⇄ 工具循环，检查点记住每轮完整过程；三种检索模式、forced 的退回
 │   ├── registry.py    工具注册表：统一契约（MCP 的 Tool 格式）与类别策略，合并工具服务和应用内的工具
-│   ├── kb_tools.py    知识类工具 kb_search / kb_read / kb_catalog：补查、读前后文、目录，片段续编号
+│   ├── kb_tools.py    知识类工具 kb_search / kb_read / kb_catalog：补查、读前后文、目录，片段续编号；按令牌的分类白名单过滤
+│   ├── sop_tools.py   知识类工具 sop_list / sop_get，SOP 的 MCP 提示词与 SKILL.md 导出，SOP 输出格式
 │   ├── plan.py        流程类工具 plan：本轮的待办清单，「▶ 执行」时按 SOP 步骤预填
 │   ├── tools.py       按 JSON Schema 生成工具签名（契约里的 inputSchema；老工具服务按 params 推）
 │   ├── extract.py     从文档抽取 SOP
@@ -208,7 +228,7 @@ deploy/
 ├── release.sh         正式发版：base 镜像按依赖哈希预烘焙 → 只 COPY 代码 → 停旧起新 → 比对片段数 → 不一致回滚（docs/正式部署.md）
 ├── Dockerfile.release 发版用的应用镜像：FROM base 只 COPY app/ packs/（根 Dockerfile 的 base 阶段装依赖，app 阶段给 compose）
 ├── ops_readonly.py    宿主机上的只读运维接口（白名单 + 令牌），支持 include 场景包的工具定义；
-│                      /tools 按统一契约多回 inputSchema 等字段；
+│                      /tools 按统一契约多回 inputSchema 等字段，export 只认主配置文件；/exec 日志记调用方；
 │                      内置标准库手写的 MCP stdio 客户端，发现的工具进待审、批准后写 ops_tools.mcp.yaml
 ├── ops_tools.yaml     工具定义的唯一真相源，改完即时生效；顶层 mcp_servers 声明 MCP server
 ├── mcp/               玩具 MCP server holiday_mcp.py（测试 + 演示）与把拼假工具换成 MCP 来源的 holiday_tools.yaml

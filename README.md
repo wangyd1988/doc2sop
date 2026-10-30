@@ -128,11 +128,11 @@ docker compose up -d --build
 - [x] 自由排查长出 SOP：提议 → 人批准 → 默认停用的 SOP
 - [x] 场景包：文档 + 工具 + SOP 一个目录，拿走就用
 - [x] 一键演示：`docker compose up` 自动导入两个场景包
-- [x] 工具层接 MCP server（第 1 期：stdio 客户端 + 逐个审批与只读确认）；知识检索工具化：`kb_search` / `kb_read` / `kb_catalog` 补查与读前后文、三种检索模式、待办清单 `plan`（默认关，评测达标后再定默认）
+- [x] 工具层接 MCP server（第 1 期：stdio 客户端 + 逐个审批与只读确认）；doc2sop 自己作为 MCP server：`/mcp` 对外开放知识库、SOP（工具、提示词、`SKILL.md`）和宿主机标了 `export` 的只读工具，按客户端发令牌、审计、限流（`MCP_ENABLED`，默认关，见 [`docs/工具.md`](docs/工具.md#对外-mcp-出口让-claude-codecopilotcursor-用上知识库和-sop)）；知识检索工具化：`kb_search` / `kb_read` / `kb_catalog` 补查与读前后文、三种检索模式、待办清单 `plan`（默认关，评测达标后再定默认）
 
 计划（顺序大致如此，不承诺时间）：
 
-- [ ] MCP 第 2、3 期：Streamable HTTP 传输与真实第三方场景包；doc2sop 自己作为 MCP server
+- [ ] MCP 第 2、3 期：Streamable HTTP 传输与真实第三方场景包
 - [ ] 触发式 SOP：cron / 告警 webhook → 执行 → 结论推企微 / 飞书 / 钉钉
 - [ ] 按角色生成执行报告
 - [ ] 文档漂移检测：文档说 900MB、现实连续三周 12MB → 提议改文档
