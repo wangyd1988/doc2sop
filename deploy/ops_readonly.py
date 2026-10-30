@@ -7,27 +7,36 @@ shell involved. Anything not on the allowlist is refused.
 
 A tool is a capability (name, description, typed parameters) plus an
 implementation: a builtin function shipped in this file, a command or script
-run here, a read-only HTTP call (optionally through a shared connection that
+run on a host, a read-only HTTP call (optionally through a shared connection that
 holds the address and credential references), or a tool on an MCP server.
 
-Runs on the host (command tools need docker/kubectl), binds loopback only, and
-requires a shared token. Standard library only, so it runs on any box with
-Python 3.9+. That includes the MCP client: the host may declare stdio MCP
-servers, and their tools go through the same approve-before-use flow as
-everything else.
+Command tools run on hosts: this machine by default, or — once the main config
+declares `hosts` — on remote Linux hosts over the system OpenSSH client, either
+through a forced-command executor (ops_exec.py, guarded mode) or as a quoted
+command line (direct mode). The validation core lives in ops_exec.py next to
+this file, so local and remote execution share one copy of the rules.
+
+Binds loopback only and requires a shared token. Standard library only (plus
+PyYAML), so it runs on any box with Python 3.9+. That includes the MCP client:
+the host may declare stdio MCP servers, and their tools go through the same
+approve-before-use flow as everything else.
 
     OPS_TOKEN=... python ops_readonly.py --port 8799
 """
 import argparse
 import atexit
+import base64
 import datetime
 import glob
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import secrets
+import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import textwrap
@@ -36,23 +45,36 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-MAX_OUTPUT = 20000      # characters returned to the agent
-TIMEOUT = 20            # seconds per command
+
+def _load_core():
+    """执行核心 ops_exec.py：和本文件放在同一个目录（升级工具服务时两个文件一起拷）。"""
+    path = Path(__file__).resolve().with_name("ops_exec.py")
+    loaded = sys.modules.get("ops_exec")
+    if loaded is not None and Path(getattr(loaded, "__file__", "") or ".").resolve() == path:
+        return loaded
+    if not path.is_file():
+        raise SystemExit(f"找不到 {path}：ops_exec.py 是命令型工具的执行核心，要和 ops_readonly.py 放在同一个目录")
+    spec = importlib.util.spec_from_file_location("ops_exec", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    sys.modules["ops_exec"] = module
+    return module
+
+
+ops_exec = _load_core()
+
+MAX_OUTPUT = ops_exec.MAX_OUTPUT      # characters returned to the agent
+TIMEOUT = ops_exec.TIMEOUT            # seconds per command
 HTTP_TIMEOUT = 10       # seconds per HTTP request
 MAX_HTTP_BYTES = 512 * 1024
 
-# Argument validators. Anything not matching is refused before reaching argv.
-NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
-K8S_NAME = re.compile(r"^[a-z0-9][a-z0-9.-]{0,120}$")
-RESOURCE = re.compile(r"^[a-z][a-z0-9.-]{0,40}$")
-DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-
-# 配置里只能引用这些预置正则，不能自带正则：一个 ".*" 就能把白名单废掉。
-PATTERNS = {"name": NAME, "k8s_name": K8S_NAME, "resource": RESOURCE, "date": DATE}
+# 参数的预置正则、占位符、解释器与写动词黑名单都在执行核心里：本机执行和主机上的执行器用的是同一份。
+NAME, K8S_NAME, RESOURCE, DATE = ops_exec.NAME, ops_exec.K8S_NAME, ops_exec.RESOURCE, ops_exec.DATE
+PATTERNS = ops_exec.PATTERNS
 
 # 接口型工具的凭据只能来自宿主机环境变量，且必须以这个前缀命名：
 # 这样即便配置写得马虎，也不可能把 OPS_TOKEN 之类的服务自身凭据发到外部接口。
@@ -67,18 +89,7 @@ CONN_TYPES = ("http",)
 
 # 命令型、脚本型工具可以声明适用的系统；和工具服务所在机器不符时是「不适用」，不是「缺命令」。
 OS_NAMES = ("linux", "darwin", "windows")
-
-
-def _host_os():
-    if sys.platform.startswith("linux"):
-        return "linux"
-    if sys.platform == "darwin":
-        return "darwin"
-    if sys.platform in ("win32", "cygwin"):
-        return "windows"
-    return sys.platform
-
-
+_host_os = ops_exec.host_os
 HOST_OS = _host_os()
 URL_PARAM = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
 HEADER_NAME = re.compile(r"^[A-Za-z0-9-]{1,60}$")
@@ -86,11 +97,9 @@ QUERY_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,60}$")
 PICK_PATH = re.compile(r"^[A-Za-z0-9_]+(\[\])?(\.[A-Za-z0-9_]+(\[\])?)*$")
 GROUP_MAX = 20
 
-# argv 元素必须"整个"是 {参数名} 才算占位符，不做片段拼接。
-# 这样 docker 的 "{{.Names}}" 之类模板不会被误伤，参数值也永远独占一个 argv 项。
-PLACEHOLDER = re.compile(r"^\{([a-z_][a-z0-9_]*)\}$")
-# 64 而不是 40：MCP 工具名是 server__tool 两段拼起来的，40 不够用。
-TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+# argv 占位符（整个元素是 {参数名}）与工具名的规则，见 ops_exec.py。
+PLACEHOLDER = ops_exec.PLACEHOLDER
+TOOL_NAME = ops_exec.TOOL_NAME
 # MCP 工具的参数名由 server 定（常见 camelCase），只要求能当 Python 标识符且不以下划线开头。
 MCP_PARAM_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 # 脚本只能是 scripts 目录下的文件名，不能带路径，自然就跳不出目录。
@@ -99,26 +108,9 @@ MAX_LABEL = 40
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent / "ops_tools.yaml"
 
-# 这些 binary 本身就能"执行另一段命令"，一旦允许，固定 argv 的前提就没了：
-# bash -c "任意" 、env FOO=x 任意、xargs 任意、find -exec 任意……
-# 所以普通工具不许用它们当 binary。要跑脚本，走下面的脚本型工具（哈希锁定）。
-INTERPRETERS = {
-    "bash", "sh", "dash", "zsh", "ksh", "csh", "tcsh", "fish", "rbash", "ash", "busybox",
-    "python", "python2", "python3", "pypy", "ipython", "perl", "ruby", "node", "nodejs", "deno", "bun",
-    "php", "lua", "luajit", "tclsh", "expect", "rscript",
-    "awk", "gawk", "mawk", "nawk", "sed",
-    "env", "xargs", "find", "watch", "timeout", "nohup", "stdbuf", "setsid",
-    "unshare", "chroot", "flock", "nice", "ionice", "parallel", "script",
-    "ssh", "sshpass", "scp", "rsync", "socat", "ncat", "nc",
-    "eval", "exec", "command", "source", "make", "sudo", "su", "doas",
-    # 命令型工具可以声明 os: windows 了，Windows 上能执行任意命令的也一并挡掉
-    "cmd", "powershell", "pwsh", "cscript", "wscript", "mshta",
-}
-
-# Refuse these even if a template somehow produced them.
-FORBIDDEN = {"exec", "attach", "cp", "rm", "rmi", "kill", "stop", "start", "restart",
-             "run", "create", "delete", "apply", "patch", "edit", "scale", "drain",
-             "cordon", "taint", "set", "replace", "port-forward", "proxy"}
+# 能「执行另一段命令」的 binary（bash、env、xargs、ssh……）不能当工具；写动词运行时再拦一次。见 ops_exec.py。
+INTERPRETERS = ops_exec.INTERPRETERS
+FORBIDDEN = ops_exec.FORBIDDEN
 
 # ---- MCP：第四种工具类型 ----------------------------------------------------
 # 工具服务自己当 MCP 客户端（stdio 传输，标准库手写，不引入 SDK——单文件零依赖是这个脚本的卖点）。
@@ -153,43 +145,8 @@ def _hash_file(path):
     return digest.hexdigest()
 
 
-class ConfigError(ValueError):
-    """A tool definition is malformed; that tool is skipped, not fatal."""
-
-
-def _check_param(tool, key, raw):
-    if not isinstance(raw, dict):
-        raise ConfigError(f"{tool}.params.{key} 必须是映射")
-    kind = str(raw.get("type", "str"))
-    if kind not in ("str", "int"):
-        raise ConfigError(f"{tool}.params.{key}.type 只能是 str 或 int")
-    spec = {"type": kind, "desc": str(raw.get("desc", "")),
-            "required": bool(raw.get("required", False))}
-    if kind == "int":
-        try:
-            # 必填的 int 可以没有默认值（模型必须给，比如「哪一年」）；老写法 default 照常可用
-            if "default" in raw or not spec["required"]:
-                spec["default"] = int(raw.get("default", 100))
-            spec["min"] = int(raw.get("min", 1))
-            spec["max"] = int(raw.get("max", 10000))
-        except (TypeError, ValueError):
-            raise ConfigError(f"{tool}.params.{key} 的 default/min/max 必须是整数") from None
-        if "default" in spec and not spec["min"] <= spec["default"] <= spec["max"]:
-            raise ConfigError(f"{tool}.params.{key} 的默认值不在 min..max 之间")
-        return spec
-
-    pattern = raw.get("pattern")
-    if pattern not in PATTERNS:
-        raise ConfigError(
-            f"{tool}.params.{key}.pattern 必须是 {'、'.join(PATTERNS)} 之一")
-    spec["pattern"] = pattern
-    if not spec["required"]:
-        # 非必填就得有个合法默认值，否则运行时会往 argv 里塞空串。
-        default = str(raw.get("default", ""))
-        if not PATTERNS[pattern].match(default):
-            raise ConfigError(f"{tool}.params.{key} 非必填，就必须给一个合法的 default")
-        spec["default"] = default
-    return spec
+ConfigError = ops_exec.ConfigError
+_check_param = ops_exec.check_param
 
 
 def _check_script_tool(raw, name):
@@ -224,13 +181,7 @@ def _common(raw, name):
 
 
 def _check_params(name, raw):
-    params = {}
-    for key, value in (raw.get("params") or {}).items():
-        key = str(key)
-        if not TOOL_NAME.match(key):
-            raise ConfigError(f"{name} 的参数名不合法：{key[:40]!r}")
-        params[key] = _check_param(name, key, value)
-    return params
+    return ops_exec.check_params(name, raw.get("params"))
 
 
 def _secret_env(ref):
@@ -266,6 +217,24 @@ def _check_os(name, raw):
 def _no_os(raw, name, kind):
     if raw.get("os") is not None:
         raise ConfigError(f"{name} 是{kind}工具，不能声明 os：只有命令型、脚本型工具和机器有关")
+
+
+# 主机分组名、主机名：小写字母或数字开头，可含 . _ -。target 里的 @组名 就是它前面加 @。
+HOST_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
+
+
+def _check_groups(name, raw):
+    """命令型工具的「适用分组」：配了主机清单后，只在这些组里的主机上跑。不写就是不限。"""
+    if raw is None or raw == "" or raw == []:
+        return []
+    out = []
+    for value in raw if isinstance(raw, list) else [raw]:
+        text = str(value).strip()
+        if not HOST_NAME.match(text) or text == "all":
+            raise ConfigError(f"{name}.groups 的组名不合法：{text[:30]!r}（小写字母、数字、. _ -；all 是保留名）")
+        if text not in out:
+            out.append(text)
+    return out
 
 
 def _check_http_tool(raw, name):
@@ -534,6 +503,8 @@ def _check_tool(raw):
 
     if raw.get("impl") is not None:
         return _check_impl(raw, name)
+    if raw.get("binary") is None and raw.get("argv") is None:
+        _no_groups(raw, name)
     if raw.get("mcp") is not None:
         _no_os(raw, name, " MCP 型")
         return _check_mcp_tool(raw, name)
@@ -547,65 +518,28 @@ def _check_tool(raw):
     return _check_command_tool(raw, name)
 
 
-def _interpreter(binary):
-    """binary 是不是解释器一类。按文件名比：去掉路径、.exe、-dbg、ABI 后缀（3.13t、3.7m）和版本号再比。
-
-    只用 split / rstrip 这类线性操作：页面申请里的 binary 长度没有上限，回溯型正则会被一条申请拖住整个服务。
-    """
-    head = re.split(r"[\\/]", binary)[-1].lower()
-    for suffix in (".exe", "-dbg", "-debug"):
-        if head.endswith(suffix):
-            head = head[:-len(suffix)]
-    names = {head}
-    trimmed = head.rstrip("dmt")
-    if trimmed[-1:].isdigit():
-        head = trimmed
-    names.add(head.rstrip("0123456789."))
-    return bool(names & INTERPRETERS)
+def _no_groups(raw, name):
+    if raw.get("groups") is not None:
+        raise ConfigError(f"{name} 不是命令型工具，不能声明适用分组 groups：只有命令型工具在远程主机上跑")
 
 
-MAX_ARGV = 64
-MAX_ARG_LEN = 4096
+_interpreter = ops_exec.interpreter
+MAX_ARGV = ops_exec.MAX_ARGV
+MAX_ARG_LEN = ops_exec.MAX_ARG_LEN
 
 
 def _check_command_tool(raw, name):
-    binary = str(raw.get("binary", "")).strip()
-    if not binary:
-        raise ConfigError(f"{name} 缺少 binary")
-    if len(binary) > 255:
-        raise ConfigError(f"{name} 的 binary 太长")
-    if _interpreter(binary):
-        raise ConfigError(
-            f"{name} 的 binary 是 {binary}，它能执行任意命令，不能直接作为工具。"
-            f"要跑一段脚本，请把脚本放到 scripts 目录，再用 script 字段引用它。")
-
-    argv = raw.get("argv")
-    if not isinstance(argv, list) or not argv:
-        raise ConfigError(f"{name}.argv 必须是非空列表")
-    argv = [str(part) for part in argv]
-    if len(argv) > MAX_ARGV or any(len(part) > MAX_ARG_LEN for part in argv):
-        raise ConfigError(f"{name}.argv 太长：最多 {MAX_ARGV} 项，每项最多 {MAX_ARG_LEN} 个字符")
-    params = _check_params(name, raw)
-
-    if argv[0] != binary:
-        raise ConfigError(f"{name}.argv 的第一项必须就是 binary（{binary}）")
-    for part in argv:
-        found = PLACEHOLDER.match(part)
-        if found and found.group(1) not in params:
-            raise ConfigError(f"{name}.argv 用到了未声明的参数 {found.group(1)}")
-    for part in argv[1:]:
-        if not PLACEHOLDER.match(part) and part in FORBIDDEN:
-            raise ConfigError(f"{name}.argv 含写操作动词 {part}")
-
+    binary, argv, params = ops_exec.check_command(name, raw.get("binary", ""), raw.get("argv"), raw.get("params"))
     return {**_common(raw, name), "binary": binary, "argv": argv, "params": params,
-            "type": "command", "os": _check_os(name, raw.get("os"))}
+            "type": "command", "os": _check_os(name, raw.get("os")),
+            "groups": _check_groups(name, raw.get("groups"))}
 
 
 # impl 里每种实现认哪些字段。不认识的一律报错而不是忽略：比如写了 via: ssh 却被悄悄当成本机执行，
-# 比加载失败危险得多（远程主机、target、sql 都是后面几期的事）。
+# 比加载失败危险得多。在哪台主机上跑是主机清单（hosts）和 target 参数的事，不写在工具上；sql 在后面几期。
 IMPL_FIELDS = {
     "builtin": ("func",),
-    "command": ("argv", "binary", "os"),
+    "command": ("argv", "binary", "os", "groups"),
     "script": ("script", "os"),
     "http": ("url", "conn", "method", "query", "headers", "pick", "notes"),
     "mcp": ("server", "tool"),
@@ -625,6 +559,8 @@ def _check_impl(raw, name):
         raise ConfigError(f"{name} 同时写了 impl 和老写法的 {'、'.join(mixed)}，两种写法只能选一种")
     if raw.get("os") is not None:
         raise ConfigError(f"{name}.os 要写在 impl 里：适用哪种系统是实现的事，不是能力的事")
+    if raw.get("groups") is not None:
+        raise ConfigError(f"{name}.groups 要写在 impl 里：适用哪些主机分组是实现的事，不是能力的事")
     unknown = sorted(str(key) for key in impl if key != "type" and key not in IMPL_FIELDS[kind])
     if unknown:
         raise ConfigError(f"{name}.impl 里有不认识的字段 {'、'.join(unknown)}"
@@ -638,7 +574,8 @@ def _check_impl(raw, name):
         if not isinstance(argv, list) or not argv:
             raise ConfigError(f"{name}.impl.argv 必须是非空列表，第一项就是要执行的命令")
         binary = body.get("binary") or argv[0]
-        return _check_command_tool({**base, "binary": binary, "argv": argv, "os": body.get("os")}, name)
+        return _check_command_tool({**base, "binary": binary, "argv": argv, "os": body.get("os"),
+                                    "groups": body.get("groups")}, name)
     if kind == "script":
         spec = _check_script_tool({**base, "script": str(body.get("script") or ""), "os": body.get("os")}, name)
         spec["group"] = _common(base, name)["group"]
@@ -793,6 +730,202 @@ def _bind_connection(spec, connections):
     return spec
 
 
+# ---- 主机清单（hosts）---------------------------------------------------------------
+# 命令型工具在「主机」上执行：默认是工具服务自己这台；主文件顶层写了 hosts，就可以经 SSH 在别的 Linux 主机上跑。
+# 主机的地址、账号、私钥是宿主机管理员的决定：只认主文件，被 include 的文件里写了忽略并报出来，页面也碰不到。
+#
+#   hosts:
+#     default: local            # 不填 target 时去哪：主机名或 @组名；不写就是本机（有本机的话）
+#     local: true               # 工具服务自己这台算不算一台主机（隐含名为 local）；false 就不算
+#     defaults: {via: ssh, user: opsread, key: ${ssh_key}, mode: guarded, os: linux}
+#     list:
+#       - {name: a, via: local, groups: [prod]}          # 可选：给本机起名、分组
+#       - {name: b, address: 10.0.0.2, groups: [gateway, prod], tools: [list_containers, host_uptime]}
+#
+# 没有 hosts 段时一切照旧：命令在本机跑，工具没有 target 参数。
+
+HOST_VIAS = ("local", "ssh")
+HOST_MODES = ("guarded", "direct")
+HOST_FIELDS = ("name", "address", "port", "user", "key", "os", "groups", "via", "mode", "tools")
+LOCAL_FIELDS = ("name", "via", "groups", "tools")
+HOST_SETTINGS = ("default", "local", "enum_max", "parallel", "max_targets", "defaults", "list")
+# 主机名或 IP（v4/v6）。不能以 - 开头：地址会作为 ssh 的参数，挡住「-oProxyCommand=…」这类选项注入
+HOST_ADDRESS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.:_-]{0,252}$")
+HOST_USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+HOST_REF = re.compile(r"^@?[a-z0-9][a-z0-9._-]{0,62}$")
+KEY_REF = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+LOCAL_HOST = "local"
+TARGET = "target"
+LIST_TARGETS = "list_targets"
+# 主机不超过 enum_max 台时 target 下发成枚举，超过改成字符串，再提供 list_targets；@组展开后的并发和单次上限
+HOST_LIMITS = {"enum_max": (30, 1, 1000), "parallel": (5, 1, 32), "max_targets": (20, 1, 500)}
+
+
+def _host_setting(raw, key, problems):
+    default, low, high = HOST_LIMITS[key]
+    value = raw.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        problems.append(f"hosts.{key} 要是 {low}..{high} 之间的整数，已按 {default} 处理")
+        return default
+    return value
+
+
+def _host_names(owner, field, raw, pattern=HOST_NAME, reserved=()):
+    if raw is None:
+        return None
+    items = raw if isinstance(raw, list) else [raw]
+    out = []
+    for value in items:
+        text = str(value).strip()
+        if not pattern.match(text) or text in reserved:
+            raise ConfigError(f"{owner} 的 {field} 里有不合法的名字：{text[:40]!r}")
+        if text not in out:
+            out.append(text)
+    return out
+
+
+def _check_host(entry, defaults):
+    """hosts.list 的一项。不认识的字段、写错的值整条拒绝：主机写错了宁可用不了，也不能连到别处去。"""
+    if not isinstance(entry, dict):
+        raise ConfigError("hosts.list 的每一项必须是映射：{name, address, …}")
+    name = str(entry.get("name", "")).strip()
+    if not HOST_NAME.match(name):
+        raise ConfigError(f"主机名不合法：{name[:40]!r}（小写字母或数字开头，可含 . _ -，最长 63）")
+    unknown = sorted(str(key) for key in entry if key not in HOST_FIELDS)
+    if unknown:
+        raise ConfigError(f"主机 {name} 里有不认识的字段 {'、'.join(unknown)}（只认 {'、'.join(HOST_FIELDS)}）")
+    via = str(entry.get("via") or defaults.get("via") or "ssh").strip()
+    if via not in HOST_VIAS:
+        raise ConfigError(f"主机 {name} 的 via 只能是 local 或 ssh（WinRM、runner 在后续版本），不是 {via[:20]!r}")
+    if via == "local":
+        # 本机：defaults 只管远程主机；本机条目只能起名、分组、限定开放哪些工具，系统自动识别
+        extra = sorted(str(key) for key in entry if key not in LOCAL_FIELDS)
+        if extra:
+            raise ConfigError(f"主机 {name} 是本机（via: local），不能写 {'、'.join(extra)}")
+        return {"name": name, "via": "local",
+                "groups": _host_names(f"主机 {name}", "groups", entry.get("groups"), reserved=("all",)) or [],
+                "tools": _host_names(f"主机 {name}", "tools", entry.get("tools"), TOOL_NAME)}
+    if name == LOCAL_HOST:
+        raise ConfigError("主机名 local 留给本机（via: local）")
+    merged = {**defaults, **entry}
+    address = str(merged.get("address") or "").strip()
+    if not HOST_ADDRESS.match(address):
+        raise ConfigError(f"主机 {name} 的 address 不合法：{address[:60]!r}（主机名或 IP，不带用户名、端口和空格）")
+    port = merged.get("port", 22)
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ConfigError(f"主机 {name} 的 port 要是 1..65535 的整数")
+    user = str(merged.get("user") or "").strip()
+    if not HOST_USER.match(user):
+        raise ConfigError(f"主机 {name} 缺少 user，或账号名不合法：{user[:40]!r}")
+    found = KEY_REF.match(str(merged.get("key") or "").strip())
+    if not found or _secret_env(found.group(1)) is None:
+        raise ConfigError(f"主机 {name} 的 key 要写成凭据引用 ${{名字}}（环境变量 {SECRET_PREFIX}名字 里放私钥文件的路径），"
+                          f"不能直接写路径或私钥")
+    system = str(merged.get("os") or "").strip().lower()
+    if system not in OS_NAMES:
+        raise ConfigError(f"主机 {name} 要写 os（{'、'.join(OS_NAMES)}）：工具按它判断能不能在这台主机上跑")
+    if system == "windows":
+        raise ConfigError(f"主机 {name}：Windows 主机还不支持（WinRM 在后续版本）")
+    mode = str(merged.get("mode") or "guarded").strip()
+    if mode not in HOST_MODES:
+        raise ConfigError(f"主机 {name} 的 mode 只能是 guarded（受控，默认）或 direct（直连），不是 {mode[:20]!r}")
+    return {"name": name, "via": "ssh", "address": address, "port": port, "user": user, "key": found.group(1),
+            "os": system, "mode": mode,
+            "groups": _host_names(f"主机 {name}", "groups", merged.get("groups"), reserved=("all",)) or [],
+            "tools": _host_names(f"主机 {name}", "tools", merged.get("tools"), TOOL_NAME)}
+
+
+def _check_hosts(document, problems):
+    """主文件顶层 hosts → 主机清单；没写 hosts 返回 None（老行为）。坏条目跳过并记 problem，不拖垮别的主机。
+
+    写了 hosts（哪怕是空的）就进入主机模式：命令型工具多一个 target 参数。整段写坏时按「只有本机」处理——
+    模型能指定的 target 只有本机，一个本来要发去别的主机的调用不会被悄悄当成本机执行。
+    """
+    if "hosts" not in document:
+        return None
+    raw = document.get("hosts")
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        problems.append("hosts 必须是映射：{defaults: {…}, list: [{name, address, …}]}，已按只有本机处理")
+        raw = {}
+    unknown = sorted(str(key) for key in raw if key not in HOST_SETTINGS)
+    if unknown:
+        problems.append(f"hosts 里有不认识的字段 {'、'.join(unknown)}（只认 {'、'.join(HOST_SETTINGS)}），已忽略")
+    settings = {key: _host_setting(raw, key, problems) for key in HOST_LIMITS}
+    defaults = raw.get("defaults") or {}
+    if not isinstance(defaults, dict):
+        problems.append("hosts.defaults 必须是映射，已忽略")
+        defaults = {}
+    wrong = sorted(str(key) for key in defaults if key not in HOST_FIELDS or key in ("name", "address"))
+    if wrong:
+        problems.append(f"hosts.defaults 里不能写 {'、'.join(wrong)}，整个 defaults 已忽略")
+        defaults = {}
+    entries = raw.get("list") or []
+    if not isinstance(entries, list):
+        problems.append("hosts.list 必须是列表")
+        entries = []
+
+    hosts = {}
+    for entry in entries:
+        try:
+            host = _check_host(entry, defaults)
+        except ConfigError as exc:
+            problems.append(str(exc))
+            continue
+        if host["name"] in hosts:
+            problems.append(f"主机名重复：{host['name']}")
+            continue
+        if host["via"] == "local" and any(h["via"] == "local" for h in hosts.values()):
+            problems.append(f"主机 {host['name']}：本机（via: local）只能有一台，已忽略")
+            continue
+        hosts[host["name"]] = host
+
+    keep_local = raw.get("local", True)
+    if not isinstance(keep_local, bool):
+        problems.append("hosts.local 只能是 true 或 false，已按 true 处理")
+        keep_local = True
+    local = next((h["name"] for h in hosts.values() if h["via"] == "local"), None)
+    if local is None and keep_local:
+        hosts = {LOCAL_HOST: {"name": LOCAL_HOST, "via": "local", "groups": [], "tools": None, "implicit": True},
+                 **hosts}
+        local = LOCAL_HOST
+    elif local is not None and not keep_local:
+        problems.append(f"hosts.local: false 和本机条目 {local} 矛盾，已按有本机处理")
+
+    groups = {}
+    for host in hosts.values():
+        for group in host["groups"]:
+            groups.setdefault(group, []).append(host["name"])
+    groups["all"] = list(hosts)
+
+    default = local or ""
+    if raw.get("default") is not None:
+        wanted = str(raw.get("default")).strip()
+        if wanted.startswith("@") and wanted[1:] in groups or wanted in hosts:
+            default = wanted
+        else:
+            problems.append(f"hosts.default 不是已声明的主机或 @组：{wanted[:40]!r}，"
+                            f"已按{'本机 ' + local if local else '没有默认主机'}处理")
+    return {"hosts": hosts, "groups": groups, "default": default, "local": local, **settings}
+
+
+def _bind_hosts(hosts, tools, problems):
+    """主机模式下的两条加载期规则：target 是保留参数名；主机的 tools 只能列已有的工具。"""
+    for name, spec in list(tools.items()):
+        if spec.get("type") == "command" and TARGET in spec["params"]:
+            problems.append(f"{name} 有参数 target：配了主机清单后，命令型工具自动多一个 target 参数（在哪台主机上跑），"
+                            f"这个名字是保留的，已跳过这个工具")
+            del tools[name]
+    for host in hosts["hosts"].values():
+        unknown = [tool for tool in host.get("tools") or [] if tool not in tools]
+        if unknown:
+            problems.append(f"主机 {host['name']} 的 tools 里有不存在的工具：{'、'.join(unknown)}")
+    if len(hosts["hosts"]) > hosts["enum_max"] and LIST_TARGETS in tools:
+        problems.append(f"{LIST_TARGETS} 是保留名（主机多于 {hosts['enum_max']} 台时由工具服务提供），配置里的同名工具已跳过")
+        del tools[LIST_TARGETS]
+
+
 def _yaml():
     try:
         import yaml
@@ -907,20 +1040,20 @@ def _mcp_file():
 
 def load_tools(path):
     """Parse the definition file. A bad entry is skipped; a bad file raises."""
-    tools, problems, _, _ = _load_all(path)
+    tools, problems, _, _, _ = _load_all(path)
     return tools, problems
 
 
 def _load_all(path):
-    """load_tools 的完整版：多返回主文件声明的 MCP server 配置和连接。
+    """load_tools 的完整版：多返回主文件声明的 MCP server 配置、连接和主机清单。
 
     除了自己的 `tools:`，主文件还可以用顶层 `include:` 引入别的定义文件（例如一个场景包的
     tools.yaml）。被包含的文件和主文件同等可信——它们是管理员亲手写进主文件的路径，所以同样
     只能由宿主机 root 维护；它们自己不能再 include，避免链条越拉越长看不清。
 
     MCP server 只认主文件顶层的 `mcp_servers:`：它是宿主机上要跑的一段代码，必须是 root 在
-    主文件里亲手写下的。被包含的文件里出现 mcp_servers 会被忽略并报出来。连接（connections）同理只认主文件：
-    被包含的文件里的工具只能用 conn: 引用主文件的连接，不能自己新建。
+    主文件里亲手写下的。被包含的文件里出现 mcp_servers 会被忽略并报出来。连接（connections）、主机清单（hosts）
+    同理只认主文件：被包含的文件里的工具只能用 conn: 引用主文件的连接，不能自己新建；要在哪些主机上跑由主文件决定。
 
     对外开放（export）也只认主文件：主文件里工具条目上的 `export: true`，或主文件顶层的 `export: [工具名…]`
     （场景包、批准过的 MCP 工具不在主文件里，用这个列表开放）。被包含的文件和 MCP 批准文件里写的 export 一律忽略并报出来：
@@ -935,6 +1068,7 @@ def _load_all(path):
     servers = _check_mcp_servers(document, problems)
     connections = _check_connections(document, problems)
     exported = _check_export_list(document, problems)
+    hosts = _check_hosts(document, problems)
 
     # 批准文件最先读：同名时它说了算（漂移后重新批准的条目要盖过主文件里的旧条目）。
     sources = []
@@ -960,6 +1094,8 @@ def _load_all(path):
             problems.append(f"{included} 里的 connections 已忽略：连接（地址和凭据）只能在主文件里声明")
         if sub.get("export") is not None:
             problems.append(f"{included} 里的 export 已忽略：对外开放只能由管理员在主配置文件里标")
+        if sub.get("hosts") is not None:
+            problems.append(f"{included} 里的 hosts 已忽略：主机清单（地址和私钥）只能在主文件里声明")
         sub_entries = sub.get("tools")
         if not isinstance(sub_entries, list):
             problems.append(f"{included} 缺少 tools 列表")
@@ -1008,7 +1144,9 @@ def _load_all(path):
             tools[name]["export"] = True
         else:
             problems.append(f"顶层 export 里的 {name} 不是已加载的工具，已忽略")
-    return tools, problems, servers, connections
+    if hosts is not None:
+        _bind_hosts(hosts, tools, problems)
+    return tools, problems, servers, connections, hosts
 
 
 def _check_export_list(document, problems):
@@ -1075,7 +1213,7 @@ def _apply_overrides(tools, overrides):
 
 _state = {"path": DEFAULT_CONFIG, "mtime": None, "omtime": None, "tmtime": None, "imtime": None,
           "mmtime": None, "includes": [], "tools": {}, "problems": [], "mcp_servers": {},
-          "connections": {}}
+          "connections": {}, "hosts": None}
 
 
 def _mtimes():
@@ -1107,7 +1245,7 @@ def refresh(force=False):
         return _state["tools"]
 
     try:
-        tools, problems, servers, connections = _load_all(_state["path"])
+        tools, problems, servers, connections, hosts = _load_all(_state["path"])
         includes = _include_patterns(_read_yaml(_state["path"]))
     except ConfigError as exc:
         _state["problems"] = [str(exc)]
@@ -1119,17 +1257,21 @@ def refresh(force=False):
         overrides = {}
         problems = problems + [f"覆盖层已忽略：{exc}"]
 
+    hosts_changed = hosts != _state.get("hosts")
     _state.update(mtime=mtime, omtime=omtime, tmtime=tmtime, mmtime=mmtime, includes=includes,
                   problems=problems, tools=_apply_overrides(tools, overrides), mcp_servers=servers,
-                  connections=connections)
+                  connections=connections, hosts=hosts)
     # 模式列表可能刚变，用它重新算一次被包含文件的印章，下一次请求才不会白白重载
     _state["imtime"] = _mtimes()[3]
     # server 配置变了就启停对应子进程；这里只换对象，真正拉进程的是后台线程或下一次调用
     _mcp.configure(servers)
+    if hosts_changed:
+        _monitor.wake()   # 主机清单变了，后台马上重新检查一遍
     for problem in problems:
         print(f"[config] {problem}", flush=True)
     print(f"[config] 已加载 {len(tools)} 个工具定义，"
-          f"{len(overrides)} 个被页面覆盖", flush=True)
+          f"{len(overrides)} 个被页面覆盖"
+          + (f"；主机 {len(hosts['hosts'])} 台：{', '.join(hosts['hosts'])}" if hosts else ""), flush=True)
     return _state["tools"]
 
 
@@ -1175,11 +1317,20 @@ def _not_here(spec):
 
 
 def _runnable(spec):
-    """Command/script tools need the right OS and their binary here; HTTP and builtin tools need nothing local."""
+    """Command/script tools need the right OS and their binary here; HTTP and builtin tools need nothing local.
+
+    配了主机清单时，命令型工具只要有一台主机（本机或远程）能跑就算可用；脚本型工具只能在本机跑。
+    """
     if spec.get("type") in ("http", "builtin"):
         return True
     if spec.get("type") == "mcp":
         return _mcp_state(spec)[0]
+    if _hosts() is not None:
+        if spec.get("type") == "command":
+            return _target_info(spec) is not None
+        local = _local_host()
+        if local is None or not _applicable(spec, local)[0]:
+            return False
     if _not_here(spec):
         return False
     return bool(spec.get("binary") and shutil.which(spec["binary"]))
@@ -1191,6 +1342,19 @@ def _unusable_reason(spec):
         return ""
     if spec.get("type") == "mcp":
         return _mcp_state(spec)[1]
+    cfg = _hosts()
+    if cfg is not None:
+        if spec.get("type") == "command":
+            states = [(name, _host_tool_state(spec, host)) for name, host in cfg["hosts"].items()]
+            if any(state != "no" for _, (state, _) in states):
+                return ""
+            return "没有能运行它的主机：" + "；".join(f"{name} {reason}" for name, (_, reason) in states)
+        local = _local_host()
+        if local is None:
+            return "脚本型工具只能在本机跑，而主机清单里没有本机（hosts.local: false）"
+        ok, reason = _applicable(spec, local)
+        if not ok:
+            return reason
     reason = _not_here(spec)
     if reason:
         return reason
@@ -1299,7 +1463,7 @@ def _param_schema(key, spec):
     return prop, spec["required"] and "default" not in spec
 
 
-def _input_schema(spec):
+def _input_schema(spec, target=None):
     if spec.get("type") == "mcp":
         # server 的 schema 原样下发（拷一份，不改 server 那份）；管理员收紧项里的预置正则同样标出来
         schema = json.loads(json.dumps(_live_schema(spec)))
@@ -1313,13 +1477,18 @@ def _input_schema(spec):
         properties[key], needed = _param_schema(key, param)
         if needed:
             required.append(key)
+    if target is not None:
+        # 主机模式下命令型工具多出来的 target：值是主机名，声明 x-entity: host，图谱和出网规则都按它认
+        properties[TARGET] = target[1]
+        if target[2]:
+            required.append(TARGET)
     schema = {"type": "object", "properties": properties}
     if required:
         schema["required"] = required
     return schema
 
 
-def _contract(name, spec):
+def _contract(name, spec, target=None, schema=None):
     """一个工具在 MCP Tool 格式里多出来的字段（name、description 就是 /tools 的键和 desc）。"""
     open_world = False
     if spec.get("type") == "mcp":
@@ -1327,7 +1496,7 @@ def _contract(name, spec):
         open_world = (live.get("annotations") or {}).get("openWorldHint") is True
     return {
         "title": spec.get("label") or name,
-        "inputSchema": _input_schema(spec),
+        "inputSchema": schema if schema is not None else _input_schema(spec, target),
         # 这里下发的都是只读工具：命令有写动词黑名单，接口只许 GET，MCP 工具执行前要有只读依据
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": open_world},
         # export：能否出现在对外 MCP。只认主配置文件（见 _load_all），场景包和 MCP 批准文件里写了不算
@@ -1336,19 +1505,39 @@ def _contract(name, spec):
     }
 
 
+def _host_target(spec):
+    """主机模式下命令型工具的 target 参数 (params 写法, schema 属性, 是否必填)；别的情况是 None。"""
+    if _hosts() is None or spec.get("type") != "command":
+        return None
+    info = _target_info(spec)
+    return _target_param(spec, info) if info else None
+
+
+def _list_targets_entry():
+    """主机多于 enum_max 台时由工具服务提供的 list_targets（数据类，和别的工具一样走 /exec）。"""
+    spec = _list_targets_spec()
+    schema = {"type": "object", "properties": {"group": {
+        "type": "string", "description": spec["params"]["group"]["desc"], "default": ""}}}
+    return spec, {"desc": spec["desc"], "params": spec["params"], **_contract(LIST_TARGETS, spec, schema=schema)}
+
+
 def available_tools():
-    """Only advertise enabled tools that can actually run on this host."""
+    """Only advertise enabled tools that can actually run on this host (or, with a host list, on some host)."""
     out = {}
     for name, spec in all_tools().items():
         if not (spec["enabled"] and _runnable(spec)):
             continue
-        entry = {"desc": spec["desc"], "params": spec["params"]}
+        target = _host_target(spec)
+        params = spec["params"] if target is None else {**spec["params"], TARGET: target[0]}
+        entry = {"desc": spec["desc"], "params": params}
         if spec.get("type") == "mcp":
             # 应用侧有 input_schema 就按它生成完整的 pydantic 模型（嵌套、枚举、必填都在）
             entry["input_schema"] = _live_schema(spec)
             entry["params"] = _mcp_params(spec)
-        entry.update(_contract(name, spec))
+        entry.update(_contract(name, spec, target))
         out[name] = entry
+    if _list_targets_active():
+        out[LIST_TARGETS] = _list_targets_entry()[1]
     return out
 
 
@@ -1368,8 +1557,11 @@ def mcp_status():
 def describe_tools():
     """Everything the UI needs in order to show what the agent can really run."""
     out = {}
+    cfg = _hosts()
     for name, spec in all_tools().items():
-        item = {"desc": spec["desc"], "params": spec["params"],
+        target = _host_target(spec) if spec["enabled"] else None
+        item = {"desc": spec["desc"],
+                "params": spec["params"] if target is None else {**spec["params"], TARGET: target[0]},
                 "label": spec.get("label", ""),
                 "group": spec.get("group", ""),
                 "binary": spec["binary"],
@@ -1383,6 +1575,15 @@ def describe_tools():
                 "os": list(spec.get("os") or []),
                 "applicable": not _not_here(spec),
                 "export": bool(spec.get("export"))}
+        if cfg is not None and spec.get("type") == "command":
+            # 主机模式：逐台列出能不能跑（ok / unknown / no）和原因；有一台适用就不算「不适用」
+            states = {host_name: _host_tool_state(spec, host) for host_name, host in cfg["hosts"].items()}
+            item["hosts"] = {host_name: {"state": state, "reason": reason}
+                             for host_name, (state, reason) in states.items()}
+            item["groups"] = list(spec.get("groups") or [])
+            item["applicable"] = any(_applicable(spec, host)[0] for host in cfg["hosts"].values())
+        elif spec.get("type") == "command" and spec.get("groups"):
+            item["groups"] = list(spec["groups"])
         if not item["runnable"] and spec.get("type") != "mcp":
             item["reason"] = _unusable_reason(spec)
         if spec.get("type") == "builtin":
@@ -1395,6 +1596,12 @@ def describe_tools():
                         schema_locked=bool(spec["schema_hash"]), restrict=spec["restrict"],
                         input_schema=_live_schema(spec), params=_mcp_params(spec))
         out[name] = item
+    if _list_targets_active():
+        spec, entry = _list_targets_entry()
+        out[LIST_TARGETS] = {"desc": spec["desc"], "params": spec["params"], "label": spec["label"],
+                             "group": spec["group"], "binary": "", "command": "内置函数 list_targets",
+                             "type": "builtin", "builtin": LIST_TARGETS, "script": "", "enabled": True,
+                             "runnable": True, "overridden": [], "os": [], "applicable": True, "export": False}
     return out
 
 
@@ -1741,39 +1948,9 @@ def _reconcile_pending(server):
         _write_yaml(_sibling("pending"), {"pending": pending})
 
 
-def _value(key, spec, args):
-    supplied = args.get(key)
-    if spec["type"] == "int":
-        try:
-            number = int(supplied)
-        except (TypeError, ValueError):
-            if spec["required"]:
-                # 必填的 int 没有默认值可退：缺了或给的不是整数都得说清楚，不能悄悄换成别的值
-                if supplied is None or str(supplied).strip() == "":
-                    raise ValueError(f"缺少必填参数：{key}") from None
-                raise ValueError(f"参数 {key} 不合法：{str(supplied)[:40]!r}，应为整数") from None
-            number = spec["default"]
-        return str(max(spec["min"], min(number, spec["max"])))
-
-    text = str(supplied if supplied is not None else "").strip()
-    if not text:
-        if spec["required"]:
-            raise ValueError(f"缺少必填参数：{key}")
-        return spec["default"]
-    if not PATTERNS[spec["pattern"]].match(text):
-        raise ValueError(f"参数 {key} 不合法：{text[:40]!r}")
-    return text
-
-
-def build_argv(spec, args):
-    """Fill the fixed template. Each value lands in its own argv slot."""
-    args = args or {}
-    values = {key: _value(key, param, args) for key, param in spec["params"].items()}
-    argv = []
-    for part in spec["argv"]:
-        found = PLACEHOLDER.match(part)
-        argv.append(values[found.group(1)] if found else part)
-    return argv
+# 参数校验与 argv 拼装：本机执行、发给主机上的执行器之前、执行器自己，用的都是 ops_exec.py 里这一份。
+_value = ops_exec.value
+build_argv = ops_exec.build_argv
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -2566,26 +2743,528 @@ def _run_mcp(spec, args):
             "output": text[:MAX_OUTPUT] + ("\n…（输出已截断）" if truncated else "")}
 
 
-def run_tool(name, args):
-    spec = all_tools().get(name)
-    if spec is None or not spec["enabled"]:
-        return {"ok": False, "error": f"未知工具：{name}"}
+# ---- 在主机上执行 -----------------------------------------------------------------------
+# 传输层用系统的 OpenSSH 客户端（subprocess，argv 列表，不经过 shell）：工具服务仍然只依赖标准库，systemd 单元不用改。
+# 以后要支持 Windows 主机或不想依赖 ssh 程序时，可以再写一个同样接口（run）的实现，比如基于 paramiko。
+#
+# 两种模式：
+#   guarded（受控，默认）  只发「工具名 + 参数」，主机上的 ops_exec.py（强制命令）按它自己的白名单校验后执行
+#   direct（直连）         这边按 argv 模板校验、查黑名单，每个参数做 shell 转义后拼成一条命令发过去；只读靠账号权限
 
-    if spec.get("type") == "http":
-        return _run_http(spec, args)
-    if spec.get("type") == "mcp":
-        return _run_mcp(spec, args)
-    if spec.get("type") == "builtin":
-        return _run_builtin(spec, args)
+GUARDED_COMMAND = "doc2sop-ops-exec"   # 受控模式发的远程命令：强制命令会忽略它；没配强制命令的主机上它不存在，只会报错
+SSH_CONNECT_TIMEOUT = 5
+SSH_SLACK = 8                           # 远程调用的总时限 = TIMEOUT + 建连、起 python 的余量，要小于应用等 /exec 的 30 秒
+SSH_OUTPUT_MAX = 1024 * 1024            # 从主机读回来的输出上限（字节），再多就丢掉，不让一台主机撑爆工具服务
+SSH_PASS_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "SYSTEMROOT", "TMPDIR")
+HOST_REFRESH = 300                      # 后台每隔多久检查一遍各主机（list / probe），结果用来标可用性
+EXEC_DIR = "/opt/ops-readonly"          # 主机上执行器和白名单的位置（push 装到这里，强制命令指向这里）
 
+
+class HostError(RuntimeError):
+    """连主机这一步失败了：没有 ssh 客户端、凭据不对、host key 不认识、连不上、超时。"""
+
+
+def _known_hosts():
+    """工具服务自己的 known_hosts，和主配置放在一起；按主机名（HostKeyAlias）登记，由 enroll 写入。"""
+    path = Path(_state["path"])
+    return path.with_name(f"{path.stem}.known_hosts")
+
+
+def _pinned_keys(alias):
+    """known_hosts 里登记给这台主机的 host key：[(类型, base64)]。"""
+    try:
+        lines = _known_hosts().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    found = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 3 and not line.startswith(("#", "@")) and alias in parts[0].split(","):
+            found.append((parts[1], parts[2]))
+    return found
+
+
+def _check_known_hosts(host):
+    """连之前先确认登记过 host key，而且文件没被放宽权限：从不自动接受，也不让别人往里塞。"""
+    path = _known_hosts()
+    if not _pinned_keys(host["name"]):
+        raise HostError(f"主机 {host['name']} 的 host key 还没登记：先在工具服务所在机器上执行 "
+                        f"ops_readonly.py enroll {host['name']}，核对指纹后登记")
+    if os.name == "posix" and os.stat(path).st_mode & 0o022:
+        raise HostError(f"{path.name} 的权限过宽（组或其他用户可写），拒绝使用：chmod 644 {path}")
+    return path
+
+
+def _key_file(host):
+    """私钥文件的路径（凭据的值）。不是普通文件、是符号链接、组或其他用户能读写、不属于工具服务账号，都拒绝。
+
+    报错里只写凭据的名字，不写路径：路径也是凭据的一部分，不进日志和页面。
+    """
+    shown = "${" + host["key"] + "}"
+    try:
+        path = _secret(host["key"])
+    except ValueError:
+        raise HostError(f"主机 {host['name']} 的私钥 {shown} 没有配置（环境变量 {_secret_env(host['key'])}，"
+                        f"值是私钥文件的路径）") from None
+    try:
+        info = os.lstat(path)
+    except OSError:
+        raise HostError(f"主机 {host['name']} 的私钥 {shown} 指向的文件读不到") from None
+    if not stat.S_ISREG(info.st_mode):
+        raise HostError(f"主机 {host['name']} 的私钥 {shown} 不是普通文件（不能是符号链接或目录）")
+    if os.name == "posix":
+        if info.st_mode & 0o077:
+            raise HostError(f"主机 {host['name']} 的私钥 {shown} 权限过宽（{oct(info.st_mode & 0o777)}），"
+                            f"拒绝使用：只能由工具服务账号读写，chmod 600")
+        if info.st_uid != os.geteuid():
+            raise HostError(f"主机 {host['name']} 的私钥 {shown} 不属于工具服务的运行账号，拒绝使用")
+    return path
+
+
+def _communicate(argv, data, timeout, limit, env=None):
+    """起一个子进程，喂 stdin、收 stdout/stderr（各最多 limit 字节），超时就杀掉。返回 (退出码, stdout, stderr)。"""
+    kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW} if hasattr(subprocess, "CREATE_NO_WINDOW") else {}
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            env=env, shell=False, **kwargs)
+    buffers = (bytearray(), bytearray())
+
+    def pump(stream, buffer):
+        try:
+            while True:
+                block = stream.read1(65536)
+                if not block:
+                    return
+                room = limit - len(buffer)
+                if room > 0:
+                    buffer.extend(block[:room])
+        except (OSError, ValueError):
+            return
+
+    def feed():
+        try:
+            if data:
+                proc.stdin.write(data)
+            proc.stdin.close()
+        except (OSError, ValueError):
+            pass
+
+    workers = [threading.Thread(target=pump, args=(proc.stdout, buffers[0]), daemon=True),
+               threading.Thread(target=pump, args=(proc.stderr, buffers[1]), daemon=True),
+               threading.Thread(target=feed, daemon=True)]
+    for worker in workers:
+        worker.start()
+    try:
+        code = proc.wait(timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(5)
+        raise HostError(f"执行超时（{timeout}s，含建立连接）") from None
+    finally:
+        for worker in workers:
+            worker.join(5)
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            try:
+                stream.close()
+            except OSError:
+                pass
+    return code, bytes(buffers[0]), bytes(buffers[1])
+
+
+class SshTransport:
+    """系统的 OpenSSH 客户端。只用命令行选项，不读任何 ssh_config（-F 指向空设备）：
+
+    host key 只认工具服务自己的 known_hosts（按主机名登记），不认识或变了一律失败，不会自动接受；
+    只用指定的私钥（不用 agent、不试别的密钥、不问密码）；不转发 agent/X11/端口，不复用连接，不走跳板。
+    """
+
+    def argv(self, binary, host, key, known_hosts, command):
+        options = {
+            "BatchMode": "yes", "StrictHostKeyChecking": "yes", "UserKnownHostsFile": str(known_hosts),
+            "GlobalKnownHostsFile": os.devnull, "HostKeyAlias": host["name"], "CheckHostIP": "no",
+            "UpdateHostKeys": "no", "VerifyHostKeyDNS": "no", "IdentitiesOnly": "yes", "IdentityAgent": "none",
+            "PreferredAuthentications": "publickey", "PasswordAuthentication": "no",
+            "KbdInteractiveAuthentication": "no", "ConnectTimeout": str(SSH_CONNECT_TIMEOUT),
+            "ServerAliveInterval": "10", "ServerAliveCountMax": "2", "ControlMaster": "no", "ControlPath": "none",
+            "ClearAllForwardings": "yes", "ForwardAgent": "no", "ForwardX11": "no", "PermitLocalCommand": "no",
+            "ProxyCommand": "none", "RequestTTY": "no", "LogLevel": "ERROR"}
+        out = [binary, "-F", os.devnull, "-T", "-i", key]
+        for name, value in options.items():
+            out += ["-o", f"{name}={value}"]
+        return out + ["-p", str(host["port"]), "-l", host["user"], "--", host["address"], command]
+
+    def run(self, host, command, data=b"", timeout=TIMEOUT + SSH_SLACK):
+        """在主机上执行一条远程命令：(退出码, stdout 字节, stderr 文字)。连不上之类的问题抛 HostError。"""
+        binary = shutil.which("ssh")
+        if not binary:
+            raise HostError("工具服务这台机器没有 ssh 客户端（OpenSSH），连不了远程主机")
+        known_hosts = _check_known_hosts(host)
+        key = _key_file(host)
+        env = {name: os.environ[name] for name in SSH_PASS_ENV if name in os.environ}
+        try:
+            code, out, err = _communicate(self.argv(binary, host, key, known_hosts, command), data,
+                                          timeout, SSH_OUTPUT_MAX, env)
+        except OSError as exc:
+            raise HostError(f"起 ssh 失败：{exc}") from None
+        return code, out, _scrub(err.decode("utf-8", "replace"), [key]).strip()
+
+
+_transport = SshTransport()
+
+
+def _ssh_failure(host, err):
+    """ssh 自己失败（退出码 255）时给人看的原因。host key 的问题单独说清楚：这时绝不能「先连上再说」。"""
+    text = err or ""
+    first = next((line for line in text.splitlines() if line.strip()), "")[:200]
+    name = host["name"]
+    if "IDENTIFICATION HAS CHANGED" in text or "Host key verification failed" in text or "host key is known" in text:
+        return (f"主机 {name} 的 host key 和登记的不一致（或没登记），拒绝连接：可能是主机重装了，也可能有人在中间冒充。"
+                f"先在主机上核对指纹，确认无误再 enroll {name} --replace")
+    if "Permission denied" in text:
+        return f"主机 {name} 拒绝登录：账号 {host['user']} 上没有放工具服务的公钥，或账号不对（{first}）"
+    return f"连不上主机 {name}：{first or 'ssh 退出码 255'}"
+
+
+def _decode(data):
+    return (data or b"").decode("utf-8", "replace").replace("\r\n", "\n")
+
+
+def _call_executor(host, request):
+    """受控模式：把一条请求发给主机上的执行器，返回 (回应, 错误)。回应一定是执行器写的那条 JSON。"""
+    payload = json.dumps(request, ensure_ascii=True).encode("ascii")
+    try:
+        code, out, err = _transport.run(host, GUARDED_COMMAND, payload)
+    except HostError as exc:
+        return None, f"主机 {host['name']}：{exc}"
+    lines = [line for line in _decode(out).splitlines() if line.strip()]
+    try:
+        response = json.loads(lines[-1]) if lines else None
+    except ValueError:
+        response = None
+    if isinstance(response, dict) and "ops_exec" in response:
+        return response, None
+    if code == 255:
+        return None, _ssh_failure(host, err)
+    detail = (err or (lines[-1] if lines else ""))[:200]
+    return None, (f"主机 {host['name']} 没有按受控模式回应（退出码 {code}）：authorized_keys 里要用强制命令启动执行器，"
+                  f"见 enroll 打印的安装步骤" + (f"；{detail}" if detail else ""))
+
+
+def _quote_argv(argv):
+    """直连模式：每一项单独做 POSIX shell 转义再拼起来。; $() 反引号 换行 通配符 在远端都只是字面字符。"""
+    return " ".join(shlex.quote(part) for part in argv)
+
+
+def _cut(text, limit=MAX_OUTPUT):
+    return text[:limit] + ("\n…（输出已截断）" if len(text) > limit else "")
+
+
+def _run_guarded(host, spec, args):
+    try:
+        filled = ops_exec.values(spec, args)
+        argv = build_argv(spec, args)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if ops_exec.forbidden(argv):
+        return {"ok": False, "error": "拒绝执行：命中写操作黑名单"}
+    shown = f"{host['name']}: {' '.join(argv)}"
+    response, error = _call_executor(host, {"v": ops_exec.PROTOCOL, "op": "exec", "tool": spec["name"],
+                                            "args": filled, "fp": _fingerprint(spec)})
+    if error:
+        return {"ok": False, "error": error, "command": shown}
+    if response.get("code") in ("fp_mismatch", "not_allowed", "guard", "allowlist"):
+        _monitor.wake()   # 主机上的白名单和这边对不上：马上重新检查，页面和枚举跟着更新
+    result = {"ok": response.get("ok") is True, "command": shown}
+    if "output" in response:
+        result["output"] = _cut(str(response["output"]))
+    if isinstance(response.get("exit_code"), int):
+        result["exit_code"] = response["exit_code"]
+    if not result["ok"] and response.get("error"):
+        result["error"] = f"主机 {host['name']}：{str(response['error'])[:500]}"
+    elif not result["ok"] and "output" not in result:
+        result["error"] = f"主机 {host['name']} 的执行器没有给出结果"
+    return result
+
+
+def _run_direct(host, spec, args):
+    try:
+        argv = build_argv(spec, args)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if ops_exec.forbidden(argv):
+        return {"ok": False, "error": "拒绝执行：命中写操作黑名单"}
+    shown = f"{host['name']}: {' '.join(argv)}"
+    try:
+        code, out, err = _transport.run(host, _quote_argv(argv))
+    except HostError as exc:
+        return {"ok": False, "error": f"主机 {host['name']}：{exc}", "command": shown}
+    output = (_decode(out) or err or "").strip()
+    if code == 255 and not out:
+        return {"ok": False, "error": _ssh_failure(host, err), "command": shown}
+    if code == 127 and not out:
+        return {"ok": False, "error": f"主机 {host['name']} 上没有 {spec['binary']}（{err[:120]}）", "command": shown}
+    return {"ok": code == 0, "command": shown, "output": _cut(output), "exit_code": code}
+
+
+def _fingerprint(spec):
+    return ops_exec.fingerprint(spec["argv"], spec["params"])
+
+
+def _hosts():
+    return _state.get("hosts")
+
+
+def _host_os_of(host):
+    return HOST_OS if host["via"] == "local" else host["os"]
+
+
+def _local_host():
+    cfg = _hosts()
+    return cfg["hosts"].get(cfg["local"]) if cfg and cfg["local"] else None
+
+
+def _applicable(spec, host):
+    """静态规则：系统、适用分组、主机开放的工具。(能不能, 原因)。不连主机。"""
+    wanted = spec.get("os") or []
+    system = _host_os_of(host)
+    if wanted and system not in wanted:
+        return False, f"不适用：工具声明 os: {', '.join(wanted)}，主机是 {system}"
+    groups = spec.get("groups") or []
+    if groups and not set(groups) & set(host["groups"]):
+        return False, f"不适用：工具只在分组 {', '.join(groups)} 的主机上跑"
+    if host.get("tools") is not None and spec["name"] not in host["tools"]:
+        return False, "这台主机没有开放这个工具（主机的 tools 里没有它）"
+    return True, ""
+
+
+# 各主机最近一次检查的结果：主机名 → {sig, checked_at, reachable, error, executor, allowlist, tools, binaries}
+_host_status = {}
+_host_status_lock = threading.Lock()
+
+
+def _host_sig(host):
+    return tuple(host.get(key) for key in ("via", "address", "port", "user", "mode", "key"))
+
+
+def _cached_status(host):
+    with _host_status_lock:
+        status = _host_status.get(host["name"])
+    return status if status and status.get("sig") == _host_sig(host) else None
+
+
+def _host_tool_state(spec, host):
+    """这个工具在这台主机上：("ok" | "unknown" | "no", 原因)。
+
+    unknown（没检查过、暂时连不上）照样算候选：调用时会拿到具体原因；no 是确定不行（不适用、没开放、没装、版本不一致）。
+    """
+    ok, reason = _applicable(spec, host)
+    if not ok:
+        return "no", reason
+    if host["via"] == "local":
+        if not (spec.get("binary") and shutil.which(spec["binary"])):
+            return "no", f"本机没有 {spec['binary']}"
+        return "ok", ""
+    status = _cached_status(host)
+    if status is None:
+        return "unknown", "还没检查过这台主机"
+    if not status.get("reachable"):
+        return "unknown", status.get("error") or "连不上"
+    if host["mode"] == "guarded":
+        if status.get("tools") is None:
+            return "no", status.get("error") or "执行器不可用"
+        listed = status["tools"].get(spec["name"])
+        if listed is None:
+            have = (status.get("binaries") or {}).get(spec["binary"])
+            return "no", "白名单里没有，需要 push" + ("（主机上有这个命令）" if have else "")
+        if listed.get("fp") != _fingerprint(spec):
+            return "no", "主机白名单里的定义和这边不一致，需要 push"
+        if not listed.get("runnable"):
+            return "no", f"主机上没有 {spec['binary']}"
+        return "ok", ""
+    have = (status.get("binaries") or {}).get(spec["binary"])
+    if have is None:
+        return "unknown", "还没检查过这个命令"
+    return ("ok", "") if have else ("no", f"主机上没有 {spec['binary']}")
+
+
+def _default_candidate(spec, host):
+    """能不能当这个工具的默认主机：只看配置（系统、分组、开放的工具），本机再现查命令在不在。
+
+    不看后台检查的缓存：缓存随时会变，默认主机要是跟着它变，模型以为查的是 b、实际跑在了别处，结果还当成 b 的报出来。
+    默认主机跑不了，就让调用带着它自己的原因失败。
+    """
+    if not _applicable(spec, host)[0]:
+        return False
+    return host["via"] != "local" or bool(spec.get("binary") and shutil.which(spec["binary"]))
+
+
+def _target_info(spec):
+    """命令型工具在主机模式下的 target：(可选的主机, 可选的组, 默认值或 None)；没有能跑它的主机返回 None。
+
+    默认值的规则（文档和测试都按这条）：hosts.default（主机或 @组，不写就是本机）能跑这个工具就用它；
+    不能的话，只剩一台主机能跑就用那一台；否则 target 必填。「能跑」只看配置和本机的命令（见 _default_candidate），
+    所以默认值是确定的；可选的主机还要去掉后台检查确定跑不了的，但默认主机总在里面。
+    """
+    cfg = _hosts()
+    usable = [name for name, host in cfg["hosts"].items() if _host_tool_state(spec, host)[0] != "no"]
+    if not usable:
+        return None
+    candidates = [name for name, host in cfg["hosts"].items() if _default_candidate(spec, host)]
+    wanted, default = cfg["default"], None
+    if wanted.startswith("@") and any(name in candidates for name in cfg["groups"].get(wanted[1:], [])):
+        default = wanted
+    elif wanted in candidates:
+        default = wanted
+    if default is None and len(candidates) == 1:
+        default = candidates[0]
+    if default and not default.startswith("@") and default not in usable:
+        usable = [name for name in cfg["hosts"] if name in usable or name == default]
+    groups = [group for group, members in sorted(cfg["groups"].items())
+              if group != "all" and any(member in usable for member in members)]
+    if len(usable) > 1:
+        groups.append("all")
+    if default and default.startswith("@") and default[1:] not in groups:
+        groups.append(default[1:])
+    return usable, groups, default
+
+
+def _target_param(spec, info):
+    """target 参数：(params 里的写法, inputSchema 里的属性, 是否必填)。主机不多时是枚举，多了是字符串 + list_targets。
+
+    默认主机只写在说明里，不放进 schema 的 default：应用侧按签名会把 default 填进每次调用，target 又是出网污点，
+    那样每轮都会把 local 这种常见词记成污点，联网搜索平白被拦。不填时由这边按默认规则补上。
+    """
+    cfg = _hosts()
+    usable, groups, default = info
+    desc = "在哪台主机上执行：主机名，或 @组名（组内每台主机都执行一遍，结果按主机分段）。"
+    desc += f"不填就是 {default}。" if default else "必须指定。"
+    param = {"type": "str", "desc": desc, "required": default is None}
+    prop = {"type": "string", "description": desc, "x-entity": "host"}
+    if len(cfg["hosts"]) <= cfg["enum_max"]:
+        choices = usable + ["@" + group for group in groups]
+        param.update(type="enum", enum=choices)
+        prop["enum"] = choices
+    else:
+        prop["pattern"] = HOST_REF.pattern
+        param["desc"] = prop["description"] = desc + f"主机名先用 {LIST_TARGETS} 查。"
+    if default:
+        prop["x-default"] = default     # 项目扩展：给人和测试看；应用不拿它生成签名，对外下发时剥掉
+    return param, prop, default is None
+
+
+def _choices(spec):
+    info = _target_info(spec)
+    if not info:
+        return "（没有）"
+    return "、".join(info[0] + ["@" + group for group in info[1]])
+
+
+def _resolve_target(spec, raw):
+    """target 实参 → (主机列表, 组名或 None)。不认识的、不填又没有默认值的，直接报错。"""
+    cfg = _hosts()
+    text = "" if raw is None else str(raw).strip()
+    if not text:
+        info = _target_info(spec)
+        if info is None:
+            raise ValueError(f"{spec['name']} 现在没有能运行它的主机")
+        if info[2] is None:
+            raise ValueError(f"缺少必填参数：target（在哪台主机上执行；可选：{_choices(spec)}）")
+        text = info[2]
+    if not HOST_REF.match(text):
+        raise ValueError(f"参数 target 不合法：{text[:40]!r}")
+    if text.startswith("@"):
+        members = cfg["groups"].get(text[1:])
+        if members is None:
+            raise ValueError(f"没有主机分组 {text}；可选：{_choices(spec)}")
+        return [cfg["hosts"][name] for name in members], text[1:]
+    host = cfg["hosts"].get(text)
+    if host is None:
+        raise ValueError(f"没有主机 {text}；可选：{_choices(spec)}")
+    return [host], None
+
+
+def _run_on(host, spec, args):
+    ok, reason = _applicable(spec, host)
+    if not ok:
+        return {"ok": False, "error": f"{spec['name']} 不能在主机 {host['name']} 上跑：{reason}", "host": host["name"]}
+    if host["via"] == "local":
+        result = _run_local(spec, args)
+    elif host["mode"] == "guarded":
+        result = _run_guarded(host, spec, args)
+    else:
+        result = _run_direct(host, spec, args)
+    result["host"] = host["name"]
+    return result
+
+
+GROUP_DEADLINE = 25    # @组 最多等多少秒：应用等 /exec 30 秒，到点没回来的主机记成超时，已经回来的照常返回
+SKIPPED_SHOWN = 10     # 汇总里最多列出几台不适用、跳过的主机
+
+
+def _run_group(group, members, spec, args):
+    """@组：组内每台能跑的主机并发执行，输出按主机分段，末尾汇总。总长仍不超过 MAX_OUTPUT，总时长不超过 GROUP_DEADLINE。"""
+    cfg = _hosts()
+    runnable, skipped = [], []
+    for host in members:
+        (runnable if _applicable(spec, host)[0] else skipped).append(host)
+    if not runnable:
+        return {"ok": False, "error": f"分组 @{group} 里没有能运行 {spec['name']} 的主机"}
+    if len(runnable) > cfg["max_targets"]:
+        return {"ok": False, "error": f"分组 @{group} 里有 {len(runnable)} 台主机能运行 {spec['name']}，"
+                                      f"超过单次上限 {cfg['max_targets']} 台；请换一个小一点的分组，或指定单台主机"}
+    try:
+        build_argv(spec, args)   # 参数对所有主机都一样，先校验一次，填错了不用连任何主机
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    pool = ThreadPoolExecutor(max_workers=min(cfg["parallel"], len(runnable)))
+    futures = [pool.submit(_run_on, host, spec, args) for host in runnable]
+    wait(futures, timeout=GROUP_DEADLINE)
+    # 没等到的不再等：还没开始的取消，正在跑的到它自己的超时为止，结果丢掉
+    pool.shutdown(wait=False, cancel_futures=True)
+    results = [future.result() if future.done() and not future.cancelled() else
+               {"ok": False, "error": f"超过 {GROUP_DEADLINE} 秒没有结果，没再等它"} for future in futures]
+
+    succeeded = sum(1 for result in results if result.get("ok"))
+    shown = "、".join(host["name"] for host in skipped[:SKIPPED_SHOWN])
+    if len(skipped) > SKIPPED_SHOWN:
+        shown += f" 等 {len(skipped)} 台"
+    summary = (f"（@{group}：共 {len(results)} 台，成功 {succeeded} 台，失败 {len(results) - succeeded} 台"
+               + (f"；不适用、已跳过 {len(skipped)} 台：{shown}" if skipped else "") + "）")
+    heads = [f"== {host['name']}（{'成功' if result.get('ok') else '失败'}）==" for host, result in zip(runnable, results)]
+    budget = max(0, (MAX_OUTPUT - len(summary) - sum(len(head) + 4 for head in heads)) // len(results) - 20)
+    parts = []
+    for head, result in zip(heads, results):
+        body = str(result.get("output") or "").strip()
+        if not result.get("ok"):
+            error = str(result.get("error") or "").strip()
+            code = result.get("exit_code")
+            body = "\n".join(part for part in (error, body, f"（退出码 {code}）" if code not in (None, 0) else "")
+                             if part)
+        body = body or "（没有输出）"
+        if len(body) > budget:
+            body = body[:budget] + "\n…（这台的输出已截断）"
+        parts.append(f"{head}\n{body}")
+    output = "\n\n".join(parts + [summary])
+    if len(output) > MAX_OUTPUT:
+        output = output[:max(0, MAX_OUTPUT - len(summary) - 20)] + "\n…（输出已截断）\n\n" + summary
+    return {"ok": succeeded > 0, "command": f"@{group}: {' '.join(spec['argv'])}", "output": output,
+            "hosts": {host["name"]: bool(result.get("ok")) for host, result in zip(runnable, results)}}
+
+
+def _stray_target(spec, args):
+    """没配主机清单，却带了 target：多半是配置刚改坏、或者 SOP 里写死了主机。绝不能悄悄在本机执行。"""
+    return (isinstance(args, dict) and TARGET not in spec.get("params", {})
+            and str(args.get(TARGET) or "").strip() != "")
+
+
+def _run_local(spec, args):
+    """在工具服务这台机器上执行命令型、脚本型工具（主机模式下就是本机那台）。和改造前逐字一致。"""
     # 先校验参数再看本机有没有这个命令：不可信输入是安全边界，要最先挡掉。
     try:
         argv = build_argv(spec, args)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
-    # Defence in depth: the template is fixed, but verify anyway.
-    if any(part in FORBIDDEN for part in argv[1:]):
+    if ops_exec.forbidden(argv):
         return {"ok": False, "error": "拒绝执行：命中写操作黑名单"}
 
     # 声明了别的系统：同名命令在这台机器上即使存在，参数和输出也未必是那个意思，不跑
@@ -2601,20 +3280,214 @@ def run_tool(name, args):
 
     if not shutil.which(spec["binary"]):
         return {"ok": False, "error": f"本机没有 {spec['binary']}，该工具不可用"}
+    return ops_exec.run_argv(argv, timeout=TIMEOUT, max_output=MAX_OUTPUT)
 
+
+def _run_command(spec, args):
+    """命令型、脚本型工具：没配主机清单就在本机跑（老行为）；配了就按 target 选主机。"""
+    cfg = _hosts()
+    if cfg is None:
+        if _stray_target(spec, args):
+            return {"ok": False, "error": "没有配置主机清单（hosts），不能指定 target：拒绝执行，以免在本机跑了本该去别处的命令"}
+        return _run_local(spec, args)
+    args = dict(args or {})
+    raw = args.pop(TARGET, None)
+    if spec.get("type") == "script":
+        # 脚本在工具服务的 scripts 目录里，只能在本机跑，不加 target
+        local = _local_host()
+        if local is None:
+            return {"ok": False, "error": "脚本型工具只能在本机跑，而主机清单里没有本机（hosts.local: false）"}
+        if str(raw or "").strip() not in ("", local["name"]):
+            return {"ok": False, "error": f"脚本型工具只能在本机（{local['name']}）上跑"}
+        ok, reason = _applicable(spec, local)
+        return _run_local(spec, args) if ok else {"ok": False, "error": reason}
     try:
-        done = subprocess.run(argv, capture_output=True, text=True,
-                              timeout=TIMEOUT, shell=False)
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": f"执行超时（{TIMEOUT}s）", "command": " ".join(argv)}
-    except Exception as exc:
-        return {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
+        members, group = _resolve_target(spec, raw)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if group is None:
+        return _run_on(members[0], spec, args)
+    return _run_group(group, members, spec, args)
 
-    output = (done.stdout or done.stderr or "").strip()
-    truncated = len(output) > MAX_OUTPUT
-    return {"ok": done.returncode == 0, "command": " ".join(argv),
-            "output": output[:MAX_OUTPUT] + ("\n…（输出已截断）" if truncated else ""),
-            "exit_code": done.returncode}
+
+# ---- 主机检查：list / probe，后台定期跑，status 命令现跑 -------------------------------------
+
+def _command_tools():
+    return {name: spec for name, spec in all_tools().items() if spec.get("type") == "command"}
+
+
+def _probe_direct(host, binaries):
+    """直连模式的探测：在登录 shell 里逐个 command -v（命令名都转义过），顺带确认是 POSIX shell。"""
+    script = ("for b in " + " ".join(shlex.quote(b) for b in binaries) + "; do "
+              "if command -v \"$b\" >/dev/null 2>&1; then printf 'have:%s\\n' \"$b\"; fi; done; "
+              "printf 'posix:%s\\n' \"$((6*7))\"") if binaries else "printf 'posix:%s\\n' \"$((6*7))\""
+    code, out, err = _transport.run(host, script)
+    lines = _decode(out).splitlines()
+    if code == 255 and not lines:
+        raise HostError(_ssh_failure(host, err))
+    if "posix:42" not in lines:
+        raise HostError(f"主机 {host['name']} 的登录 shell 不是 POSIX shell（直连模式要求 sh / bash 这一类）")
+    have = {line[5:] for line in lines if line.startswith("have:")}
+    return {binary: binary in have for binary in binaries}
+
+
+def check_host(host):
+    """连一次主机，看能不能用：受控模式 list（+ 白名单外命令的 probe），直连模式 probe。返回状态，并记进缓存。"""
+    status = {"sig": _host_sig(host), "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"), "reachable": False,
+              "error": "", "executor": "", "allowlist": {}, "tools": None, "binaries": {}}
+    applicable = {name: spec for name, spec in _command_tools().items() if _applicable(spec, host)[0]}
+    try:
+        if host["mode"] == "guarded":
+            response, error = _call_executor(host, {"v": ops_exec.PROTOCOL, "op": "list"})
+            if error:
+                raise HostError(error)
+            status.update(reachable=True, executor=str(response.get("ops_exec", ""))[:20])
+            if response.get("ok") is not True:
+                status["error"] = f"执行器：{str(response.get('error') or '没有说明')[:300]}"
+            else:
+                allow = response.get("allowlist") if isinstance(response.get("allowlist"), dict) else {}
+                status["allowlist"] = {key: allow.get(key) for key in ("version", "generated_at", "host", "problems")}
+                listed = response.get("tools") if isinstance(response.get("tools"), dict) else {}
+                status["tools"] = {name: {"fp": str(item.get("fp")), "runnable": item.get("runnable") is True}
+                                   for name, item in listed.items() if isinstance(item, dict)}
+                missing = sorted({spec["binary"] for name, spec in applicable.items() if name not in status["tools"]
+                                  and ops_exec.BINARY.match(spec["binary"])})[:ops_exec.PROBE_MAX]
+                if missing:
+                    probed, error = _call_executor(host, {"v": ops_exec.PROTOCOL, "op": "probe", "binaries": missing})
+                    if probed and probed.get("ok"):
+                        status["binaries"] = {k: v is True for k, v in (probed.get("binaries") or {}).items()}
+        else:
+            status["binaries"] = _probe_direct(host, sorted({spec["binary"] for spec in applicable.values()}))
+            status["reachable"] = True
+    except HostError as exc:
+        text = str(exc)
+        status["error"] = text if text.startswith(("主机", "连不上")) else f"主机 {host['name']}：{text}"
+    with _host_status_lock:
+        _host_status[host["name"]] = status
+    return status
+
+
+def check_hosts(names=None):
+    """并发检查各远程主机（本机不用连）。返回 {主机名: 状态}。"""
+    cfg = _hosts()
+    if cfg is None:
+        return {}
+    targets = [host for name, host in cfg["hosts"].items() if host["via"] == "ssh" and (names is None or name in names)]
+    if not targets:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(cfg["parallel"], len(targets))) as pool:
+        return dict(zip((host["name"] for host in targets), pool.map(check_host, targets)))
+
+
+class HostMonitor:
+    """后台线程：每 HOST_REFRESH 秒（或主机清单刚变）检查一遍远程主机，结果只用来标可用性、给页面看。"""
+
+    def __init__(self):
+        self._wake = threading.Event()
+        self._thread = None
+
+    def wake(self):
+        self._wake.set()
+
+    def start_background(self):
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._loop, daemon=True, name="host-monitor")
+            self._thread.start()
+
+    def _loop(self):
+        while True:
+            self._wake.clear()
+            try:
+                all_tools()
+                checked = check_hosts()
+                for name, status in checked.items():
+                    if status.get("error"):
+                        print(f"[hosts] {name}：{status['error']}", flush=True)
+            except Exception as exc:   # 检查出错不能把后台线程弄死
+                print(f"[hosts] 后台检查失败：{exc.__class__.__name__}: {exc}", flush=True)
+            self._wake.wait(HOST_REFRESH)
+
+
+_monitor = HostMonitor()
+
+
+def _host_view(host):
+    """页面和 status 看到的一台主机：没有私钥的值和路径。"""
+    item = {"via": host["via"], "os": _host_os_of(host), "groups": list(host["groups"]),
+            "tools": None if host.get("tools") is None else list(host["tools"])}
+    if host["via"] == "ssh":
+        item.update(address=host["address"], port=host["port"], user=host["user"], mode=host["mode"],
+                    readonly="账号权限" if host["mode"] == "direct" else "强制命令 + 白名单")
+        status = _cached_status(host)
+        item["status"] = None if status is None else {
+            key: status.get(key) for key in ("checked_at", "reachable", "error", "executor")}
+        if status is not None:
+            item["status"]["allowlist"] = (status.get("allowlist") or {}).get("version") or ""
+            item["status"]["generated_at"] = (status.get("allowlist") or {}).get("generated_at") or ""
+    return item
+
+
+def describe_hosts():
+    cfg = _hosts()
+    if cfg is None:
+        return {"configured": False}
+    return {"configured": True, "default": cfg["default"], "local": cfg["local"], "enum_max": cfg["enum_max"],
+            "groups": {group: list(members) for group, members in cfg["groups"].items()},
+            "list": {name: _host_view(host) for name, host in cfg["hosts"].items()}}
+
+
+def _list_targets_spec():
+    return {"name": LIST_TARGETS, "label": "主机清单", "group": "主机", "type": "builtin", "builtin": LIST_TARGETS,
+            "binary": "", "argv": [], "enabled": True, "export": False,
+            "desc": "列出可以在上面执行命令的主机：名称、分组、系统、执行方式、最近一次检查的状态。"
+                    "主机很多、记不清名字时先用它，再把主机名或 @组名填进别的工具的 target。",
+            "params": {"group": {"type": "str", "desc": "只看这个分组（不带 @），不填就是全部", "required": False,
+                                 "default": ""}}}
+
+
+def _list_targets_active():
+    cfg = _hosts()
+    return bool(cfg) and len(cfg["hosts"]) > cfg["enum_max"]
+
+
+def _run_list_targets(args):
+    cfg = _hosts()
+    group = str((args or {}).get("group") or "").strip().lstrip("@")
+    if group and not HOST_NAME.match(group):
+        return {"ok": False, "error": f"参数 group 不合法：{group[:40]!r}"}
+    if group and group not in cfg["groups"]:
+        return {"ok": False, "error": f"没有主机分组 {group}"}
+    names = cfg["groups"][group] if group else list(cfg["hosts"])
+    lines = [f"{'@' + group + ' 里' if group else '共'} {len(names)} 台主机（名称 | 系统 | 分组 | 方式 | 状态）："]
+    for name in names:
+        host = cfg["hosts"][name]
+        if host["via"] == "local":
+            how, state = "本机", "在线"
+        else:
+            how = "受控" if host["mode"] == "guarded" else "直连"
+            status = _cached_status(host)
+            state = "未检查" if status is None else ("在线" if status.get("reachable") and not status.get("error")
+                                                    else "异常：" + str(status.get("error") or "连不上")[:60])
+        lines.append(f"{name} | {_host_os_of(host)} | {','.join(host['groups']) or '-'} | {how} | {state}")
+    if not group:
+        lines.append("分组：" + "、".join(f"@{g}（{len(m)} 台）" for g, m in sorted(cfg["groups"].items())))
+    return {"ok": True, "command": "内置函数 list_targets", "output": _cut("\n".join(lines))}
+
+
+def run_tool(name, args):
+    spec = all_tools().get(name)
+    if spec is None and name == LIST_TARGETS and _list_targets_active():
+        return _run_list_targets(args)
+    if spec is None or not spec["enabled"]:
+        return {"ok": False, "error": f"未知工具：{name}"}
+
+    if spec.get("type") == "http":
+        return _run_http(spec, args)
+    if spec.get("type") == "mcp":
+        return _run_mcp(spec, args)
+    if spec.get("type") == "builtin":
+        return _run_builtin(spec, args)
+    return _run_command(spec, args)
 
 
 # /exec 的调用方：应用带上「谁发起的」——项目 Agent 的会话，或对外 MCP 的客户端——写进日志，两边的日志对得上。
@@ -2656,6 +3529,7 @@ class Handler(BaseHTTPRequestHandler):
                                     "pending": len(list_pending()),
                                     "mcp_servers": mcp_status(),
                                     "connections": describe_connections(),
+                                    "hosts": describe_hosts(),
                                     "host": {"os": HOST_OS}})
         if self.path == "/tools/pending":
             return self._send(200, {"pending": list_pending()})
@@ -2734,7 +3608,7 @@ def _legacy_view(tool):
     view = {key: value for key, value in tool.items() if key != "impl"}
     kind = impl.get("type")
     if kind == "command":
-        view.update(argv=body.get("argv") or [], os=body.get("os"))
+        view.update(argv=body.get("argv") or [], os=body.get("os"), groups=body.get("groups"))
     elif kind == "script":
         view.update(script=body.get("script"), os=body.get("os"))
     elif kind in ("http", "mcp"):
@@ -2776,6 +3650,9 @@ def _print_pending():
         if tool.get("os"):
             print(f"      适用系统：{tool['os'] if isinstance(tool['os'], str) else ', '.join(map(str, tool['os']))}"
                   f"（工具服务运行在 {HOST_OS} 上）")
+        if tool.get("groups"):
+            groups = tool["groups"] if isinstance(tool["groups"], list) else [tool["groups"]]
+            print(f"      适用分组：{', '.join(map(str, groups))}（只在这些分组的主机上跑）")
         params = tool.get("params") or {}
         if params:
             print(f"      参数：{', '.join(params)}")
@@ -2806,13 +3683,315 @@ def _print_scripts():
     return 0
 
 
-def _cli(command, ident, config, attest_readonly=False):
+# ---- 主机的命令行：enroll / push / status ---------------------------------------------------
+# 都在工具服务所在机器上由管理员执行。enroll 只登记 host key、打印主机上的安装步骤；push 用管理员自己的 SSH 身份
+# 把执行器和白名单装到主机上——工具服务进程从不持有能写主机的凭据；status 现连一遍各主机，逐台列出能跑什么。
+
+def load_env_file(path):
+    """读 systemd 的 EnvironmentFile（KEY=VALUE），只取 OPS_SECRET_ 开头的凭据放进本进程。不打印任何值。"""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ConfigError(f"读不到凭据文件 {path}：{exc}") from None
+    loaded = 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export "):].strip()
+        if not key.startswith(SECRET_PREFIX):
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        os.environ[key] = value
+        loaded += 1
+    return loaded
+
+
+def _cli_hosts(group=None, target=None):
+    cfg = _hosts()
+    if cfg is None:
+        raise ConfigError("主配置里没有 hosts 段：命令型工具都在本机跑，没有要接入的主机")
+    picked = []
+    for name, host in cfg["hosts"].items():
+        if target and name != target:
+            continue
+        if group and name not in cfg["groups"].get(group, []):
+            continue
+        picked.append(host)
+    if target and not picked:
+        raise ConfigError(f"主机清单里没有 {target}（有：{'、'.join(cfg['hosts'])}）")
+    if group and group not in cfg["groups"]:
+        raise ConfigError(f"没有主机分组 {group}（有：{'、'.join(sorted(cfg['groups']))}）")
+    return picked
+
+
+def key_fingerprint(blob):
+    """host key（base64）的 SHA256 指纹，和 ssh-keygen -lf 显示的一样。"""
+    digest = hashlib.sha256(base64.b64decode(blob)).digest()
+    return "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
+
+
+def scan_host_keys(host):
+    """ssh-keyscan 取 host key：[(类型, base64, 指纹)]。只是拿来给人核对，不会自动登记。"""
+    binary = shutil.which("ssh-keyscan")
+    if not binary:
+        raise ConfigError("工具服务这台机器没有 ssh-keyscan（OpenSSH 客户端）")
+    done = subprocess.run([binary, "-T", "5", "-p", str(host["port"]), "-t", "ed25519,ecdsa,rsa", "--",
+                           host["address"]], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=40)
+    keys = []
+    for line in _decode(done.stdout).splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and not line.startswith("#"):
+            try:
+                keys.append((parts[1], parts[2], key_fingerprint(parts[2])))
+            except ValueError:
+                continue
+    return keys
+
+
+def _write_known_hosts(alias, keytype, blob):
+    """登记（或替换）一台主机的 host key：按主机名登记，原子写入，权限 644。"""
+    path = _known_hosts()
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    kept = [line for line in lines if not (line.split() and alias in line.split()[0].split(","))]
+    temporary = f"{path}.{secrets.token_hex(3)}.tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(kept + [f"{alias} {keytype} {blob}"]) + "\n")
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, path)
+
+
+def public_key(host):
+    """工具服务私钥对应的公钥（一行），给主机上的 authorized_keys 用。读不出来返回 (None, 原因)。"""
+    try:
+        path = _key_file(host)
+    except HostError as exc:
+        return None, str(exc)
+    keygen = shutil.which("ssh-keygen")
+    if not keygen:
+        return None, "没有 ssh-keygen"
+    done = subprocess.run([keygen, "-y", "-f", path], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, timeout=10)
+    if done.returncode != 0:
+        return None, "ssh-keygen -y 读不出公钥：私钥坏了，或设了口令（工具服务用的私钥不能设口令，靠文件权限保护）"
+    return _decode(done.stdout).strip().splitlines()[0], ""
+
+
+def install_snippet(host, source=""):
+    """主机上要执行的安装片段（给主机负责人看、照着做）。"""
+    key, why = public_key(host)
+    key = key or "<工具服务的公钥：" + why + ">"
+    source = source or "<工具服务连过来的出口 IP>"
+    user, name = host["user"], host["name"]
+    if host["mode"] == "direct":
+        return textwrap.dedent(f"""\
+            在 {name}（{host['address']}）上以 root 执行（直连模式：只读靠账号权限，账号能做的事模型都能做，慎用）：
+
+              useradd --create-home --shell /bin/sh {user}        # 普通账号，不进 sudo、不进 docker 组（除非你清楚后果）
+              install -d -o root -g root -m 0755 ~{user}/.ssh
+              printf '%s\\n' 'restrict,from="{source}" {key}' > ~{user}/.ssh/authorized_keys
+              chown root:root ~{user}/.ssh/authorized_keys && chmod 0644 ~{user}/.ssh/authorized_keys
+
+            撤销：删掉 ~{user}/.ssh/authorized_keys 里这一行（或 userdel -r {user}）。""")
+    return textwrap.dedent(f"""\
+        在 {name}（{host['address']}）上以 root 执行（受控模式）：
+
+          # 1. 执行账号：普通账号，不进 sudo。登录 shell 要能启动强制命令，但它只能启动执行器
+          useradd --create-home --shell /bin/sh {user}
+          # 2. 执行器和白名单归 root 所有：目录先建好，文件由工具服务这边的管理员 push 上来
+          install -d -o root -g root -m 0755 {EXEC_DIR}
+          # 3. 公钥只能启动执行器；authorized_keys 也归 root，执行账号自己改不了
+          install -d -o root -g root -m 0755 ~{user}/.ssh
+          printf '%s\\n' 'restrict,from="{source}",command="/usr/bin/python3 {EXEC_DIR}/ops_exec.py --stdio" {key}' \\
+            > ~{user}/.ssh/authorized_keys
+          chown root:root ~{user}/.ssh/authorized_keys && chmod 0644 ~{user}/.ssh/authorized_keys
+          # 4. 要查容器的话，执行账号要能读 docker：见 docs/正式部署.md「接入一台主机」里的几种做法和利弊
+
+        然后在工具服务这边：
+          ops_readonly.py push --target {name}       # 用你自己的 SSH 身份装执行器和白名单
+          ops_readonly.py status --target {name}     # 核对：连通、执行器版本、白名单版本、每个工具能不能跑
+
+        撤销：删掉 ~{user}/.ssh/authorized_keys（或 userdel -r {user}）、rm -r {EXEC_DIR}；
+        工具服务这边从 hosts.list 删掉它，再从 {_known_hosts().name} 删掉 {name} 那一行。""")
+
+
+def enroll(name, fingerprint=None, replace=False, source="", ask=None):
+    """取 host key 让管理员核对指纹，核对上的才登记；然后打印主机上的安装片段。返回登记的指纹。"""
+    host = _cli_hosts(target=name)[0]
+    if host["via"] != "ssh":
+        raise ConfigError(f"{name} 是本机，不用 enroll")
+    keys = scan_host_keys(host)
+    if not keys:
+        raise ConfigError(f"从 {host['address']}:{host['port']} 取不到 host key：连不上，或者那不是 SSH 服务")
+    print(f"主机 {name}（{host['address']}:{host['port']}）报上来的 host key：")
+    for keytype, _, digest in keys:
+        print(f"  {keytype:<22} {digest}")
+    print("请在主机控制台上（不要经过这条网络）核对：for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf \"$f\"; done")
+    if not fingerprint:
+        if ask is None:
+            if not sys.stdin.isatty():
+                raise ConfigError("非交互运行时要用 --fingerprint SHA256:… 给出在主机上核对过的指纹")
+            ask = input
+        fingerprint = ask("把在主机上核对过的指纹粘贴到这里（SHA256:…）：")
+    chosen = [key for key in keys if key[2] == str(fingerprint or "").strip()]
+    if not chosen:
+        raise ConfigError("指纹对不上扫描到的任何一个 host key，没有登记：核对的不是这台主机，或者中间有人冒充")
+    keytype, blob, digest = chosen[0]
+    pinned = _pinned_keys(name)
+    if pinned and pinned != [(keytype, blob)]:
+        if not replace:
+            shown = "、".join(key_fingerprint(b) for _, b in pinned)
+            raise ConfigError(f"{name} 已经登记过别的 host key（{shown}）。host key 变了先查清原因（重装？冒充？），"
+                              f"确认无误再加 --replace")
+    if pinned != [(keytype, blob)]:
+        _write_known_hosts(name, keytype, blob)
+        print(f"已登记 {name} 的 host key：{keytype} {digest}（{_known_hosts()}）")
+    else:
+        print(f"{name} 的 host key 早已登记，指纹一致，没有改动")
+    print()
+    print(install_snippet(host, source))
+    return digest
+
+
+def allowlist_for(host, generated_at=""):
+    """按主机的系统、分组和开放的工具生成它的白名单（JSON 文本）。停用的工具也在里面：启停是工具服务这边的开关。"""
+    entries = [(name, spec["argv"], spec["params"]) for name, spec in sorted(_command_tools().items())
+               if _applicable(spec, host)[0]]
+    return ops_exec.render_allowlist(host["name"], entries, generated_at=generated_at,
+                                     timeout=TIMEOUT, max_output=MAX_OUTPUT)
+
+
+def install_script(allowlist_text):
+    """在主机上以 root 执行的安装脚本（sh）：执行器和白名单原子替换、归 root，装完用执行器自己校验一遍。"""
+    executor = Path(ops_exec.__file__).read_bytes()
+    lines = ["set -eu", "umask 022", f"dir={EXEC_DIR}", 'install -d -o root -g root -m 0755 "$dir"']
+    for target, data, mode in (("ops_exec.py", executor, "0755"),
+                               ("allowlist.json", allowlist_text.encode("utf-8"), "0644")):
+        lines += ['tmp=$(mktemp "$dir/.push.XXXXXX")',
+                  f"printf '%s' '{base64.b64encode(data).decode('ascii')}' | base64 -d > \"$tmp\"",
+                  'chown root:root "$tmp"', f'chmod {mode} "$tmp"', f'mv -f "$tmp" "$dir/{target}"']
+    lines.append('python3 "$dir/ops_exec.py" --check "$dir/allowlist.json"')
+    return "\n".join(lines) + "\n"
+
+
+def push(group=None, target=None, out=None, admin_user="root", identity=None, sudo=False):
+    """按主机生成白名单；out 给了就只导出文件（不连主机），否则用管理员自己的 SSH 身份装到主机上。"""
+    hosts = [host for host in _cli_hosts(group, target) if host["via"] == "ssh"]
+    if not hosts:
+        raise ConfigError("没有要 push 的远程主机（本机不用 push）")
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    failed = 0
+    for host in hosts:
+        name = host["name"]
+        if host["mode"] == "direct":
+            print(f"{name}：直连模式，不用白名单（只读靠账号权限），跳过")
+            continue
+        text = allowlist_for(host, stamp)
+        count = len(json.loads(text)["tools"])
+        if out:
+            folder = Path(out) / name
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "allowlist.json").write_text(text, encoding="utf-8")
+            shutil.copyfile(ops_exec.__file__, folder / "ops_exec.py")
+            (folder / "install.sh").write_text(install_script(text), encoding="utf-8")
+            print(f"{name}：白名单 {count} 个工具 → {folder}（allowlist.json、ops_exec.py，"
+                  f"以及在主机上以 root 执行的 install.sh）")
+            continue
+        binary = shutil.which("ssh")
+        if not binary:
+            raise ConfigError("这台机器没有 ssh 客户端")
+        known_hosts = _check_known_hosts(host)
+        argv = [binary, "-T", "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known_hosts}",
+                "-o", f"GlobalKnownHostsFile={os.devnull}", "-o", f"HostKeyAlias={name}", "-o", "CheckHostIP=no",
+                "-o", "UpdateHostKeys=no"]
+        if identity:
+            argv += ["-i", identity, "-o", "IdentitiesOnly=yes"]
+        argv += ["-p", str(host["port"]), "-l", admin_user, "--", host["address"],
+                 "sudo -n sh -s" if sudo else "sh -s"]
+        print(f"{name}：用 {admin_user} 的身份装执行器和白名单（{count} 个工具）…")
+        done = subprocess.run(argv, input=install_script(text).encode("utf-8"), stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=120)
+        report = (_decode(done.stdout) + _decode(done.stderr)).strip()
+        if done.returncode != 0:
+            failed += 1
+            print(f"{name}：失败（退出码 {done.returncode}）\n{report}")
+        else:
+            print(f"{name}：已装好。{report}")
+    return failed
+
+
+def status(group=None, target=None):
+    """现连各主机，逐台列出：能否连通、执行器版本、白名单版本、每个工具能不能跑。返回连不上 / 异常的台数。"""
+    hosts = _cli_hosts(group, target)
+    check_hosts([host["name"] for host in hosts])
+    tools = _command_tools()
+    bad = 0
+    for host in hosts:
+        view = _host_view(host)
+        name = host["name"]
+        if host["via"] == "local":
+            print(f"■ {name}：本机（{view['os']}）" + (f"，分组 {', '.join(host['groups'])}" if host["groups"] else ""))
+        else:
+            mode = "受控" if host["mode"] == "guarded" else "直连（只读靠账号权限）"
+            print(f"■ {name}：{host['user']}@{host['address']}:{host['port']}，{mode}，{host['os']}"
+                  + (f"，分组 {', '.join(host['groups'])}" if host["groups"] else ""))
+            state = view.get("status") or {}
+            if state.get("error") or not state.get("reachable"):
+                bad += 1
+                print(f"    ✗ {state.get('error') or '连不上'}")
+            else:
+                print("    ✓ 连通" + (f"；执行器 {state['executor']}；白名单 {state['allowlist'][:19]}…"
+                                       f"（{state['generated_at'] or '生成时间不详'}）" if host["mode"] == "guarded" else ""))
+        groups = {"ok": [], "unknown": [], "no": []}
+        for tool_name, spec in sorted(tools.items()):
+            if not _applicable(spec, host)[0]:
+                continue
+            kind, reason = _host_tool_state(spec, host)
+            groups[kind].append(tool_name if kind == "ok" else f"{tool_name}（{reason}）")
+        print(f"    能跑 {len(groups['ok'])} 个：{'、'.join(groups['ok']) or '无'}")
+        for key, label in (("unknown", "不确定"), ("no", "不能跑")):
+            if groups[key]:
+                print(f"    {label} {len(groups[key])} 个：{'；'.join(groups[key])}")
+    return bad
+
+
+def _cli(command, ident, config, attest_readonly=False, options=None):
     """Review proposals from the host. Approving is deliberately not an API."""
     _state["path"] = Path(config)
+    options = options or {}
     if command == "pending":
         return _print_pending()
     if command == "scripts":
         return _print_scripts()
+    if command in ("enroll", "push", "status"):
+        try:
+            if options.get("env_file"):
+                load_env_file(options["env_file"])
+            refresh(force=True)
+            if command == "enroll":
+                if not ident:
+                    print("用法：ops_readonly.py enroll <主机名> [--fingerprint SHA256:…] [--from 工具服务的出口IP]",
+                          file=sys.stderr)
+                    return 2
+                enroll(ident, options.get("fingerprint"), options.get("replace", False), options.get("source", ""))
+                return 0
+            if command == "push":
+                return 1 if push(options.get("group"), options.get("target"),
+                                 options.get("out") if options.get("print") else None,
+                                 options.get("admin_user") or "root", options.get("identity"),
+                                 options.get("sudo", False)) else 0
+            return 1 if status(options.get("group"), options.get("target")) else 0
+        except (ConfigError, HostError) as exc:
+            print(f"失败：{exc}", file=sys.stderr)
+            return 1
     if not ident:
         print(f"用法：ops_readonly.py {command} <id>", file=sys.stderr)
         return 2
@@ -2845,9 +4024,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", nargs="?", default="serve",
                         choices=["serve", "pending", "approve", "reject",
-                                 "scripts", "trust"],
-                        help="serve 起服务；其余用于在宿主机上审批工具与脚本")
-    parser.add_argument("ident", nargs="?", help="待审申请的 id、工具名或脚本名")
+                                 "scripts", "trust", "enroll", "push", "status"],
+                        help="serve 起服务；pending/approve/reject/scripts/trust 审批工具与脚本；"
+                             "enroll/push/status 接入和检查远程主机")
+    parser.add_argument("ident", nargs="?", help="待审申请的 id、工具名、脚本名；enroll 时是主机名")
     parser.add_argument("--port", type=int, default=8799)
     parser.add_argument("--config", default=str(DEFAULT_CONFIG),
                         help="Tool definitions; edits are picked up live.")
@@ -2855,10 +4035,24 @@ def main():
                         help="Loopback by default; do not expose this publicly.")
     parser.add_argument("--attest-readonly", action="store_true",
                         help="approve 时使用：确认这个 MCP 工具只读（server 没有声明 readOnlyHint 时必须加）")
+    hosts = parser.add_argument_group("远程主机（enroll / push / status）")
+    hosts.add_argument("--target", help="push / status：只处理这一台主机")
+    hosts.add_argument("--group", help="push / status：只处理这个分组里的主机")
+    hosts.add_argument("--print", action="store_true", help="push：只导出文件（白名单、执行器、安装脚本），不连主机")
+    hosts.add_argument("--out", default="ops-push", help="push --print 导出到哪个目录，默认 ./ops-push")
+    hosts.add_argument("--admin-user", default="root", help="push：以哪个账号登录主机安装（你自己的 SSH 身份）")
+    hosts.add_argument("--identity", help="push：用哪把私钥登录主机（默认按你的 ssh 配置和 agent）")
+    hosts.add_argument("--sudo", action="store_true", help="push：登录账号不是 root 时，用 sudo -n 安装")
+    hosts.add_argument("--fingerprint", help="enroll：在主机上核对过的 host key 指纹（SHA256:…），非交互运行时必填")
+    hosts.add_argument("--replace", action="store_true", help="enroll：替换已登记的 host key（先查清它为什么变了）")
+    hosts.add_argument("--from", dest="source", default="", help="enroll：安装片段里 from= 写的工具服务出口 IP")
+    hosts.add_argument("--env-file", help="enroll / status：从这个文件读凭据（如 /etc/ops-readonly.env）")
     args = parser.parse_args()
 
     if args.command != "serve":
-        return _cli(args.command, args.ident, args.config, attest_readonly=args.attest_readonly)
+        options = {key: getattr(args, key) for key in ("target", "group", "print", "out", "admin_user", "identity",
+                                                       "sudo", "fingerprint", "replace", "source", "env_file")}
+        return _cli(args.command, args.ident, args.config, attest_readonly=args.attest_readonly, options=options)
 
     token = os.environ.get("OPS_TOKEN", "").strip()
     if not token:
@@ -2886,8 +4080,15 @@ def main():
     if _state["mcp_servers"]:
         print(f"MCP server {len(_state['mcp_servers'])} 个：{', '.join(sorted(_state['mcp_servers']))}，"
               f"后台连接中；发现的工具会进入待审列表")
+    if _hosts() is not None:
+        remote = [name for name, host in _hosts()["hosts"].items() if host["via"] == "ssh"]
+        print(f"主机清单 {len(_hosts()['hosts'])} 台：{', '.join(_hosts()['hosts'])}；不填 target 时用 "
+              f"{_hosts()['default'] or '（没有默认，单台可选时用那台，否则必填）'}"
+              + (f"；远程 {len(remote)} 台，后台检查中" if remote else ""))
     # 没声明 server 也要起这个线程：配置热加载后新加的 mcp_servers 靠它连接和发现
     _mcp.start_background()
+    # 主机同理：热加载后新加的 hosts 靠它检查（没配主机时它什么都不连）
+    _monitor.start_background()
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
     return 0
 
