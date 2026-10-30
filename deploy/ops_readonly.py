@@ -3795,22 +3795,25 @@ def install_snippet(host, source=""):
         return textwrap.dedent(f"""\
             在 {name}（{host['address']}）上以 root 执行（直连模式：只读靠账号权限，账号能做的事模型都能做，慎用）：
 
-              useradd --create-home --shell /bin/sh {user}        # 普通账号，不进 sudo、不进 docker 组（除非你清楚后果）
-              install -d -o root -g root -m 0755 ~{user}/.ssh
+              # 普通账号，不进 sudo、不进 docker 组（除非你清楚后果）。家目录归 root：账号自己换不掉 ~/.ssh
+              useradd -M --shell /bin/sh {user}
+              install -d -o root -g root -m 0755 ~{user} ~{user}/.ssh
               printf '%s\\n' 'restrict,from="{source}" {key}' > ~{user}/.ssh/authorized_keys
               chown root:root ~{user}/.ssh/authorized_keys && chmod 0644 ~{user}/.ssh/authorized_keys
 
-            撤销：删掉 ~{user}/.ssh/authorized_keys 里这一行（或 userdel -r {user}）。""")
+            撤销：删掉 ~{user}/.ssh/authorized_keys 里这一行；连账号一起删：rm -r ~{user} && userdel {user}。""")
     return textwrap.dedent(f"""\
         在 {name}（{host['address']}）上以 root 执行（受控模式）：
 
-          # 1. 执行账号：普通账号，不进 sudo。登录 shell 要能启动强制命令，但它只能启动执行器
-          useradd --create-home --shell /bin/sh {user}
+          # 1. 执行账号：普通账号，不进 sudo。登录 shell 要能启动强制命令，但它只能启动执行器。
+          #    家目录也归 root、执行账号写不了：家目录的主人能给 ~/.ssh 改名、另放一把不带限制的公钥，也能往 ~/.local 里放代码
+          useradd -M --shell /bin/sh {user}
+          install -d -o root -g root -m 0755 ~{user} ~{user}/.ssh
           # 2. 执行器和白名单归 root 所有：目录先建好，文件由工具服务这边的管理员 push 上来
           install -d -o root -g root -m 0755 {EXEC_DIR}
-          # 3. 公钥只能启动执行器；authorized_keys 也归 root，执行账号自己改不了
-          install -d -o root -g root -m 0755 ~{user}/.ssh
-          printf '%s\\n' 'restrict,from="{source}",command="/usr/bin/python3 {EXEC_DIR}/ops_exec.py --stdio" {key}' \\
+          # 3. 公钥只能启动执行器；authorized_keys 也归 root，执行账号自己改不了。
+          #    -I 是 Python 的隔离模式：不加载执行账号能写的 ~/.local，漏了它执行器拒绝启动
+          printf '%s\\n' 'restrict,from="{source}",command="/usr/bin/python3 -I {EXEC_DIR}/ops_exec.py --stdio" {key}' \\
             > ~{user}/.ssh/authorized_keys
           chown root:root ~{user}/.ssh/authorized_keys && chmod 0644 ~{user}/.ssh/authorized_keys
           # 4. 要查容器的话，执行账号要能读 docker：见 docs/正式部署.md「接入一台主机」里的几种做法和利弊
@@ -3819,7 +3822,7 @@ def install_snippet(host, source=""):
           ops_readonly.py push --target {name}       # 用你自己的 SSH 身份装执行器和白名单
           ops_readonly.py status --target {name}     # 核对：连通、执行器版本、白名单版本、每个工具能不能跑
 
-        撤销：删掉 ~{user}/.ssh/authorized_keys（或 userdel -r {user}）、rm -r {EXEC_DIR}；
+        撤销：rm -r ~{user} {EXEC_DIR} && userdel {user}（家目录归 root，userdel -r 不会删它）；
         工具服务这边从 hosts.list 删掉它，再从 {_known_hosts().name} 删掉 {name} 那一行。""")
 
 

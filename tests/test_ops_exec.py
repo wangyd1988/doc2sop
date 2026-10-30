@@ -1,8 +1,8 @@
 """受控模式的执行器 deploy/ops_exec.py，兼工具服务的执行核心。
 
 覆盖：白名单校验（坏条目跳过、fp 对不上拒绝）、exec / list / probe、超时、输出上限、畸形请求、
-自检（不能以 root 运行；执行账号拥有或能写白名单、执行器、它们的任一级目录时拒绝启动）、回应只有 ASCII，
-以及工具服务确实在用同一份核心。
+自检（不能以 root 运行；执行账号拥有或能写白名单、执行器、它们的任一级目录时拒绝启动；强制命令没带 -I 时拒绝启动）、
+回应只有 ASCII，以及工具服务确实在用同一份核心。
 """
 import importlib.util
 import io
@@ -306,6 +306,19 @@ class ServeTests(unittest.TestCase):
         code, reply = self.serve(b'{"v": 1, "op": "list"}', euid=stranger)
         self.assertEqual(code, 3)
         self.assertIn("ops_exec.py", reply["error"])
+
+    def test_the_forced_command_must_run_python_isolated(self):
+        """真起一个解释器：不带 -I 就拒绝启动（会加载执行账号能写的 ~/.local）；带了 -I 才轮到后面的自检。"""
+        for flags, refused in (([], True), (["-I"], False)):
+            with self.subTest(flags=flags):
+                done = subprocess.run([sys.executable] + flags + [str(self.executor), "--stdio"],
+                                      input=b'{"v": 1, "op": "list"}', stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      timeout=60)
+                reply = json.loads(done.stdout.decode("ascii").splitlines()[-1])
+                # 带了 -I 也还是 3：测试进程拥有这些文件（或在 Windows 上），后面的自检照样拒绝，只是原因不同
+                self.assertEqual((done.returncode, reply["ok"], reply["code"]), (3, False, "guard"), reply)
+                self.assertEqual("python3 -I" in reply["error"], refused, reply["error"])
+                self.assertTrue(reply["error"].startswith("执行器拒绝启动："), reply["error"])
 
     def test_check_mode_validates_without_the_guard(self):
         with patch("sys.stdout", new_callable=io.StringIO) as out:

@@ -683,9 +683,18 @@ class TransportTests(unittest.TestCase):
                 ops.enroll("b", keys[0][2])
             ops.enroll("b", keys[0][2], replace=True, source="203.0.113.7")
             self.assertEqual(ops._pinned_keys("b"), [("ssh-ed25519", ED25519)])
+            direct = ops.install_snippet(dict(self.host, mode="direct"), "203.0.113.7")
         printed = out.getvalue()
-        self.assertIn('restrict,from="203.0.113.7",command="/usr/bin/python3 /opt/ops-readonly/ops_exec.py --stdio"'
+        self.assertIn('restrict,from="203.0.113.7",command="/usr/bin/python3 -I /opt/ops-readonly/ops_exec.py --stdio"'
                       ' ssh-ed25519 AAAAtool doc2sop', printed)
+        # 家目录也归 root：家目录的主人能给 ~/.ssh 改名、另放一把不带限制的公钥
+        for snippet in (printed, direct):
+            self.assertIn("useradd -M --shell /bin/sh opsread\n  install -d -o root -g root -m 0755 ~opsread ~opsread/.ssh",
+                          snippet)
+            self.assertNotIn("--create-home", snippet)
+        self.assertIn("rm -r ~opsread /opt/ops-readonly && userdel opsread", printed)
+        self.assertIn('restrict,from="203.0.113.7" ssh-ed25519 AAAAtool doc2sop', direct)
+        self.assertNotIn("command=", direct)
         self.assertIn("push --target b", printed)
         self.assertIn("撤销", printed)
 

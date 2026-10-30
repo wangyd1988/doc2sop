@@ -7,17 +7,18 @@
    超时与输出上限都在这里。工具服务在本机执行（via: local）走的就是这几个函数，本地和远程只有一份校验。
 2. 装在被巡检的主机上，作为受控模式的强制命令：
 
-       restrict,from="<工具服务地址>",command="/usr/bin/python3 /opt/ops-readonly/ops_exec.py --stdio" ssh-ed25519 AAAA… doc2sop
+       restrict,from="<工具服务地址>",command="/usr/bin/python3 -I /opt/ops-readonly/ops_exec.py --stdio" ssh-ed25519 AAAA… doc2sop
 
    从 stdin 读一条 JSON 请求，按同目录的 allowlist.json 校验后执行，往 stdout 写一条 JSON 回应。只认三种请求：
      exec   执行白名单里的一个工具（工具名 + 参数，执行器自己拼 argv，不经过 shell）
      list   这台主机开放了哪些工具、白名单版本、各工具的命令在不在
      probe  某几个命令在不在
    执行器不能以 root 运行；执行账号拥有或能写白名单、执行器自身、或它们所在的任一级目录时，拒绝启动。
+   强制命令必须带 -I（Python 的隔离模式），否则 python 启动时会加载执行账号自己能写的 ~/.local，没带也拒绝启动。
 
 只用标准库，兼容 Python 3.6，几百行，主机负责人审得过来。
 
-    python3 ops_exec.py --stdio                     # 强制命令（白名单默认在同一目录的 allowlist.json）
+    python3 -I ops_exec.py --stdio                  # 强制命令（白名单默认在同一目录的 allowlist.json）
     python3 ops_exec.py --check [allowlist.json]    # 校验白名单格式（push 装完后用，不做权限自检）
     python3 ops_exec.py --version
 """
@@ -569,6 +570,12 @@ def main(argv=None):
             print(f"  已跳过：{problem}")
         return 1 if problems else 0
     if args.stdio:
+        if not sys.flags.isolated:
+            # 不带 -I，python 启动时会加载执行账号能写的 ~/.local（site-packages、.pth、usercustomize），也认 PYTHON* 环境变量。
+            # 走到这里时那些代码已经跑过了，拦不住；拒绝启动是为了让漏写 -I 的安装当场暴露（status 里看得到），而不是一直开着口子
+            _write(sys.stdout.buffer, _refuse("执行器拒绝启动：强制命令要用 python3 -I（隔离模式）启动，"
+                                              "否则 python 会加载执行账号自己能写的 ~/.local", "guard"))
+            return 3
         return serve(sys.stdin.buffer, sys.stdout.buffer, args.allowlist, os.path.abspath(__file__))
     parser.print_help(sys.stderr)
     return 2

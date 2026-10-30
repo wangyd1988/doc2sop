@@ -10,10 +10,11 @@
     #          install -o root -g root -m 0644 /tmp/doc2sop-e2e-stage/* /tmp/doc2sop-e2e-exec/
     OPS_E2E_SSHD=/path/to/sshd OPS_E2E_EXEC_DIR=/tmp/doc2sop-e2e-exec python -m unittest tests.test_hosts_e2e -v
 
-sshd 以当前用户在 127.0.0.1 的高端口上跑，只能登录当前用户，三把公钥对应三台「主机」：
-  e2e         受控模式：公钥带 restrict + 强制命令，执行器和白名单在 root 所有的目录里
+sshd 以当前用户在 127.0.0.1 的高端口上跑，只能登录当前用户，四把公钥对应四台「主机」：
+  e2e         受控模式：公钥带 restrict + 强制命令（python3 -I），执行器和白名单在 root 所有的目录里
   e2e-direct  直连模式：公钥只带 restrict，命令经登录 shell 执行
   e2e-unsafe  受控模式，但执行器放在执行账号自己的目录里：执行器应当拒绝启动
+  e2e-noiso   受控模式，执行器没问题，但强制命令漏了 -I：执行器应当拒绝启动
 """
 import getpass
 import importlib.util
@@ -65,6 +66,7 @@ def config(port=22):
             - {{name: e2e, address: 127.0.0.1, key: "${{e2e_guarded}}", groups: [e2e]}}
             - {{name: e2e-direct, address: 127.0.0.1, key: "${{e2e_direct}}", mode: direct, groups: [e2e]}}
             - {{name: e2e-unsafe, address: 127.0.0.1, key: "${{e2e_unsafe}}"}}
+            - {{name: e2e-noiso, address: 127.0.0.1, key: "${{e2e_noiso}}"}}
         """)
 
 
@@ -109,16 +111,17 @@ class EndToEndTests(unittest.TestCase):
         keys.mkdir(mode=0o700)
         host_pub = keygen(keys / "host", "e2e-host")
         cls.host_pub = host_pub
-        guarded, direct, unsafe = (keygen(keys / name, name) for name in ("guarded", "direct", "unsafe"))
+        guarded, direct, unsafe, noiso = (keygen(keys / name, name) for name in ("guarded", "direct", "unsafe", "noiso"))
         # 执行账号自己的目录里放一份执行器：受控模式下它应当拒绝启动
         cls.unsafe_dir = root / "unsafe"
         cls.unsafe_dir.mkdir()
         shutil.copyfile(staged / "ops_exec.py", cls.unsafe_dir / "ops_exec.py")
         shutil.copyfile(staged / "allowlist.json", cls.unsafe_dir / "allowlist.json")
         (root / "authorized_keys").write_text(
-            f'restrict,command="{PYTHON} {EXEC_DIR}/ops_exec.py --stdio" {guarded}\n'
+            f'restrict,command="{PYTHON} -I {EXEC_DIR}/ops_exec.py --stdio" {guarded}\n'
             f"restrict {direct}\n"
-            f'restrict,command="{PYTHON} {cls.unsafe_dir}/ops_exec.py --stdio" {unsafe}\n', encoding="utf-8")
+            f'restrict,command="{PYTHON} -I {cls.unsafe_dir}/ops_exec.py --stdio" {unsafe}\n'
+            f'restrict,command="{PYTHON} {EXEC_DIR}/ops_exec.py --stdio" {noiso}\n', encoding="utf-8")
         cls.port = free_port()
         (root / "sshd_config").write_text(textwrap.dedent(f"""\
             Port {cls.port}
@@ -157,7 +160,8 @@ class EndToEndTests(unittest.TestCase):
                                                "problems": [], "mcp_servers": {}, "connections": {}, "hosts": None}),
                        patch.dict(os.environ, {"OPS_SECRET_E2E_GUARDED": str(keys / "guarded"),
                                                "OPS_SECRET_E2E_DIRECT": str(keys / "direct"),
-                                               "OPS_SECRET_E2E_UNSAFE": str(keys / "unsafe")}),
+                                               "OPS_SECRET_E2E_UNSAFE": str(keys / "unsafe"),
+                                               "OPS_SECRET_E2E_NOISO": str(keys / "noiso")}),
                        patch.object(ops._monitor, "wake", lambda: None),
                        patch.dict(ops._host_status, {}, clear=True)]
         for patcher in cls.patches:
@@ -169,7 +173,7 @@ class EndToEndTests(unittest.TestCase):
                                          check=True).stdout.decode().split()[1]
         cls.enroll_output = io.StringIO()
         with redirect_stdout(cls.enroll_output):
-            for name in ("e2e", "e2e-direct", "e2e-unsafe"):
+            for name in ("e2e", "e2e-direct", "e2e-unsafe", "e2e-noiso"):
                 ops.enroll(name, cls.fingerprint)
 
     @classmethod
@@ -187,7 +191,8 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(ops._pinned_keys("e2e"), [tuple(self.host_pub.split()[:2])])
         printed = self.enroll_output.getvalue()
         self.assertIn(self.fingerprint, printed)
-        self.assertIn('restrict,from="<工具服务连过来的出口 IP>",command="/usr/bin/python3 /opt/ops-readonly/ops_exec.py', printed)
+        self.assertIn('restrict,from="<工具服务连过来的出口 IP>",command="/usr/bin/python3 -I /opt/ops-readonly/ops_exec.py',
+                      printed)
 
     def test_guarded_mode_runs_through_the_forced_command(self):
         result = ops.run_tool("e2e_echo", {"name": "kb-app", "target": "e2e"})
@@ -218,6 +223,17 @@ class EndToEndTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("执行器拒绝启动", result["error"])
         self.assertIn("属于执行账号自己", result["error"])
+
+    def test_a_forced_command_without_isolated_mode_refuses_to_start(self):
+        """执行器、白名单都没问题，只是强制命令漏了 -I：照样拒绝启动，原因说得清楚，status 也看得到。"""
+        result = ops.run_tool("e2e_uptime", {"target": "e2e-noiso"})
+        self.assertFalse(result["ok"])
+        self.assertIn("执行器拒绝启动", result["error"])
+        self.assertIn("python3 -I", result["error"])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(ops.status(target="e2e-noiso"), 1)
+        self.assertIn("python3 -I", out.getvalue())
 
     def test_a_changed_host_key_fails_without_falling_back(self):
         pinned = ops._known_hosts().read_text(encoding="utf-8")

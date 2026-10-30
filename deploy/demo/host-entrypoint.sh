@@ -29,7 +29,7 @@ if [ "${1:-}" != "ssh-ed25519" ] || [ -z "${2:-}" ]; then
   echo "[demo-host] $EXCHANGE/client.pub 不是一行 ed25519 公钥" >&2
   exit 1
 fi
-printf 'restrict,command="/usr/local/bin/python3 /opt/ops-readonly/ops_exec.py --stdio" %s %s doc2sop-demo\n' "$1" "$2" \
+printf 'restrict,command="/usr/local/bin/python3 -I /opt/ops-readonly/ops_exec.py --stdio" %s %s doc2sop-demo\n' "$1" "$2" \
   > /etc/ssh/authorized_keys/opsread
 chmod 0644 /etc/ssh/authorized_keys/opsread
 python3 /opt/ops-readonly/ops_exec.py --check /opt/ops-readonly/allowlist.json

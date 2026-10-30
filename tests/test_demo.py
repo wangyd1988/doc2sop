@@ -302,7 +302,7 @@ class DemoHostFilesTests(unittest.TestCase):
     def test_the_host_entrypoint_installs_a_forced_command_key(self):
         script = (REPO / "deploy" / "demo" / "host-entrypoint.sh").read_text(encoding="utf-8")
         self.assertNotIn("\r", script)
-        self.assertIn('restrict,command="/usr/local/bin/python3 /opt/ops-readonly/ops_exec.py --stdio"', script)
+        self.assertIn('restrict,command="/usr/local/bin/python3 -I /opt/ops-readonly/ops_exec.py --stdio"', script)
         self.assertIn("exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_demo.conf", script)
         sshd = (REPO / "deploy" / "demo" / "host-sshd.conf").read_text(encoding="utf-8")
         for line in ("AllowUsers opsread", "PasswordAuthentication no", "PermitRootLogin no", "PermitTTY no",
