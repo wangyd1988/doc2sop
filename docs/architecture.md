@@ -55,8 +55,10 @@ flowchart LR
     subgraph H["一台机器 · docker compose"]
         APP[kb-app<br/>应用 · 900 MB]
         OPS[kb-ops<br/>ops_readonly.py · 128 MB<br/>端口不发布]
+        HOST[kb-host<br/>演示主机 · sshd + ops_exec.py<br/>64 MB · 端口不发布]
         PK[(packs/<br/>场景包)]
         APP -->|OPS_URL + 令牌| OPS
+        OPS -->|SSH 受控模式<br/>磁盘 / 内存 / 负载| HOST
         OPS -. include tools.yaml .-> PK
         APP -. 导入 docs/ 与 sops.json .-> PK
     end
@@ -71,6 +73,8 @@ flowchart LR
 - 没有网关、没有自托管模型：对话和向量都走一家 OpenAI 兼容服务商（推荐硅基流动，一把 key）。
 - 工具不是另一套实现：sidecar 跑的就是宿主机上那个 `ops_readonly.py`，只是工具定义通过 `include:` 来自场景包，
   凭据（`OPS_TOKEN`、`OPS_SECRET_GATEWAY_*`）由 compose 从同一个 `.env` 映射进去，页面依旧碰不到。
+- 多机巡检：sidecar 自己算本机，演示主机 kb-host 经 SSH 受控模式巡检，两台合成分组 `demo`。演示主机不挂 docker.sock，
+  白名单只有磁盘、内存、负载三个工具；两边只经一个卷交换公钥，私钥不出各自的容器。
 - 应用启动后在后台导入 `DEMO_PACKS` 列出的场景包：文档走入库链路，SOP 走 `playbooks.validate`——和手工操作完全相同的两条路径。
 
 ## 问答链路
@@ -235,10 +239,16 @@ deploy/
 ├── Dockerfile.release 发版用的应用镜像：FROM base 只 COPY app/ packs/（根 Dockerfile 的 base 阶段装依赖，app 阶段给 compose）
 ├── ops_readonly.py    宿主机上的只读运维接口（白名单 + 令牌），支持 include 场景包的工具定义；
 │                      /tools 按统一契约多回 inputSchema 等字段，export 只认主配置文件；/exec 日志记调用方；
-│                      内置标准库手写的 MCP stdio 客户端，发现的工具进待审、批准后写 ops_tools.mcp.yaml
-├── ops_tools.yaml     工具定义的唯一真相源，改完即时生效；顶层 mcp_servers 声明 MCP server
+│                      内置标准库手写的 MCP stdio 客户端，发现的工具进待审、批准后写 ops_tools.mcp.yaml；
+│                      主机清单 hosts：命令型工具经系统 ssh 在远程 Linux 主机上跑（target 参数、@组并发），
+│                      enroll / push / status 接入和检查主机
+├── ops_exec.py        命令型工具的执行核心（参数校验、argv、写动词黑名单、超时与输出上限），工具服务在本机执行就用它；
+│                      也是受控模式装在远程主机上的执行器（强制命令 --stdio，按 root 所有的 allowlist.json 执行）。
+│                      只用标准库、兼容 Python 3.6
+├── ops_tools.yaml     工具定义的唯一真相源，改完即时生效；顶层 mcp_servers 声明 MCP server，hosts 声明主机
 ├── mcp/               玩具 MCP server holiday_mcp.py（测试 + 演示）与把拼假工具换成 MCP 来源的 holiday_tools.yaml
-├── demo/              一键演示用的工具 sidecar：Dockerfile.ops + entrypoint.py（按 DEMO_PACKS 生成 include）
+├── demo/              一键演示：工具 sidecar（Dockerfile.ops + entrypoint.py，按 DEMO_PACKS 生成 include、按 DEMO_HOST 生成 hosts）
+│                      和演示主机（Dockerfile.host：sshd + 执行器 + 只开放三个工具的 host-allowlist.json）
 ├── sandbox/           计算沙箱：sandbox_service.py（宿主机 systemd 服务，127.0.0.1 + 令牌，每次执行一个 gVisor 一次性容器，
 │                      镜像和限制写死）、Dockerfile + requirements.txt（标准库 + 锁定哈希的 PyYAML）、security_check.py（真实环境安全用例）
 ├── backup.sh          每日备份
@@ -250,7 +260,7 @@ deploy/
 packs/                 场景包：每个目录 = pack.yaml + docs/ + tools.yaml + sops.json（docs/场景包.md）
 ├── leave-planning     行政-请假拼假
 ├── model-selfcheck    研发-模型调用自查
-└── ops-inspection     运维-日常巡检（需宿主机 docker）
+└── ops-inspection     运维-日常巡检（需要一台能读 docker 的 Linux 主机：本机，或配了 hosts 的远程主机）
 ```
 
 ## 关键取舍
@@ -275,3 +285,8 @@ MCP 客户端用标准库手写而不引入 SDK，是为了保住 `ops_readonly.
 **计算沙箱和应用在同一台机器上，用 gVisor 隔离，而不是另开一台。** 模型写的代码跑在 runsc 里，系统调用由 gVisor 的用户态内核
 接住，再加无网络、只读、nobody、限资源；起容器的权限只在沙箱服务手里，它只接受固定镜像和固定参数。代价是一旦逃逸，影响的是整台机器，
 所以并发压在 1–2、单次 256MB，沙箱的输出也照样算出网污点。
+
+**远程主机用系统的 ssh，而不是 SSH 库。** 工具服务因此仍然只依赖标准库（加 PyYAML），systemd 单元不用改，生产机上现有的
+SSH 隧道也是这么跑的。代价是工具服务那台机器要装 OpenSSH 客户端；传输层留了接口（`SshTransport.run`），以后要支持 Windows 主机
+再加一个基于 paramiko 的实现。「零依赖」的要求转给了要铺到很多台主机上的执行器 `ops_exec.py`：只用标准库、兼容 Python 3.6。
+受控模式下主机自己按白名单决定能跑什么，工具服务被攻破也只能在已接入的主机上跑已下发的只读工具。
