@@ -255,20 +255,48 @@ def delete_by_source(source):
     return len(ids)
 
 
-def as_prompt(known_tools):
+def usable(known_tools):
+    """启用、且步骤引用的工具此刻都可用的 SOP——工具没了的 SOP 照着做必然失败。"""
+    return [p for p in list_all(only_enabled=True) if all(step["tool"] in known_tools for step in p["steps"])]
+
+
+def short_names(items):
+    """SOP id → 英文短名（sop-前 8 位），给 sop_get、MCP 提示词和 SKILL.md 的目录名用。
+
+    中文名不能当函数名、目录名；id 稳定（场景包的 SOP id 由包名和 SOP 名算出），短名也就稳定。
+    前 8 位撞上了就加长到不撞为止。
+    """
+    def clean(playbook_id):
+        return "".join(c for c in str(playbook_id).lower() if c.isascii() and c.isalnum()) or "x"
+
+    ids = sorted({p["id"] for p in items})
+    out = {}
+    for playbook_id in ids:
+        key, size = clean(playbook_id), 8
+        while size < len(key) and any(clean(other).startswith(key[:size]) for other in ids if other != playbook_id):
+            size += 4
+        out[playbook_id] = "sop-" + key[:size]
+    return out
+
+
+def as_prompt(known_tools, brief=False):
     """把启用的 SOP 压成一段紧凑文本，供模型判断是否套用。
 
     只列出步骤引用的工具当前仍然可用的 SOP——工具没了的 SOP 照着做必然失败。
+    brief=True（SOP 太多时）只列名称、短名和适用场景，步骤让模型用 sop_get 现取。
     """
-    usable = []
-    for playbook in list_all(only_enabled=True):
-        if all(step["tool"] in known_tools for step in playbook["steps"]):
-            usable.append(playbook)
-    if not usable:
+    usable_ = usable(known_tools)
+    if not usable_:
         return ""
 
     lines = []
-    for playbook in usable:
+    if brief:
+        names = short_names(usable_)
+        for playbook in usable_:
+            lines.append(f"SOP《{playbook['name']}》（{names[playbook['id']]}，{len(playbook['steps'])} 步）"
+                         + (f"：适用 {playbook['trigger']}" if playbook["trigger"] else ""))
+        return "\n".join(lines)
+    for playbook in usable_:
         lines.append(f"SOP《{playbook['name']}》")
         if playbook["trigger"]:
             lines.append(f"  适用：{playbook['trigger']}")

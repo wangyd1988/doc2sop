@@ -23,8 +23,8 @@ from app.agent import loop as agent_loop
 from app.agent import ops_client, registry, web_search
 from app.agent.extract import extract as extract_playbooks
 from app.config import (AGENT_MODE, ALLOWED_SUFFIXES, CATEGORY_MAX, BOT_NAME, DATA_DIR, EVAL_TOKEN,
-                        FILES_DIR, IMAGE_SUFFIXES, KB_RETRIEVAL_MODE, KB_TOOLS, MAX_FILE_BYTES, PLAN_TOOL,
-                        WEB_NOTE_CATEGORY, WEB_PASSWORD, WEB_USER, log)
+                        FILES_DIR, IMAGE_SUFFIXES, KB_RETRIEVAL_MODE, KB_TOOLS, MAX_FILE_BYTES, MCP_ENABLED,
+                        PLAN_TOOL, WEB_NOTE_CATEGORY, WEB_PASSWORD, WEB_USER, log)
 from app.ingest.extract import ExtractionError, extract_pages
 from app.ingest.vision import ImageCollector
 from app.rag import store
@@ -1042,3 +1042,8 @@ def ask(payload: Question, x_eval_token: str | None = Header(default=None)):
 
 # 演示场景包：DEMO_PACKS 非空时，模型一配好就在后台把文档和 SOP 导进来（docs/场景包.md）。
 packs.start_autoimport(ingest, lambda: set(usable_tools()))
+
+# 对外 MCP 出口（docs/工具.md「对外 MCP 出口」）：关着时不导入 SDK、不挂 /mcp，应用和以前一模一样。
+if MCP_ENABLED:
+    from app import mcp_server
+    mcp_server.install(app)

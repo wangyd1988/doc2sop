@@ -52,7 +52,7 @@ def _location(meta):
 
 
 @traceable(name="知识库检索", run_type="retriever")
-def retrieve(question: str, progress=None, *, top_k=None, category=None, source=None):
+def retrieve(question: str, progress=None, *, top_k=None, category=None, source=None, within=None):
     """Return up to TOP_K snippets, each with its source location, score and chunk id.
 
     `progress(stage)` 可选：开始召回时报 "retrieve"、真要调重排时报 "rerank"，
@@ -60,6 +60,7 @@ def retrieve(question: str, progress=None, *, top_k=None, category=None, source=
 
     知识类工具 kb_search 还会传 top_k（要几条）和 category / source（只在某个分类、某个文档里找）；
     两路召回都按同一组文档过滤，低分过滤、重排、向量服务挂了退化为关键词都照旧。
+    within 是调用方看得到的文档名集合（对外令牌按分类白名单限定时才有），再和上面的过滤取交集。
     """
     report = progress or (lambda stage: None)
     report("retrieve")
@@ -67,6 +68,8 @@ def retrieve(question: str, progress=None, *, top_k=None, category=None, source=
     if total == 0:
         return []
     allowed = store.sources_for(category, source)
+    if within is not None:
+        allowed = set(within) if allowed is None else allowed & set(within)
     if allowed is not None:
         total = sum(d["chunks"] for d in store.catalog() if d["source"] in allowed)
         if total == 0:

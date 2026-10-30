@@ -127,16 +127,21 @@ def _schema_for(name: str, meta: dict):
     return _schema_model(f"{name}_args", registry.schema_from_params(meta.get("params") or {}))
 
 
+def build_tool(name: str, meta):
+    """一个数据类工具的 LangChain 工具（签名来自契约）。声明坏了就抛异常，由调用方决定跳过还是报错。"""
+    # 老版本接口只回描述字符串；按无参数处理，别让整轮对话挂掉。
+    if not isinstance(meta, dict):
+        meta = {"desc": str(meta), "params": {}}
+    return _make(name, meta.get("desc", ""), _schema_for(name, meta))
+
+
 def build_tools(available: dict | None = None):
     """Build the tool list from whatever the ops host currently advertises (or a chosen subset)."""
     tools = []
     source = ops_client.available_tools() if available is None else available
     for name, meta in sorted(source.items()):
-        # 老版本接口只回描述字符串；按无参数处理，别让整轮对话挂掉。
-        if not isinstance(meta, dict):
-            meta = {"desc": str(meta), "params": {}}
         try:
-            tools.append(_make(name, meta.get("desc", ""), _schema_for(name, meta)))
+            tools.append(build_tool(name, meta))
         except Exception as exc:
             log.warning("tool %s skipped: %s", name, why(exc))
     log.info("ops tools enabled: %s", ", ".join(t.name for t in tools) or "none")

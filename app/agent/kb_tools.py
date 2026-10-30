@@ -16,10 +16,13 @@ forced 第一轮强制调 kb_search；agentic 查不查由模型定。
 免得模型沿用上一轮的 [9]。
 
 返回的都是资料，不是指令：每次都带一句头；「网络补充」分类的片段标「来自网络，未核实」。
+
+对外 MCP 的令牌可以只开放某几个文档分类（turn.categories）：三个工具都只看得到这些分类里的文档，
+别的分类的片段按「没有」处理，不说它存在。项目 Agent 的 turn.categories 是 None，全部能看。
 """
 from pathlib import Path
 
-from app.config import CHUNK_OVERLAP, WEB_NOTE_CATEGORY
+from app.config import CHUNK_OVERLAP, DEFAULT_CATEGORY, WEB_NOTE_CATEGORY
 from app.rag import retrieval, store
 
 SEARCH_NAME, READ_NAME, CATALOG_NAME = "kb_search", "kb_read", "kb_catalog"
@@ -127,6 +130,19 @@ def _known(turn, key):
 
 # --- 参数 ------------------------------------------------------------------------
 
+def visible(turn, docs=None) -> list:
+    """调用方看得到的文档（目录条目）：turn.categories 为 None 时是全部。"""
+    docs = store.catalog() if docs is None else docs
+    allowed = getattr(turn, "categories", None)
+    if allowed is None:
+        return docs
+    return [d for d in docs if d["category"] in allowed]
+
+
+def _restricted(turn) -> bool:
+    return getattr(turn, "categories", None) is not None
+
+
 def _int(value, default, low, high):
     try:
         number = int(value)
@@ -185,7 +201,7 @@ def run_search(args, turn):
     if not query:
         return "[执行失败] query 不能为空：写一句独立完整的检索语句"
     top_k = _int(args.get("top_k"), TOP_K_DEFAULT, 1, TOP_K_MAX)
-    docs = store.catalog()
+    docs = visible(turn)
     category = source = None
     scope = []
     if _text(args.get("category"), 60):
@@ -200,7 +216,9 @@ def run_search(args, turn):
         scope.append(f"文档《{source}》")
     where = f"（只查了{'、'.join(scope)}）" if scope else ""
 
-    hits = retrieval.retrieve(query, top_k=top_k, category=category, source=source)
+    # 只有对外令牌限定了分类才多传 within：项目 Agent 的调用和以前一字不差
+    within = {"within": {d["source"] for d in docs}} if _restricted(turn) else {}
+    hits = retrieval.retrieve(query, top_k=top_k, category=category, source=source, **within)
     if not hits:
         return (f"{HEADER}\n\n知识库里没有找到与「{query}」相关的片段{where}。可以换个说法、换关键词再查；"
                 "换过说法仍然没有，就如实告诉用户知识库里没有，不要编造。")
@@ -262,9 +280,9 @@ def summary(docs) -> str:
         + "。文档名用 kb_catalog 查看。"
 
 
-def describe_search() -> dict:
-    """每轮现算的 kb_search 契约：说明后面带上实时的目录摘要。"""
-    return {**SEARCH, "description": SEARCH["description"] + "\n\n" + summary(store.catalog())}
+def describe_search(turn=None) -> dict:
+    """每轮现算的 kb_search 契约：说明后面带上实时的目录摘要——只摘调用方看得到的分类（对外令牌可能只开放几类）。"""
+    return {**SEARCH, "description": SEARCH["description"] + "\n\n" + summary(visible(turn))}
 
 
 # --- kb_read ---------------------------------------------------------------------
@@ -310,6 +328,8 @@ def run_read(args, turn):
         key, seq = parsed
         center = f"{key}:{seq}"
         rows = store.get_chunks(f"{key}:{i}" for i in range(max(0, seq - around), seq + around + 1))
+        if _restricted(turn):
+            rows = [row for row in rows if (row[2].get("category") or DEFAULT_CATEGORY) in turn.categories]
         if not any(row[0] == center for row in rows):
             return f"[执行失败] 知识库里没有片段 {center}（文档可能已删除或重新入库，请重新检索）"
         what = f"片段 {center} 及前后各 {around} 段" if around else f"片段 {center}"
@@ -317,7 +337,7 @@ def run_read(args, turn):
         name, page = _text(args.get("source"), 200), args.get("page")
         if not name or page in (None, ""):
             return "[执行失败] 要传片段 id；或者传 source（文档名）加 page（页码）"
-        source, error = pick_source(name, store.catalog())
+        source, error = pick_source(name, visible(turn))
         if error:
             return f"[执行失败] {error}"
         page = _int(page, 0, 0, 1_000_000)
@@ -354,7 +374,7 @@ def run_read(args, turn):
 
 def run_catalog(args, turn) -> str:
     """目录：分类、文档名、片段数。不编号、不出卡片——目录不是回答的依据。"""
-    docs = store.catalog()
+    docs = visible(turn)
     if not docs:
         return "知识库目前是空的，还没有任何文档。"
     wanted = _text(args.get("category"), 60)

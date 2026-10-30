@@ -33,14 +33,14 @@ from app import graph as org_graph
 from app import playbooks
 from app.agent import egress
 from app.agent import kb_tools as kb
-from app.agent import ops_client, registry, web_fetch, web_search  # noqa: F401  ops_client：测试按 loop.ops_client 打桩
+from app.agent import ops_client, registry, sop_tools, web_fetch, web_search  # noqa: F401  ops_client：测试按 loop.ops_client 打桩
 from app.agent import plan as plan_tool
 from app.agent.tools import TOOL_LIMIT, build_tools, schema_tool, select_tools
 from app.clients import chat_model
-from app.config import BOT_NAME, DATA_DIR, HISTORY_CHARS, log, why
+from app.config import BOT_NAME, DATA_DIR, HISTORY_CHARS, SOP_PROMPT_MAX, log, why
 from app.rag.retrieval import as_context
 
-MAX_ROUNDS = 8   # 最多几轮工具调用，防止模型来回绕（知识类、流程类工具绑上时：补查、读前后文、勾清单都要轮次）
+MAX_ROUNDS = 8   # 最多几轮工具调用，防止模型来回绕（知识类、流程类工具绑上时：补查、读前后文、取 SOP、勾清单都要轮次）
 BASE_ROUNDS = 4  # 只有数据类、外网类工具时沿用原来的 4 轮：KB_TOOLS、PLAN_TOOL 都关时行为不变
 MAX_WEB_SEARCHES = registry.POLICIES["web"].limit   # 每轮最多搜几次（读网页另计同样多次）：注册表按外网类限次
 # 工具层、搜索层、读网页、限次用这些前缀报告失败（tools.py / web_search.py / web_fetch.py / registry.py）；
@@ -159,15 +159,12 @@ NO_WEB_RULES = """
   如果是公开资料类问题，提示用户可以打开输入框旁的「🌐 联网」开关后再问。"""
 
 # 按 SOP 执行时的输出格式：每次结论都长一个样，才方便横向比较、也方便直接贴进群里。
-SOP_FORMAT = """**按 SOP 执行时的输出格式**（用户点了「执行 SOP」或问题与某个 SOP 匹配时）：
-1. 第一行写「按 SOP《名称》执行」。
-2. 用一个 Markdown 表格逐步汇报，列为：步骤 | 查看 | 实际数据 | 结论。
-   - 「查看」写这一步看的是什么（人话，不要写工具名）；
-   - 「实际数据」写工具返回里的关键数字或状态，不要整段粘贴；
-   - 「结论」只能是 ✅ 正常 / ⚠️ 告警 / ❌ 严重 / ❓ 无法判断 四选一，并在后面用半句话说明判断依据（引用 SOP 检查点里的阈值）。
-   - 某一步因为缺参数、工具失败而没做的，「实际数据」写「未执行：原因」，结论写 ❓。
-3. 表格之后一段「需要跟进」：只列 ⚠️ 和 ❌ 的项，每项一句建议动作；全部正常就写「无」。
-4. 不要在表格之外重复每一步的细节。"""
+# 和对外的 sop_get、MCP 提示词、SKILL.md 共用一份（sop_tools.SOP_FORMAT），外部执行也出同样的对照表。
+SOP_FORMAT = sop_tools.SOP_FORMAT
+# 启用的 SOP 超过 SOP_PROMPT_MAX 时，提示词里只放名称和适用场景，步骤由模型用 sop_get 现取
+SOP_BRIEF = ("可用 SOP（从团队文档沉淀的标准做法，共 {count} 个，这里只列名称和适用场景）：\n{book}\n\n"
+             "问题和某个 SOP 的适用场景对得上时，先用 sop_get 传它的短名取步骤、参数和检查点，再按步骤执行；"
+             "对不上就按问题本身选工具。sop_list 可以按关键词找 SOP。\n\n")
 
 # 知识类工具（KB_TOOLS）绑上时才拼进系统提示词；不绑时提示词和以前一字不差。
 KB_RULES = """
@@ -479,6 +476,8 @@ class TurnSetup:
     make_prompt: Callable | None = None          # 拿到片段后重拼本轮提问：make_prompt(context) -> str
     model_key: str = ""
     kb_ids: bool = False                         # 片段带不带 id（知识类工具绑上时带，kb_read 要用）
+    caller: str = ""                             # 发给工具服务 /exec 的调用方：这一轮的会话和图谱执行
+    tools: dict | None = None                    # 这一轮绑上的数据类工具：名字 -> 显示名（sop_get 标哪一步做不了）
     stats: dict = field(default_factory=lambda: {"model_calls": 0, "fallback": False, "forced_with": None})
 
 
@@ -562,7 +561,7 @@ def _build_graph(bound, system, current_prompt, by_name, allow_web=False, record
     def tools(state: TurnState):
         emit = get_stream_writer()
         call_msg = state["messages"][-1]
-        turn = registry.Turn(emit, state.get("usage"))
+        turn = registry.Turn(emit, state.get("usage"), caller=setup.caller, tools=setup.tools)
         # 出网规则：模型会在同一条回复里并行发出搜索和数据类调用。执行这一批之前，先把其中数据类调用的
         # x-entity 实参登记成污点、本轮记为调过数据类工具——搜索排在前面先执行，也看得到同批的这些
         for call in call_msg.tool_calls:
@@ -686,6 +685,12 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
     if len(available) > TOOL_LIMIT:
         available = select_tools(available, question, playbooks.referenced_tools())
     tools = build_tools(available)
+    # 能执行的 SOP 太多（超过 SOP_PROMPT_MAX）时提示词里只放名称和适用场景，绑上 sop_list / sop_get 让模型现取步骤
+    data_names = {tool.name for tool in tools}
+    sop_count = len(playbooks.usable(data_names)) if data_names else 0
+    brief = sop_count > SOP_PROMPT_MAX
+    if brief:
+        options = registry.TurnOptions(allow_web=options.allow_web, kb_tools=kb_tools, plan=plan, sop_tools=True)
     extra = registry.app_tools(options)
     by_name = {tool.name: registry.bind_data(tool, available.get(tool.name)) for tool in tools}
     by_name.update({tool.name: registry.bind_app(tool) for tool in extra})
@@ -710,10 +715,10 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
               + ((WEB_RULES + (WEB_FETCH_RULES if fetch_on else "")) if allow_web else NO_WEB_RULES))
     # SOP 只在确实有能进 SOP 的工具时注入，否则模型会照着 SOP 去调不存在的工具。
     steps = {name for name, binding in by_name.items() if registry.POLICIES[binding.category].sop}
-    book = playbooks.as_prompt(steps) if steps else ""
+    book = playbooks.as_prompt(steps, brief=brief) if steps else ""
+    titles = {name: entry.get("title") or name for name, entry in available.items() if isinstance(entry, dict)}
     plan_items = None
     if plan_on and playbook:
-        titles = {name: entry.get("title") or name for name, entry in available.items() if isinstance(entry, dict)}
         plan_items = plan_tool.from_playbook(playbook, titles) or None
 
     def make_prompt(ctx):
@@ -724,7 +729,9 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
             prompt += NO_PREFETCH
         else:
             prompt += f"知识库片段：\n{as_context([])}\n\n"
-        if book:
+        if book and brief:
+            prompt += SOP_BRIEF.format(count=sop_count, book=book) + f"{SOP_FORMAT}\n\n"
+        elif book:
             prompt += (f"可用 SOP（从团队文档沉淀的标准做法，匹配时优先按它执行）：\n{book}\n\n"
                        f"{SOP_FORMAT}\n\n")
         if plan_items:
@@ -733,9 +740,12 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
         return prompt + f"用户的问题：{question}"
 
     model_key = str(model or getattr(client, "model_name", "") or "")
-    setup = TurnSetup(max_rounds=MAX_ROUNDS if (kb_on or plan_on) else BASE_ROUNDS,
+    thread_id = thread_id or uuid.uuid4().hex
+    setup = TurnSetup(max_rounds=MAX_ROUNDS if (kb_on or plan_on or brief) else BASE_ROUNDS,
                       force=bool(force_search), prefetch=prefetch, make_prompt=make_prompt,
-                      model_key=model_key, kb_ids=kb_on)
+                      model_key=model_key, kb_ids=kb_on,
+                      caller=f"agent conversation={thread_id}" + (f" execution={execution_id}" if execution_id else ""),
+                      tools={name: titles.get(name, name) for name in data_names})
     if force_search and kb_on:
         # 强制的那一轮只绑 kb_search：tool_choice="required" 时也就只能调它
         search = [tool for tool in bindable if tool.name == kb.SEARCH_NAME]
@@ -748,7 +758,6 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
                 if _rejects_tool_choice(exc):
                     _mark_no_tool_choice(model_key, why(exc), choice)
 
-    thread_id = thread_id or uuid.uuid4().hex
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 2 * setup.max_rounds + 4}
     graph = _build_graph(bound, system, make_prompt(context), by_name, allow_web, record, setup=setup)
 

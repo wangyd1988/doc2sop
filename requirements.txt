@@ -12,3 +12,5 @@ python-docx>=1.1,<2
 python-pptx>=1.0,<2
 pillow>=10,<13
 pyyaml>=6,<7
+# 对外 MCP 出口（MCP_ENABLED，默认关；关着时不导入）。v2 同时服务 2025 版（会话）和 2026-07-28 版（无会话）客户端
+mcp>=2.3,<3

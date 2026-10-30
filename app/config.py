@@ -124,6 +124,23 @@ WEB_AFTER_DATA = os.environ.get("WEB_AFTER_DATA", "screen").strip().lower()
 # the agent may propose turning it into an SOP (saved disabled, pending human review).
 AUTO_SOP_PROPOSALS = os.environ.get("AUTO_SOP_PROPOSALS", "true").strip().lower() in ("true", "1", "yes")
 SOP_PROPOSALS_PER_DAY = int(os.environ.get("SOP_PROPOSALS_PER_DAY", "10"))
+# 启用的 SOP 超过这么多个，项目 Agent 的提示词里只放名称和适用场景，步骤由模型用 sop_get 现取；不到时和以前一样整段放进去
+SOP_PROMPT_MAX = int(os.environ.get("SOP_PROMPT_MAX", "30"))
+
+# --- 对外 MCP 出口（docs/工具.md「对外 MCP 出口」）-----------------------------------
+# 打开后应用多一个 /mcp：外部智能体（Claude Code、Copilot、Cursor…）凭管理页「对外接入」签发的令牌查知识库、
+# 按 SOP 排查、调宿主机标了 export 的只读数据工具。关着时 /mcp 不存在，应用行为和以前完全一样。
+MCP_ENABLED = os.environ.get("MCP_ENABLED", "").strip().lower() in _TRUE
+# 每枚令牌每分钟最多调用几次工具 / 提示词、单次返回最多多少字；签发时可以单独设，留空用这两个默认值
+MCP_RATE_PER_MINUTE = int(os.environ.get("MCP_RATE_PER_MINUTE", "60"))
+MCP_MAX_RESULT_CHARS = int(os.environ.get("MCP_MAX_RESULT_CHARS", "20000"))
+# 只接受这些 Host（逗号分隔，如 kb.example.com,10.0.0.5:8765）；留空不检查 Host——/mcp 只认令牌，
+# 令牌不是浏览器会自动带上的凭据，DNS 重绑定拿它没办法。反向代理后面想再加一道，就把对外域名填上
+MCP_ALLOWED_HOSTS = [h.strip() for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
+# 多久检查一次工具、文档、SOP 有没有变化（变了就给连着的客户端发 list_changed）
+MCP_WATCH_SECONDS = float(os.environ.get("MCP_WATCH_SECONDS", "30"))
+# 对外调用审计记录保留多少天
+MCP_AUDIT_DAYS = int(os.environ.get("MCP_AUDIT_DAYS", "180"))
 
 # --- Scenario packs ----------------------------------------------------------
 # 场景包 = 文档 + 工具定义 + SOP 的目录（docs/场景包.md）。镜像里 app/ 和 packs/ 是兄弟目录，

@@ -115,6 +115,19 @@ CREATE TABLE IF NOT EXISTS feedback (
 );
 """)
 db.commit()
+CHANNELS = ("web", "mcp")
+
+
+def _migrate(conn):
+    """老库的 executions 没有 channel 列（这次执行来自页面还是对外 MCP）：补上，老数据都算 web。"""
+    try:
+        conn.execute("ALTER TABLE executions ADD COLUMN channel TEXT NOT NULL DEFAULT 'web'")
+    except sqlite3.OperationalError:
+        pass
+    conn.commit()
+
+
+_migrate(db)
 lock = threading.Lock()
 
 
@@ -227,13 +240,15 @@ def facts_of(kind, name, predicate=None, include_retracted=False):
 
 # --- 执行与工具调用 ----------------------------------------------------------
 
-def start_execution(conversation_id, question, playbook_id=None):
-    """一次 Agent 轮次（或「▶ 执行」发起的一次 SOP 执行）开始。"""
+def start_execution(conversation_id, question, playbook_id=None, channel="web"):
+    """一次 Agent 轮次（或「▶ 执行」发起的一次 SOP 执行）开始。对外 MCP 的一个会话也是一条执行（channel=mcp）。"""
+    if channel not in CHANNELS:
+        raise ValueError(f"channel 只能是 {'、'.join(CHANNELS)} 之一")
     execution_id = uuid.uuid4().hex
     with lock:
-        db.execute("INSERT INTO executions (id, conversation_id, playbook_id, question, started_at)"
-                   " VALUES (?, ?, ?, ?, ?)",
-                   (execution_id, conversation_id, playbook_id or None, question, now_iso()))
+        db.execute("INSERT INTO executions (id, conversation_id, playbook_id, question, started_at, channel)"
+                   " VALUES (?, ?, ?, ?, ?, ?)",
+                   (execution_id, conversation_id, playbook_id or None, question, now_iso(), channel))
         db.commit()
     return execution_id
 
@@ -315,11 +330,17 @@ def _outcome(answer, failed, calls):
 
 
 def finish_execution(execution_id, answer, failed=False, message_id=None):
-    """回答结束时收口：算 outcome，回填结束时间和对应的助手消息 id。"""
+    """回答结束时收口：算 outcome，回填结束时间和对应的助手消息 id。
+
+    对外 MCP 的会话没有页面上那种一问一答、轨迹也不完整：不算结论质量（一直是 unknown），
+    结束时间记的是最近一次调用的时间。
+    """
     with lock:
+        row = db.execute("SELECT channel FROM executions WHERE id = ?", (execution_id,)).fetchone()
         rows = db.execute("SELECT tool, ok FROM tool_calls WHERE execution_id = ? ORDER BY seq",
                           (execution_id,)).fetchall()
-        outcome = _outcome(answer, failed, [(r["tool"], bool(r["ok"])) for r in rows])
+        outcome = ("unknown" if row is not None and row["channel"] == "mcp"
+                   else _outcome(answer, failed, [(r["tool"], bool(r["ok"])) for r in rows]))
         db.execute("UPDATE executions SET outcome = ?, finished_at = ?,"
                    " message_id = COALESCE(?, message_id) WHERE id = ?",
                    (outcome, now_iso(), message_id, execution_id))
