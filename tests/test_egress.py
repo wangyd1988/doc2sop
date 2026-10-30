@@ -217,6 +217,55 @@ class UrlSourceTests(unittest.TestCase):
         self.assertIsNotNone(refused(egress.check_url, turn_for(""), "https://kubernetes.io/docs/concepts/"))
 
 
+class SearchResultLinkTests(unittest.TestCase):
+    """本轮搜索结果里原样出现过的链接不查「疑似令牌或哈希」；其余静态规则和污点照查；只在用户消息里的链接全套检查。"""
+
+    UUID = "https://www.ywcsb.vip/blog/01a148f3-80b5-7014-b1fb-dd1ef0865c78.html"
+    SHA = "https://github.com/python/cpython/blob/3a1b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b/README.rst"
+    CONTROL = "https://stackoverflow.com/questions/52456337/how-to-check-oomkilled-in-kubernetes-pod"
+
+    def test_uuid_and_sha_links_from_search_results_pass(self):
+        turn = turn_for("")
+        egress.allow_urls(turn, [self.UUID, self.SHA, self.CONTROL])
+        for url in (self.UUID, self.SHA, self.CONTROL):
+            with self.subTest(url=url):
+                self.assertEqual(egress.check_url(turn, url), url)
+
+    def test_the_same_links_only_in_the_user_message_are_still_refused(self):
+        turn = turn_for(f"帮我读一下 {self.UUID} 、{self.SHA} 和 {self.CONTROL}")
+        for url in (self.UUID, self.SHA):
+            with self.subTest(url=url):
+                self.assertEqual(refused(egress.check_url, turn, url),
+                                 "链接里含有疑似令牌或哈希，为防止内部信息外泄，已拒绝读取")
+        self.assertEqual(egress.check_url(turn, self.CONTROL), self.CONTROL)
+
+    def test_a_link_in_both_is_read_with_the_search_engines_spelling(self):
+        mine = self.UUID.replace("https://", "http://")
+        turn = turn_for(f"看下 {mine}")
+        egress.allow_urls(turn, [self.UUID])
+        self.assertEqual(egress.check_url(turn, mine), self.UUID)
+
+    def test_other_static_rules_and_taint_still_apply_to_search_results(self):
+        uuid = "01a148f3-80b5-7014-b1fb-dd1ef0865c78"
+        cases = [(f"https://example.com/u/wang@example.com/{uuid}", "邮箱"),
+                 (f"https://example.com/海右名家/{uuid}", "内部名词「海右名家」"),
+                 (f"https://example.com/s?q=%E6%B5%B7%E5%8F%B3%E5%90%8D%E5%AE%B6&id={uuid}", "内部名词「海右名家」"),
+                 (f"https://example.com/a?ip=10.0.0.1&id={uuid}", "IP 地址"),
+                 (f"https://gitlab.corp/group/{uuid}", "内网域名"),
+                 (f"https://example.com/hook?key=sk-abcdefghijklmnop&id={uuid}", "疑似密钥"),
+                 (f"https://status.example.com/hosts/web01/{uuid}", "本轮查过的内部对象「web01」"),
+                 (f"https://status.example.com/db/payroll-db07/{uuid}", "本轮数据里出现过的标识符「payroll-db07」")]
+        with patch.object(egress, "WEB_SEARCH_BLOCKLIST", ["海右名家"]):
+            turn = turn_for("")
+            egress.allow_urls(turn, [url for url, _ in cases])
+            egress.observe(turn, ENTITY_SCHEMA, {"name": "web01"}, "node payroll-db07 restarted")
+            for url, label in cases:
+                with self.subTest(url=url):
+                    reason = refused(egress.check_url, turn, url)
+                    self.assertIsNotNone(reason)
+                    self.assertIn(label, reason)
+
+
 # --- 接在真实的 Agent 循环里 ----------------------------------------------------------------
 
 class FakeTool:

@@ -7,18 +7,21 @@
              真正去读的是批准过的那个原样的链接，模型换个等价写法也不用它的写法（见 check_url）。
 3. 静态拦截  screen()：IP、疑似密钥和令牌、内网域名、邮箱、WEB_SEARCH_BLOCKLIST。搜索词和链接用同一套规则；
              链接解码后再查一遍，路径里用连字符、下划线连起来的标题（slug）不算令牌。
+             本轮搜索结果里原样出现过的链接不查「疑似令牌或哈希」（UUID、commit SHA 这类路径很常见）：发出去的就是
+             搜索引擎给的原样链接，模型改不了，夹带不了内部数据；其余几条照查。只在用户消息里出现过的链接全套检查。
 4. 污点拦截  本轮的污点有两种：
              - 数据类工具调用里声明了 x-entity 的实参值。工具真查了它，说明是内部对象；用户自己提过也算。
              - 数据类工具返回里像资源名的标识符：同时有字母和数字或连字符（web01、payroll-db），
                用户本轮消息里原样出现过的除外。带单位的数量（512MiB、30s）、v1.2 这类版本号、不到 3 个字符的不算。
                按最终给模型看的那一份（压缩、截断之后）收集：模型看得到的都记上。
              出网内容里按词边界出现了污点就拒绝（不分大小写）。只有字母的词（OOMKilled）和纯数字（137）不算污点，
-             否则联网就没法用了。
+             否则联网就没法用了。搜索结果里的链接也照查。
 
 本轮的状态在 Turn.usage["egress"]，和其他按轮计数一样每轮清零：
 
     question  用户本轮的消息：污点豁免、取用户给的链接
-    urls      本轮可以读的链接 {canonical(): 原样的链接}：用户消息里的 + 本轮搜索结果里的
+    urls      用户本轮消息里给出的链接 {canonical(): 原样的链接}
+    results   本轮搜索结果里的链接 {canonical(): 原样的链接}；两边都有时读搜索结果给的写法
     taint     {小写的值: "entity" | "output"}
     data      本轮调没调过数据类工具（严格模式）
 
@@ -79,12 +82,15 @@ def _loggable(label, hit) -> str:
     return f"{hit[:4]}…（{len(hit)} 字符）" if label in ("疑似密钥", TOKEN_LABEL) else hit
 
 
-def screen(text, *, subject="搜索词", action="上网搜索", blocklist=None, url=False) -> None:
+def screen(text, *, subject="搜索词", action="上网搜索", blocklist=None, url=False, tokens=True) -> None:
     """静态拦截：含 IP、疑似密钥或令牌、内网域名、邮箱或内部名词（WEB_SEARCH_BLOCKLIST）就抛 Refused。
 
     url=True（查链接）时，路径里的 slug 不算令牌，其余规则和搜索词完全一样。
+    tokens=False 时整条「疑似令牌或哈希」都不查（本轮搜索结果里原样出现过的链接，见 check_url），其余照查。
     """
     for pattern, label in LEAK_PATTERNS:
+        if label == TOKEN_LABEL and not tokens:
+            continue
         if url and label == TOKEN_LABEL:
             hit = next((m.group() for m in pattern.finditer(text) if not _slug(m.group())), None)
         else:
@@ -100,10 +106,13 @@ def screen(text, *, subject="搜索词", action="上网搜索", blocklist=None, 
                           rule="static:内部名词", word=word)
 
 
-def screen_url(url) -> None:
-    """链接的静态拦截：原样查一遍，百分号解码后再查一遍（%E5… 编码的内部名词、编码过的令牌也拦得住）。"""
+def screen_url(url, tokens=True) -> None:
+    """链接的静态拦截：原样查一遍，百分号解码后再查一遍（%E5… 编码的内部名词、编码过的令牌也拦得住）。
+
+    tokens=False：不查「疑似令牌或哈希」（本轮搜索结果里原样出现过的链接）。
+    """
     for text in dict.fromkeys((url, unquote(url))):
-        screen(text, subject="链接", action="读取", url=True)
+        screen(text, subject="链接", action="读取", url=True, tokens=tokens)
 
 
 # --- 链接：规范化与来源 -------------------------------------------------------------
@@ -164,11 +173,11 @@ def find_urls(text) -> list:
 
 # --- 本轮状态 -----------------------------------------------------------------------
 
-def _allow(state, urls) -> None:
-    """urls 记成 {canonical: 原样的链接}：比对按 canonical，真正去读的是原样的那个（见 check_url）。"""
-    allowed = state.get("urls")
+def _allow(state, field, urls) -> None:
+    """urls 记进 state[field]，形如 {canonical: 原样的链接}：比对按 canonical，真正去读的是原样的那个（见 check_url）。"""
+    allowed = state.get(field)
     if not isinstance(allowed, dict):
-        allowed = state["urls"] = {}
+        allowed = state[field] = {}
     for url in urls:
         key = canonical(url)
         if key and key not in allowed and len(allowed) < MAX_URLS:
@@ -177,8 +186,8 @@ def _allow(state, urls) -> None:
 
 def start(question) -> dict:
     """一轮开始时的出网状态（loop.run 在本轮绑了外网类工具时建）。"""
-    state = {"question": str(question or "")[:QUESTION_CHARS], "urls": {}, "taint": {}, "data": False}
-    _allow(state, find_urls(state["question"]))
+    state = {"question": str(question or "")[:QUESTION_CHARS], "urls": {}, "results": {}, "taint": {}, "data": False}
+    _allow(state, "urls", find_urls(state["question"]))
     return state
 
 
@@ -190,8 +199,8 @@ def _state(turn) -> dict:
 
 
 def allow_urls(turn, urls) -> None:
-    """web_search 拿到结果后：这些链接本轮可以读。"""
-    _allow(_state(turn), urls)
+    """web_search 拿到结果后：这些链接本轮可以读（记下搜索引擎给的原样写法，读的时候发它）。"""
+    _allow(_state(turn), "results", urls)
 
 
 _TOKEN = re.compile(r"[A-Za-z0-9._-]+")
@@ -336,6 +345,8 @@ def check_url(turn, url) -> str:
 
     返回真正要去读的链接：本轮批准过的那个原样的链接，而不是模型传来的写法。等价的写法（http/https、默认端口、
     百分号编码、末尾斜杠）对比对没有区别，对方服务器却看得出来——模型挑写法就能一位一位地往外带信息，所以不用它的。
+    本轮搜索结果里有的，发搜索引擎给的原样链接，不查「疑似令牌或哈希」：链接是搜索引擎给的，模型改不了，夹带不了
+    内部数据（要往外带只能走搜索词，搜索词照旧检查）。只在用户消息里出现过的，全套检查。
     这里只管「链接里的内容能不能发出去」；链接指向哪里（内网、回环、云元数据……）由 web_fetch 防 SSRF 的那一层管。
     """
     state = _state(turn)
@@ -343,11 +354,14 @@ def check_url(turn, url) -> str:
     key = canonical(url)
     if key is None:
         raise Refused("链接无效：要以 http:// 或 https:// 开头", rule="invalid", word=str(url)[:200])
-    allowed = state.get("urls")
-    approved = allowed.get(key) if isinstance(allowed, dict) else None
-    if approved is None:
+    results, given = state.get("results"), state.get("urls")
+    if isinstance(results, dict) and key in results:
+        approved, from_search = results[key], True
+    elif isinstance(given, dict) and key in given:
+        approved, from_search = given[key], False
+    else:
         raise Refused("只能读取本轮搜索结果里的链接或用户本轮消息里给出的链接，这个链接两者都不是；"
                       "请原样使用搜索结果里的链接，不要自己拼接或改写", rule="source", word=str(url)[:200])
-    screen_url(approved)
+    screen_url(approved, tokens=not from_search)
     _check_taint(state, [approved, unquote(approved)], "链接", "读取")
     return approved
