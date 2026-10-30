@@ -98,7 +98,12 @@ flowchart LR
 
 **联网与出网规则。** 联网打开时绑 `web_search`，再打开 `WEB_FETCH` 时多绑 `web_fetch`（读本轮搜索结果或用户给的链接的正文，
 作为 `[W]` 来源接着编号）。两条出网通道——搜索词和链接——发出去之前都过 `egress.py` 的同一套规则：静态拦截、
-本轮数据类调用留下的污点、链接来源、可选的严格模式（`WEB_AFTER_DATA=deny`），见 `docs/工具.md`「出网规则」。
+本轮数据类调用和沙箱输出留下的污点、链接来源、可选的严格模式（`WEB_AFTER_DATA=deny`），见 `docs/工具.md`「出网规则」。
+
+**计算沙箱（`SANDBOX_URL`，默认空）。** 配了才绑计算类工具 `python_exec`：模型写一段 Python，应用把它和本轮数据类调用的
+**完整返回**（图谱里存的那一份，不是给模型看的压缩版）一起发给宿主机上的沙箱服务（`deploy/sandbox/`，`127.0.0.1:8797`，令牌），
+沙箱服务起一个用完即弃的 gVisor 容器：无网络、只读、nobody、256MB、20 秒，数据只读挂在 `/data`。工具说明每次调模型前现算，
+列出本轮此刻有哪些数据文件。应用依旧不挂 `docker.sock`，起容器的权限只在沙箱服务手里。计算类记进图谱，不算观察到系统、不进 SOP、不对外。
 
 ## 对外 MCP 出口（`MCP_ENABLED`，默认关）
 
@@ -211,6 +216,7 @@ app/
 │   ├── web_search.py  联网搜索（经网关）
 │   ├── web_fetch.py   读网页正文（WEB_FETCH）：只读搜索结果和用户给的链接，防 SSRF、限大小和类型、HTML 转正文
 │   ├── egress.py      统一出网规则：搜索词和链接的静态拦截、污点拦截、链接来源、严格模式
+│   ├── sandbox.py     计算类工具 python_exec（SANDBOX_URL）：本轮数据的完整返回作为文件发给沙箱服务，说明每次现算
 │   └── ops_client.py  只读接口客户端
 ├── rag/
 │   ├── chunking.py    切分
@@ -233,6 +239,8 @@ deploy/
 ├── ops_tools.yaml     工具定义的唯一真相源，改完即时生效；顶层 mcp_servers 声明 MCP server
 ├── mcp/               玩具 MCP server holiday_mcp.py（测试 + 演示）与把拼假工具换成 MCP 来源的 holiday_tools.yaml
 ├── demo/              一键演示用的工具 sidecar：Dockerfile.ops + entrypoint.py（按 DEMO_PACKS 生成 include）
+├── sandbox/           计算沙箱：sandbox_service.py（宿主机 systemd 服务，127.0.0.1 + 令牌，每次执行一个 gVisor 一次性容器，
+│                      镜像和限制写死）、Dockerfile + requirements.txt（标准库 + 锁定哈希的 PyYAML）、security_check.py（真实环境安全用例）
 ├── backup.sh          每日备份
 ├── container-guard.sh 内存超阈值才重启容器，配 systemd timer 每天跑一次
 └── embedding/
@@ -263,3 +271,7 @@ packs/                 场景包：每个目录 = pack.yaml + docs/ + tools.yaml
 **MCP 工具不直连应用，仍经宿主机工具服务。** 应用侧只认 `/tools` 和 `/exec`，SOP 校验「只能引用
 当前存在的工具」这条线不用动；审批、只读确认、schema 指纹、输出脱敏也全部复用同一个地方。
 MCP 客户端用标准库手写而不引入 SDK，是为了保住 `ops_readonly.py`「单文件、零依赖、扔到任何主机就能跑」。
+
+**计算沙箱和应用在同一台机器上，用 gVisor 隔离，而不是另开一台。** 模型写的代码跑在 runsc 里，系统调用由 gVisor 的用户态内核
+接住，再加无网络、只读、nobody、限资源；起容器的权限只在沙箱服务手里，它只接受固定镜像和固定参数。代价是一旦逃逸，影响的是整台机器，
+所以并发压在 1–2、单次 256MB，沙箱的输出也照样算出网污点。

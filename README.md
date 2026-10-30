@@ -96,7 +96,7 @@ docker compose up -d --build
 - **多格式入库**：PDF / Word / PPT / Markdown / 纯文本 / 图片，后台入库显示进度；文档内嵌的截图、架构图识别后插回原位，一并可检索。
 - **混合检索 + 重排**：向量 + BM25 两路召回、RRF 融合，交叉编码器精排；回答里的 `[1]` 可点开看原文、来源文件、页码和分数。打开 `KB_TOOLS` 后模型还能自己换说法补查、读片段的前后文。
 - **多轮记忆**：追问自动补全指代；LangGraph 检查点记住工具与搜索的原始返回，追问不必重查。
-- **只读工具**：命令 / 脚本 / HTTP 接口三种，Agent 自行判断要不要查并与知识库对照；新增工具走宿主机审批，改完不用重启。[`docs/工具.md`](docs/工具.md)
+- **只读工具**：命令 / 脚本 / HTTP 接口三种，Agent 自行判断要不要查并与知识库对照；新增工具走宿主机审批，改完不用重启。可选的计算沙箱让模型写 Python 算准统计、比对：只读本轮查到的数据，在无网络的一次性 gVisor 容器里跑。[`docs/工具.md`](docs/工具.md)
 - **SOP**：从文档自动抽取，每步附原句供核对；页面编排启停、一键「▶ 执行」；一次自由排查后可沉淀为 SOP。文档怎么写才抽得准：[`docs/SOP文档写法.md`](docs/SOP文档写法.md)
 - **联网补充**：知识库答不了时经网关搜索，IP、密钥、内网域名在代码层拦截不外发；搜到的答案经人确认可存回知识库。
 - **选模型**：顶栏切换这把 key 有权用的模型；管理页改网关地址、key（只写不读）、对话 / 向量 / 图片模型，保存即生效。
@@ -128,7 +128,7 @@ docker compose up -d --build
 - [x] 自由排查长出 SOP：提议 → 人批准 → 默认停用的 SOP
 - [x] 场景包：文档 + 工具 + SOP 一个目录，拿走就用
 - [x] 一键演示：`docker compose up` 自动导入两个场景包
-- [x] 工具层接 MCP server（第 1 期：stdio 客户端 + 逐个审批与只读确认）；doc2sop 自己作为 MCP server：`/mcp` 对外开放知识库、SOP（工具、提示词、`SKILL.md`）和宿主机标了 `export` 的只读工具，按客户端发令牌、审计、限流（`MCP_ENABLED`，默认关，见 [`docs/工具.md`](docs/工具.md#对外-mcp-出口让-claude-codecopilotcursor-用上知识库和-sop)）；知识检索工具化：`kb_search` / `kb_read` / `kb_catalog` 补查与读前后文、三种检索模式、待办清单 `plan`（默认关，评测达标后再定默认）
+- [x] 工具层接 MCP server（第 1 期：stdio 客户端 + 逐个审批与只读确认）；doc2sop 自己作为 MCP server：`/mcp` 对外开放知识库、SOP（工具、提示词、`SKILL.md`）和宿主机标了 `export` 的只读工具，按客户端发令牌、审计、限流（`MCP_ENABLED`，默认关，见 [`docs/工具.md`](docs/工具.md#对外-mcp-出口让-claude-codecopilotcursor-用上知识库和-sop)）；知识检索工具化：`kb_search` / `kb_read` / `kb_catalog` 补查与读前后文、三种检索模式、待办清单 `plan`（默认关，评测达标后再定默认）；计算沙箱 `python_exec`：模型写 Python 算本轮数据工具的完整返回，宿主机沙箱服务起一次性 gVisor 容器（无网络、只读、限资源），输出照样算出网污点（`SANDBOX_URL`，默认空，见 [`docs/正式部署.md`](docs/正式部署.md#计算沙箱python_exec)）
 
 计划（顺序大致如此，不承诺时间）：
 
