@@ -9,28 +9,33 @@
 提供方：
     ops      工具服务（deploy/ops_readonly.py）下发的工具，全是数据类。新工具服务直接带契约字段；
              老工具服务只有 desc / params（MCP 工具多一份 input_schema），这里按同一规则补齐。
-    app      应用内的工具：现在只有 web_search。
+    app      应用内的工具：web_search（外网类）；kb_search / kb_read / kb_catalog（知识类，KB_TOOLS）；
+             plan（流程类，PLAN_TOOL）。
     sandbox  计算沙箱（还没有）。
 
 权限与统计看类别，不看工具名：
 
-    类别        算「观察到系统」  可进 SOP  对外        绑定给模型
-    data        是                是        看 export   超过 TOOL_LIMIT 时按问题筛选
-    knowledge   否                否        是          固定绑定
-    web         否                否        否          固定绑定（跟随联网开关）
-    compute     否                否        否          固定绑定
-    internal    否                否        否          固定绑定
+    类别        算「观察到系统」  可进 SOP  对外        绑定给模型                         记进图谱
+    data        是                是        看 export   超过 TOOL_LIMIT 时按问题筛选       是
+    knowledge   否                否        是          固定绑定（KB_TOOLS）               是
+    web         否                否        否          固定绑定（跟随联网开关）           是
+    compute     否                否        否          固定绑定                           是
+    internal    否                否        否          固定绑定（PLAN_TOOL）              否
 
 加一个应用内工具：写好契约（_meta.doc2sop 里给 category、provider）和执行函数 run(args, turn)，
 在 APP_TOOLS 里登记一个 AppTool，wanted 决定这一轮绑不绑。loop、graph、grow、main、页面都不用改。
+run 返回给模型看的文字；要把结构化结果留在记忆里，就返回 (文字, artifact)，loop 把 artifact 放进
+ToolMessage——artifact 里的 replay 是往后几轮回放时给模型看的版本。
 
 AGENT_MODE=off 时什么工具都不绑：由入口把关（main 的 use_agent、usable_tools），这里不重复判断。
 """
 import copy
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
+from app.agent import kb_tools as kb
 from app.agent import ops_client, web_search
+from app.agent import plan as plan_tool
 from app.config import log, why
 
 CATEGORIES = ("data", "knowledge", "web", "compute", "internal")
@@ -44,16 +49,20 @@ class Policy:
     selectable: bool            # 工具多时参与按问题筛选、计入 TOOL_LIMIT；否则固定绑定
     limit: int | None = None    # 每轮最多调用几次；到了不执行，返回 limit_note
     limit_note: str = "[未执行] 本轮这类工具已调用 {limit} 次，请基于已有结果作答"
+    record: bool = True         # 调用记不记进图谱（流程类不记）
+    condense: bool = True       # 长输出给模型前要不要按日志的方式压缩（知识片段、清单不压）
 
 
 # 每轮限次：知识 3、外网 2（和以前的联网限次一样）、计算 3。
 POLICIES = {
     "data": Policy(observes=True, sop=True, export=None, selectable=True),
-    "knowledge": Policy(observes=False, sop=False, export=True, selectable=False, limit=3),
+    "knowledge": Policy(observes=False, sop=False, export=True, selectable=False, limit=3,
+                        limit_note="[未执行] 本轮已查了 {limit} 次知识库，不能再查；请基于已有片段作答，"
+                                   "片段里没有的如实说明", condense=False),
     "web": Policy(observes=False, sop=False, export=False, selectable=False, limit=web_search.MAX_SEARCHES,
                   limit_note="[未搜索] 本轮已搜索 {limit} 次，请基于已有结果作答"),
     "compute": Policy(observes=False, sop=False, export=False, selectable=False, limit=3),
-    "internal": Policy(observes=False, sop=False, export=False, selectable=False),
+    "internal": Policy(observes=False, sop=False, export=False, selectable=False, record=False, condense=False),
 }
 
 
@@ -70,10 +79,13 @@ def meta_of(contract) -> dict:
 class TurnOptions:
     """这一轮的开关，决定应用内工具绑不绑。"""
     allow_web: bool = False
+    kb_tools: bool = False      # 知识类：kb_search / kb_read / kb_catalog
+    plan: bool = False          # 流程类：plan
 
 
 class Turn:
-    """一轮对话里工具共享的状态：按类别的调用次数、跨调用续编的编号（[W1]、[W2]…），以及往页面推事件。
+    """一轮对话里工具共享的状态：按类别的调用次数、跨调用续编的编号（[W1]、[W2]…；知识片段的 [9]…），
+    本轮的待办清单，以及往页面推事件。
 
     usage 存在 LangGraph 的 TurnState 里、每轮清零：loop 的 tools 节点进来时建一个 Turn，出去时写回。
     """
@@ -105,7 +117,7 @@ class Binding:
     name: str
     category: str
     schema: dict                              # inputSchema，图谱按里面的 x-entity 播种
-    run: Callable[[dict, Turn], str]
+    run: Callable[[dict, Turn], Any]          # 返回文字，或 (文字, artifact)
 
 
 # --- 应用内提供方 ----------------------------------------------------------------
@@ -114,7 +126,8 @@ class Binding:
 class AppTool:
     """应用内（或沙箱）提供的一个工具。"""
     contract: dict                                       # MCP 的 Tool 格式，_meta.doc2sop 里有 category、provider
-    run: Callable[[dict, Turn], str]                     # 参数原样传入，返回给模型看的文字；可以 turn.emit 推事件
+    run: Callable[[dict, Turn], Any]                     # 参数原样传入，返回给模型看的文字或 (文字, artifact)；
+                                                         # 可以 turn.emit 推事件
     wanted: Callable[[TurnOptions], bool] = lambda options: True   # 这一轮要不要绑
     describe: Callable[[], dict] | None = None           # 说明要每轮现算时用它（只改说明，参数和类别以 contract 为准）
 
@@ -133,6 +146,10 @@ class AppTool:
 APP_TOOLS = (
     AppTool(web_search.TOOL, web_search.run_tool,
             wanted=lambda options: options.allow_web and web_search.enabled()),
+    AppTool(kb.SEARCH, kb.run_search, wanted=lambda options: options.kb_tools, describe=kb.describe_search),
+    AppTool(kb.READ, kb.run_read, wanted=lambda options: options.kb_tools),
+    AppTool(kb.CATALOG, kb.run_catalog, wanted=lambda options: options.kb_tools),
+    AppTool(plan_tool.TOOL, plan_tool.run, wanted=lambda options: options.plan),
 )
 _APP = {tool.name: tool for tool in APP_TOOLS}
 
@@ -142,9 +159,13 @@ def app_tools(options: TurnOptions) -> list:
     return [tool for tool in APP_TOOLS if tool.wanted(options)]
 
 
-def has_tools(allow_web=False) -> bool:
-    """有没有工具可绑（只看配置，不发请求）：有才走 Agent 分支，否则纯知识库问答。"""
-    return ops_client.enabled() or bool(app_tools(TurnOptions(allow_web=allow_web)))
+def has_tools(allow_web=False, kb_tools=False, plan=False) -> bool:
+    """有没有工具可绑（只看配置，不发请求）：有才走 Agent 分支，否则纯知识库问答。
+
+    KB_TOOLS 打开后，没配工具服务、也没开联网的部署也有知识类工具可绑，同样走 Agent 分支。
+    """
+    options = TurnOptions(allow_web=allow_web, kb_tools=kb_tools, plan=plan)
+    return ops_client.enabled() or bool(app_tools(options))
 
 
 def category_of(name) -> str:

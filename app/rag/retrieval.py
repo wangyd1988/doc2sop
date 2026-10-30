@@ -17,7 +17,7 @@ from pathlib import Path
 
 from langsmith import traceable
 
-from app.config import MIN_SCORE, RERANK_CANDIDATES, TOP_K, log
+from app.config import MIN_SCORE, RERANK_CANDIDATES, TOP_K, WEB_NOTE_CATEGORY, log
 from app.rag import lexical, rerank, store
 from app.rag.embedding import EmbeddingError, embed_query
 
@@ -50,17 +50,26 @@ def _location(meta):
 
 
 @traceable(name="知识库检索", run_type="retriever")
-def retrieve(question: str, progress=None):
-    """Return up to TOP_K snippets, each with its source location and score.
+def retrieve(question: str, progress=None, *, top_k=None, category=None, source=None):
+    """Return up to TOP_K snippets, each with its source location, score and chunk id.
 
     `progress(stage)` 可选：开始召回时报 "retrieve"、真要调重排时报 "rerank"，
     问答流靠它把等待态分阶段告诉用户。各段耗时记一行 info 日志，慢在哪一眼能看出来。
+
+    知识类工具 kb_search 还会传 top_k（要几条）和 category / source（只在某个分类、某个文档里找）；
+    两路召回都按同一组文档过滤，低分过滤、重排、向量服务挂了退化为关键词都照旧。
     """
     report = progress or (lambda stage: None)
     report("retrieve")
     total = store.collection.count()
     if total == 0:
         return []
+    allowed = store.sources_for(category, source)
+    if allowed is not None:
+        total = sum(d["chunks"] for d in store.catalog() if d["source"] in allowed)
+        if total == 0:
+            return []
+    keep = TOP_K if top_k is None else max(1, int(top_k))
     timing, clock = {}, time.monotonic()
 
     def lap(name):
@@ -80,9 +89,11 @@ def retrieve(question: str, progress=None):
     # id -> record; rank lists feed the fusion.
     records, vector_rank, lexical_rank = {}, [], []
     if query_vector is not None:
-        result = store.collection.query(
-            query_embeddings=[query_vector], n_results=depth,
-            include=["documents", "metadatas", "distances"])
+        query = {"query_embeddings": [query_vector], "n_results": depth,
+                 "include": ["documents", "metadatas", "distances"]}
+        if allowed is not None:
+            query["where"] = store.where_sources(allowed)
+        result = store.collection.query(**query)
         lap("vector")
         for cid, text, meta, distance in zip(result["ids"][0], result["documents"][0],
                                              result["metadatas"][0], result["distances"][0]):
@@ -90,7 +101,8 @@ def retrieve(question: str, progress=None):
             vector_rank.append(cid)
 
     try:
-        lexical_hits = lexical.search(question, depth)
+        lexical_hits = (lexical.search(question, depth) if allowed is None
+                        else lexical.search(question, depth, sources=allowed))
     except Exception:
         lexical_hits = []
     lap("lexical")
@@ -129,8 +141,8 @@ def retrieve(question: str, progress=None):
     both = set(vector_rank) & set(lexical_rank)
 
     hits = []
-    # 融合后先多留一些给重排（它只看前 RERANK_CANDIDATES 条），没开重排时就是 TOP_K
-    want = max(TOP_K, RERANK_CANDIDATES) if rerank.enabled() else TOP_K
+    # 融合后先多留一些给重排（它只看前 RERANK_CANDIDATES 条），没开重排时就是要的条数
+    want = max(keep, RERANK_CANDIDATES) if rerank.enabled() else keep
     for cid in sorted(fused, key=lambda c: (-fused[c], -(records[c]["score"] or 0))):
         record = records[cid]
         if query_vector is not None and (record["score"] or 0) < MIN_SCORE:
@@ -140,7 +152,8 @@ def retrieve(question: str, progress=None):
                "text": record["text"], "score": record["score"],
                "category": meta.get("category") or "",
                "match": "both" if cid in both else
-                        "lexical" if cid in lexical_rank else "vector"}
+                        "lexical" if cid in lexical_rank else "vector",
+               "id": cid}
         if query_vector is None:
             hit["degraded"] = True
         hits.append(hit)
@@ -148,7 +161,9 @@ def retrieve(question: str, progress=None):
             break
     if rerank.enabled() and len(hits) > 1:
         report("rerank")
-    out = rerank.rerank(question, hits, TOP_K)
+    # 显式要了 top_k（kb_search 最多 20）而重排只看前几条时，其余按融合顺序接在后面
+    out = (rerank.rerank(question, hits, keep) if top_k is None
+           else rerank.rerank(question, hits, keep, tail=True))
     lap("rerank")
     log.info("retrieve: %s candidates=%d hits=%d total=%.0fms%s",
              " ".join(f"{k}={v * 1000:.0f}ms" for k, v in timing.items()),
@@ -157,7 +172,38 @@ def retrieve(question: str, progress=None):
     return out
 
 
-def as_context(hits) -> str:
+RERANK_NOTE = ("（重排分由交叉编码器给出：大于 0 通常相关，小于 -2 基本无关；它比相似度可靠得多，"
+               "全部为负时应判断为知识库没有相关内容）")
+
+
+def context_notes(hits) -> str:
+    """片段列表前面的说明：降级为只按关键词召回、重排分怎么看。"""
+    note = ""
+    if any(h.get("degraded") for h in hits):
+        note = f"（{DEGRADED_NOTE}；片段是否相关只能看内容本身）\n\n"
+    if any(h.get("rerank") is not None for h in hits):
+        note += RERANK_NOTE + "\n\n"
+    return note
+
+
+def format_hit(h, ids=False) -> str:
+    """一个片段给模型看的样子：「[n] 来源：…（相似度…，重排分…）」加正文。
+
+    ids=True（知识类工具打开时）再带上片段 id，模型才能用 kb_read 读它的前后文；
+    「网络补充」分类的片段同时标「来自网络，未核实」。
+    """
+    notes = [f"相似度 {h['score']:.2f}" if h.get("score") is not None else "相似度 —"]
+    if h.get("rerank") is not None:
+        notes.append(f"重排分 {h['rerank']:.1f}")
+    if ids and h.get("category") == WEB_NOTE_CATEGORY:
+        notes.insert(0, "来自网络，未核实")
+    line = f"[{h['index']}] 来源：{h['location']}（{'，'.join(notes)}）"
+    if ids and h.get("id"):
+        line += f" id={h['id']}"
+    return f"{line}\n{h['text']}"
+
+
+def as_context(hits, ids=False) -> str:
     """Format snippets so the model can cite them by [number].
 
     The similarity is included so the model can weigh it — but only as a hint:
@@ -165,17 +211,7 @@ def as_context(hits) -> str:
     """
     if not hits:
         return "（这次没有检索到相关片段）"
-    note = ""
-    if any(h.get("degraded") for h in hits):
-        note = f"（{DEGRADED_NOTE}；片段是否相关只能看内容本身）\n\n"
-    if any(h.get("rerank") is not None for h in hits):
-        note += ("（重排分由交叉编码器给出：大于 0 通常相关，小于 -2 基本无关；它比相似度可靠得多，"
-                 "全部为负时应判断为知识库没有相关内容）\n\n")
-    return note + "\n\n".join(
-        f"[{h['index']}] 来源：{h['location']}（"
-        + (f"相似度 {h['score']:.2f}" if h.get("score") is not None else "相似度 —")
-        + (f"，重排分 {h['rerank']:.1f}" if h.get("rerank") is not None else "") + f"）\n{h['text']}"
-        for h in hits)
+    return context_notes(hits) + "\n\n".join(format_hit(h, ids) for h in hits)
 
 
 # 「知识库里都有什么」这类问题问的是全局，8 个片段答不了；要看文档目录。

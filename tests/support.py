@@ -38,6 +38,23 @@ class FakeReply:
         self.content = content
 
 
+def _matches(meta, where):
+    """Chroma 的 where 子集：等值、$in、$and。"""
+    if not where:
+        return True
+    if "$and" in where:
+        return all(_matches(meta, clause) for clause in where["$and"])
+    for key, cond in where.items():
+        if isinstance(cond, dict):
+            if "$in" in cond and meta.get(key) not in cond["$in"]:
+                return False
+            if "$eq" in cond and meta.get(key) != cond["$eq"]:
+                return False
+        elif meta.get(key) != cond:
+            return False
+    return True
+
+
 class FakeCollection:
     """In-memory Chroma substitute backed by a plain dict: id -> (document, metadata[, embedding])."""
 
@@ -48,8 +65,7 @@ class FakeCollection:
 
     def get(self, where=None, ids=None, include=None, **kwargs):
         items = [(i, d, m) for i, (d, m) in self.store.items()
-                 if (not where or m.get("source") == where["source"])
-                 and (ids is None or i in ids)]
+                 if _matches(m, where) and (ids is None or i in ids)]
         out = {"ids": [i for i, _, _ in items],
                "documents": [d for _, d, _ in items],
                "metadatas": [m for _, _, m in items]}
@@ -77,8 +93,9 @@ class FakeCollection:
 
     def query(self, **kwargs):
         self.last_query = kwargs
-        size = min(kwargs["n_results"], len(self.store))
-        items = list(self.store.items())[:size]
+        items = [(i, (d, m)) for i, (d, m) in self.store.items() if _matches(m, kwargs.get("where"))]
+        size = min(kwargs["n_results"], len(items))
+        items = items[:size]
         return {"ids": [[i for i, _ in items]],
                 "documents": [[d for _, (d, _) in items]],
                 "metadatas": [[m for _, (_, m) in items]],

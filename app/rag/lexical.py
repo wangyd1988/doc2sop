@@ -46,12 +46,14 @@ class _Index:
         n = len(texts)
         self.idf = {term: math.log(1 + (n - d + 0.5) / (d + 0.5)) for term, d in df.items()}
 
-    def search(self, query: str, limit: int):
+    def search(self, query: str, limit: int, sources=None):
         terms = [t for t in set(tokenize(query)) if t in self.idf]
         if not terms:
             return []
         scores = []
         for i, counter in enumerate(self.tf):
+            if sources is not None and self.metas[i].get("source") not in sources:
+                continue
             s = 0.0
             norm = K1 * (1 - B + B * self.lengths[i] / self.avg)
             for term in terms:
@@ -69,8 +71,8 @@ _index = None
 _built_for = -1
 
 
-def search(query: str, limit: int):
-    """Top `limit` chunks by BM25 as (id, text, meta, score)."""
+def search(query: str, limit: int, sources=None):
+    """Top `limit` chunks by BM25 as (id, text, meta, score). `sources` 给了就只在这些文档里找。"""
     global _index, _built_for
     with _lock:
         if _index is None or _built_for != store.version():
@@ -78,4 +80,4 @@ def search(query: str, limit: int):
             _index = _Index(got["ids"], got["documents"] or [], got["metadatas"] or [])
             _built_for = store.version()
         index = _index
-    return index.search(query, limit)
+    return index.search(query, limit, sources)

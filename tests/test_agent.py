@@ -613,7 +613,8 @@ class AgentLoopTests(unittest.TestCase):
         tool = FakeTool("container_logs")
         forever = [([{"name": "container_logs", "args": {"name": "a"}, "id": "x"}], "")] * 20
         events = self.run_agent(forever, [tool])
-        self.assertEqual(len(tool.calls), agent_loop.MAX_ROUNDS)
+        # 只有数据类工具时沿用原来的 4 轮（MAX_ROUNDS=8 只在知识类、流程类工具绑上时生效）
+        self.assertEqual(len(tool.calls), agent_loop.BASE_ROUNDS)
         # 收口那一轮仍然调了工具，所以最后一个事件是 tool_result 而不是 delta。
         self.assertEqual(events[-1][0], "tool_result")
 

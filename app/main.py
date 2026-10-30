@@ -2,6 +2,7 @@
 import contextvars
 import hashlib
 import json
+import os
 import queue
 import re
 import secrets
@@ -11,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
@@ -21,9 +22,9 @@ from app.agent import grow
 from app.agent import loop as agent_loop
 from app.agent import ops_client, registry, web_search
 from app.agent.extract import extract as extract_playbooks
-from app.config import (AGENT_MODE, ALLOWED_SUFFIXES, CATEGORY_MAX, BOT_NAME,
-                        FILES_DIR, IMAGE_SUFFIXES, MAX_FILE_BYTES, WEB_PASSWORD, WEB_USER,
-                        log)
+from app.config import (AGENT_MODE, ALLOWED_SUFFIXES, CATEGORY_MAX, BOT_NAME, DATA_DIR, EVAL_TOKEN,
+                        FILES_DIR, IMAGE_SUFFIXES, KB_RETRIEVAL_MODE, KB_TOOLS, MAX_FILE_BYTES, PLAN_TOOL,
+                        WEB_NOTE_CATEGORY, WEB_PASSWORD, WEB_USER, log)
 from app.ingest.extract import ExtractionError, extract_pages
 from app.ingest.vision import ImageCollector
 from app.rag import store
@@ -180,7 +181,6 @@ def ingest(name: str, data: bytes, category: str = "", report=lambda stage: None
 # 只能由用户在页面上点按钮触发，模型自己不能往知识库里写东西——
 # 否则一次被网页内容带偏的回答就会变成"团队知识"，以后每次都被当成权威引用。
 
-WEB_NOTE_CATEGORY = "网络补充"
 CITE_KB = re.compile(r"\[(\d{1,2})\]")
 # 回答开头那句「知识库里没有找到……以下来自网络搜索」，存进知识库后就成了错误信息。
 WEB_PREAMBLE = re.compile(r"^\s*(?:\*\*)?知识库(?:里|中)没有[^\n]*\n+")
@@ -741,6 +741,72 @@ class Question(BaseModel):
     model: str | None = Field(default=None, max_length=120)
     # 「▶ 执行」发起的提问带上 SOP 的 id：这一轮在图谱里就记为一次 SOP 执行，而不只是一次提问。
     playbook_id: str | None = Field(default=None, max_length=64)
+    # 只供评测（eval/run_eval.py --mode）：按请求覆盖检索模式和 KB_TOOLS。要带 X-Eval-Token，见 retrieval_switches。
+    retrieval_mode: Literal["prefetch", "forced", "agentic"] | None = None
+    kb_tools: bool | None = None
+
+
+# --- 评测按请求覆盖检索模式 ------------------------------------------------------
+#
+# 评测要在同一个部署上对比三种检索模式，所以 /api/ask 允许按请求覆盖 KB_RETRIEVAL_MODE 和 KB_TOOLS。
+# 它不能成为绕过配置的口子：
+#   - 要带评测令牌（X-Eval-Token）。令牌是 EVAL_TOKEN，或者应用生成在 DATA_DIR/eval_token 里的随机串
+#     （权限 600）——只有能登录宿主机的人拿得到，光有页面密码不行；
+#   - 只能在这两个开关之间选：联网照旧看 web 和服务端配置，数据类工具照旧看工具服务，计划工具看 PLAN_TOOL；
+#   - AGENT_MODE=off 时直接拒绝：那时什么工具都不绑，覆盖不能把它打开。
+
+EVAL_TOKEN_FILE = DATA_DIR / "eval_token"
+
+
+def eval_token() -> str:
+    """评测令牌：配了 EVAL_TOKEN 就用它；否则用 DATA_DIR/eval_token，没有就生成一个。拿不到返回空串（覆盖一律拒绝）。"""
+    if EVAL_TOKEN:
+        return EVAL_TOKEN
+    try:
+        return EVAL_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        log.warning("eval token unreadable: %s", exc)
+        return ""
+    token = secrets.token_urlsafe(32)
+    try:
+        fd = os.open(EVAL_TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(token + "\n")
+    except FileExistsError:
+        return EVAL_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        log.warning("eval token not created: %s", exc)
+        return ""
+    return token
+
+
+def retrieval_switches(payload: Question, token: str | None):
+    """这一轮的 (KB_TOOLS, 检索模式)：默认取配置；带了覆盖字段就先核对评测令牌。"""
+    kb_on, mode = KB_TOOLS, KB_RETRIEVAL_MODE
+    if payload.retrieval_mode is None and payload.kb_tools is None:
+        return kb_on, mode
+    expected = eval_token()
+    if not token or not expected or not secrets.compare_digest(token.encode(), expected.encode()):
+        raise HTTPException(403, "按请求覆盖检索模式只供评测，要带宿主机上的评测令牌（X-Eval-Token）")
+    if AGENT_MODE == "off":
+        raise HTTPException(409, "AGENT_MODE=off 时不绑定任何工具，不能覆盖检索模式")
+    if payload.kb_tools is not None:
+        kb_on = payload.kb_tools
+    if payload.retrieval_mode is not None:
+        mode = payload.retrieval_mode
+    log.info("eval override: kb_tools=%s mode=%s", kb_on, mode)
+    return kb_on, mode
+
+
+eval_token()   # 启动时就生成好，评测脚本在宿主机上直接读文件
+
+# 「继续」「好的」这类确认语不检索，提示词里的知识库片段换成这句。知识类工具打开时补查的片段会从 [1] 重新编号，
+# 不能再让模型沿用上一轮的编号。
+CONTINUATION = "（本轮是对上一轮的确认，没有重新检索；沿用上一轮的知识库依据和编号）"
+CONTINUATION_KB = ("（本轮是对上一轮的确认，没有重新检索：上一轮查到的内容在对话历史里，可以直接用，说明是前面查到的；"
+                   "要引用片段编号就用 kb_search 重新检索）")
 
 
 @app.post("/api/retrieve")
@@ -776,7 +842,7 @@ def _with_stages(fn, *args):
 
 
 @app.post("/api/ask")
-def ask(payload: Question):
+def ask(payload: Question, x_eval_token: str | None = Header(default=None)):
     if not settings.configured():
         raise HTTPException(503, settings.NOT_CONFIGURED)
     question = payload.question.strip()
@@ -789,6 +855,7 @@ def ask(payload: Question):
         raise HTTPException(400, str(exc))
     if payload.playbook_id and not playbooks.get(payload.playbook_id):
         raise HTTPException(404, "SOP 不存在")
+    kb_on, mode = retrieval_switches(payload, x_eval_token)
 
     history = conversations.recent_history(conversation_id) if conversation_id else []
     # Create the conversation first so the trace carries its real id from the very first turn.
@@ -798,11 +865,22 @@ def ask(payload: Question):
     conversation_id = conversation["id"]
 
     root = start_root_run(question, conversation_id)
-    overview = is_overview(question)
-    continuation = is_continuation(question, history)
     # Tools are opt-in and degrade gracefully: nothing to bind (no ops endpoint, web off) means plain RAG.
     allow_web = AGENT_MODE != "off" and payload.web and web_search.enabled()
-    use_agent = AGENT_MODE != "off" and registry.has_tools(allow_web)
+    plan_on = PLAN_TOOL
+    use_agent = AGENT_MODE != "off" and registry.has_tools(allow_web, kb_tools=kb_on, plan=plan_on)
+    if not use_agent:
+        kb_on = plan_on = False
+    # 检索模式只在知识类工具绑上时才有意义；forced 遇到已知不支持 tool_choice 的模型直接按 prefetch 走
+    if not kb_on or (mode == "forced" and agent_loop.forced_unsupported(model_name)):
+        mode = "prefetch"
+    # 「知识库里有什么」答案来自文档目录；「继续」是在回应上一轮——两者都不检索、也不强制检索。
+    # agentic 去掉这两条正则：确认语靠对话记忆接着做，概览问题模型自己调 kb_catalog。
+    overview = mode != "agentic" and is_overview(question)
+    continuation = mode != "agentic" and is_continuation(question, history)
+    prefetching = mode == "prefetch" and not (overview or continuation)
+    force = mode == "forced" and not (overview or continuation)
+    playbook = playbooks.get(payload.playbook_id) if plan_on and payload.playbook_id else None
     # 图谱里的这一轮：工具的完整返回、最终结论质量、人工反馈都挂在它下面
     execution_id = graph.start_execution(conversation_id, question, payload.playbook_id)
 
@@ -811,8 +889,9 @@ def ask(payload: Question):
 
         检索放在流里做：首行先发出去，等待期间页面能看到「改写 → 检索 → 重排 → 思考」在推进，
         而不是对着一个转圈等十几秒。代价是检索失败不能再回 502，只能作为 error 事件发出。
+        forced / agentic 模式不预检索，sources 是空的；补查到的片段随 kb_sources 追加。
         """
-        answer, failure, tool_calls, web_hits, message_id = "", None, [], [], None
+        answer, failure, tool_calls, web_hits, kb_hits, message_id = "", None, [], [], [], None
         search_query, hits = question, []
         started = time.monotonic()
         retrieved_at = first_token_at = None
@@ -820,16 +899,31 @@ def ask(payload: Question):
         def line(**event):
             return json.dumps(event, ensure_ascii=False) + "\n"
 
+        def fallback(emit):
+            """forced 模式退回 prefetch：照预检索的方式改写、检索一次（在 Agent 循环里调）。"""
+            nonlocal search_query
+            if history:
+                emit(("stage", "rewrite"))
+            search_query = rewrite_question(question, history)
+            return retrieve(search_query, progress=lambda stage: emit(("stage", stage)))
+
         try:
-            yield line(conversation=conversation, model=model_name, execution_id=execution_id)
+            # 知识类工具打开时，首行带上这一轮实际的检索模式（forced 遇到不支持 tool_choice 的模型会降成 prefetch），
+            # 评测据此核对跑的是不是它要的模式；关着时首行和以前一样
+            first = {"conversation": conversation, "model": model_name, "execution_id": execution_id}
+            if kb_on:
+                first["retrieval_mode"] = mode
+            yield line(**first)
             try:
                 with traced_under(root):
-                    # 「知识库里有什么」答案来自文档目录；「继续」是在回应上一轮——两者都不用检索
-                    if not (overview or continuation):
+                    if prefetching:
                         if history:
                             yield line(stage="rewrite")
                         search_query = rewrite_question(question, history)
                         hits = yield from _with_stages(retrieve, search_query)
+                        if not kb_on:
+                            # 片段 id 只给知识类工具用；关着时来源和以前一字不差
+                            hits = [{k: v for k, v in hit.items() if k != "id"} for hit in hits]
             except Exception as exc:
                 failure = f"检索失败：{exc.__class__.__name__}"
                 yield line(error=failure)
@@ -838,8 +932,9 @@ def ask(payload: Question):
             yield line(sources=hits)
             conversations.add_message(conversation_id, "user", question)
             context = (catalog_context() if overview
-                       else "（本轮是对上一轮的确认，没有重新检索；沿用上一轮的知识库依据和编号）" if continuation
-                       else as_context(hits))
+                       else (CONTINUATION_KB if kb_on else CONTINUATION) if continuation
+                       else as_context(hits, ids=kb_on) if prefetching
+                       else None)
             yield line(stage="think")
 
             if use_agent:
@@ -851,7 +946,11 @@ def ask(payload: Question):
                                                             allow_web=allow_web,
                                                             thread_id=conversation_id,
                                                             model=model_name,
-                                                            execution_id=execution_id):
+                                                            execution_id=execution_id,
+                                                            kb_tools=kb_on, plan=plan_on, hits=hits,
+                                                            force_search=force,
+                                                            prefetch=fallback if force else None,
+                                                            playbook=playbook):
                             if kind == "delta":
                                 answer += payload
                                 first_token_at = first_token_at or time.monotonic()
@@ -871,6 +970,11 @@ def ask(payload: Question):
                                         break
                             elif kind == "web_sources":
                                 web_hits.extend(payload)
+                            elif kind == "kb_sources":
+                                kb_hits.extend(payload)
+                            elif kind == "sources":
+                                # forced 模式退回 prefetch 时的预检索结果：和平时的 sources 一样整体替换
+                                hits, retrieved_at = list(payload), time.monotonic()
                             yield json.dumps({kind: payload}, ensure_ascii=False) + "\n"
                 except Exception as exc:
                     failure = f"工具调用流程失败：{exc.__class__.__name__}"
@@ -890,8 +994,9 @@ def ask(payload: Question):
                     yield line(error=failure)
 
             if answer.strip():
+                # 补查到的片段和预检索片段一起存进来源，回放对话照常显示
                 message_id = conversations.add_message(conversation_id, "assistant", answer,
-                                                       hits + web_hits, model=model_name,
+                                                       hits + kb_hits + web_hits, model=model_name,
                                                        tools=tool_calls)
         finally:
             try:
@@ -907,17 +1012,19 @@ def ask(payload: Question):
             if started_new and message_id is None:
                 conversations.delete(conversation_id)
             now = time.monotonic()
-            log.info("ask %s: retrieve=%s first_token=%s total=%.1fs tools=%d model=%s%s",
+            log.info("ask %s: retrieve=%s first_token=%s total=%.1fs tools=%d model=%s%s%s",
                      conversation_id[:8],
                      f"{retrieved_at - started:.1f}s" if retrieved_at else "-",
                      f"{first_token_at - started:.1f}s" if first_token_at else "-",
                      now - started, len(tool_calls), model_name,
+                     f" kb={mode}+{len(kb_hits)}" if kb_on else "",
                      f" failure={failure}" if failure else "")
-            finish_root_run(root, outputs={"answer": answer, "search_query": search_query,
-                                           "sources": len(hits), "web_sources": len(web_hits),
-                                           "model": model_name,
-                                           "tools_used": [c["tool"] for c in tool_calls]},
-                            error=failure)
+            outputs = {"answer": answer, "search_query": search_query,
+                       "sources": len(hits), "web_sources": len(web_hits),
+                       "model": model_name, "tools_used": [c["tool"] for c in tool_calls]}
+            if kb_on:
+                outputs.update(retrieval_mode=mode, kb_sources=len(kb_hits))
+            finish_root_run(root, outputs=outputs, error=failure)
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
 

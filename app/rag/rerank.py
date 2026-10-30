@@ -38,12 +38,15 @@ def _post(url, payload):
 
 
 @traceable(name="重排", run_type="retriever")
-def rerank(question: str, hits: list, keep: int) -> list:
+def rerank(question: str, hits: list, keep: int, tail: bool = False) -> list:
     """Return `hits` re-ordered by cross-encoder score, trimmed to `keep`.
 
     Only the first RERANK_CANDIDATES hits are scored; the rest are dropped (they
     were already the weakest by fused rank). Each kept hit gains `rerank` (the raw
     score) and `match` is left as-is. On any failure the input order is returned.
+
+    tail=True（kb_search 显式要了 top_k）且 keep 比重排看的条数多时，没打分的按融合顺序接在后面，
+    条数才够；默认路径不受影响。
     """
     if not enabled() or len(hits) <= 1:
         return hits[:keep]
@@ -64,6 +67,8 @@ def rerank(question: str, hits: list, keep: int) -> list:
         hit = dict(pool[i])
         hit["rerank"] = round(score, 3)
         out.append(hit)
+    if tail:
+        out += [dict(h) for h in hits[len(pool):keep]]
     for n, hit in enumerate(out, 1):
         hit["index"] = n
     return out

@@ -80,6 +80,24 @@ OPS_URL = os.environ.get("OPS_URL", "").strip()
 OPS_TOKEN = os.environ.get("OPS_TOKEN", "").strip()
 AGENT_MODE = os.environ.get("AGENT_MODE", "auto").strip().lower()
 
+# --- Knowledge tools and plan (docs/工具.md「知识类工具」) -------------------------
+# KB_TOOLS 打开后模型能自己补查知识库（kb_search / kb_read / kb_catalog）；没有工具服务、也没开联网的部署
+# 也会因此走 Agent 分支。KB_RETRIEVAL_MODE 只在 KB_TOOLS 打开时起作用：
+#   prefetch  代码先检索一次、片段放进提示词，不够时模型补查（默认）
+#   forced    不预检索，第一轮强制模型调 kb_search；模型不支持指定 tool_choice 时退回 prefetch
+#   agentic   不预检索，查不查由模型决定
+_TRUE = ("true", "1", "yes")
+KB_TOOLS = os.environ.get("KB_TOOLS", "").strip().lower() in _TRUE
+RETRIEVAL_MODES = ("prefetch", "forced", "agentic")
+KB_RETRIEVAL_MODE = os.environ.get("KB_RETRIEVAL_MODE", "prefetch").strip().lower()
+# 待办清单工具 plan：长 SOP 不漏步，「▶ 执行」时按 SOP 步骤预填
+PLAN_TOOL = os.environ.get("PLAN_TOOL", "").strip().lower() in _TRUE
+# 评测按请求覆盖检索模式（eval/run_eval.py --mode）要带的令牌。留空时应用启动时生成一个，
+# 写在 DATA_DIR/eval_token（权限 600），只有能登录宿主机的人读得到。
+EVAL_TOKEN = os.environ.get("EVAL_TOKEN", "").strip()
+# 联网搜索得到、人确认后存回知识库的文档归在这个分类；知识类工具给模型看时标「来自网络，未核实」
+WEB_NOTE_CATEGORY = "网络补充"
+
 # --- Web search (through the gateway) ----------------------------------------
 # Name of a LiteLLM search tool (config.yaml `search_tools`). Empty disables web
 # search. Going through the gateway means it also works on intranets that can
@@ -112,6 +130,10 @@ if not log.handlers:
     log.addHandler(_handler)
     log.setLevel(logging.INFO)
     log.propagate = False
+
+if KB_RETRIEVAL_MODE not in RETRIEVAL_MODES:
+    log.warning("KB_RETRIEVAL_MODE=%s is not one of %s, using prefetch", KB_RETRIEVAL_MODE, "/".join(RETRIEVAL_MODES))
+    KB_RETRIEVAL_MODE = "prefetch"
 
 
 def why(exc: Exception) -> str:
