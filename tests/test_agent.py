@@ -1025,9 +1025,16 @@ class ManagementTests(unittest.TestCase):
         self.assertEqual(ops.all_tools()["one"]["argv"], ["free", "-m"])
 
     def test_display_name_never_reaches_the_model(self):
+        """中文显示名只给界面和对外出口用（契约里的 title），发给模型的函数定义里没有它。"""
+        from langchain_core.utils.function_calling import convert_to_openai_tool
         ops.set_override("one", label="内存概览")
         advertised = ops.available_tools()["one"]
-        self.assertEqual(sorted(advertised), ["desc", "params"])
+        # /tools 只增不改：老字段仍是 desc、params，统一契约的字段另加
+        self.assertEqual(sorted(advertised),
+                         ["_meta", "annotations", "desc", "inputSchema", "params", "title"])
+        self.assertEqual(advertised["title"], "内存概览")
+        shown = convert_to_openai_tool(agent_tools.build_tools({"one": advertised})[0])
+        self.assertNotIn("内存概览", json.dumps(shown, ensure_ascii=False))
 
     def test_a_broken_overrides_file_does_not_lose_the_tools(self):
         self.overrides_file().write_text("overrides: [not a mapping]\n", encoding="utf-8")

@@ -862,6 +862,93 @@ def _mcp_params(spec):
     return _params_from_schema(_live_schema(spec), spec["restrict"])
 
 
+# ---- 统一工具契约 -------------------------------------------------------------
+# /tools 只增不改：每个工具在 desc、params（MCP 工具还有 input_schema）之外，按 MCP 的 Tool 格式多回
+# title、inputSchema、annotations、_meta（项目扩展 _meta.doc2sop）。新应用按 inputSchema 生成签名，
+# 老应用不认识这些字段，照旧用 params。这里下发的工具全是「数据类」：观察真实系统，可以写进 SOP。
+#
+# 老写法的参数在这里转成 JSON Schema：正则按预置名填进 pattern（配置文件里仍然只能写预置名），
+# 预置名本身放在 x-pattern；参数值是哪类对象的名字放在 x-entity，图谱据此播种实体。
+ENTITY_PATTERNS = ("name", "k8s_name")
+
+
+def _entity_of(key, pattern):
+    """参数值是哪类对象的名字（x-entity）。只认这两种预置正则，再按参数名分：
+
+    namespace 一律是命名空间；其余 K8s 名字统一算 k8s_object（Pod 日志和 describe 看到的是同一个对象）；
+    容器名一类的 name 就是容器，别的参数名（pod、service……）本身就是类别。
+    应用侧 app/agent/registry.py 的 entity_of 是同一条规则，给只回 params 的老工具服务兜底，要改两边一起改。
+    """
+    if pattern not in ENTITY_PATTERNS:
+        return None
+    if key == "namespace":
+        return "namespace"
+    if pattern == "k8s_name":
+        return "k8s_object"
+    return "container" if key == "name" else key
+
+
+def _mark_pattern(prop, key, pattern):
+    prop["x-pattern"] = pattern
+    entity = _entity_of(key, pattern)
+    if entity:
+        prop["x-entity"] = entity
+
+
+def _param_schema(key, spec):
+    """老写法的一个参数 → (JSON Schema 属性, 是否必填)。
+
+    必填与默认值照应用侧老签名的规则：带默认值的 int 即使标了 required 也按非必填处理（缺参时应用把
+    默认值发过来）。这样新旧两条路生成的签名、发给 /exec 的参数都一模一样。
+    """
+    prop = {"type": "integer" if spec["type"] == "int" else "string", "description": spec.get("desc", "")}
+    if spec["type"] == "int":
+        prop["minimum"], prop["maximum"] = spec["min"], spec["max"]
+    else:
+        prop["pattern"] = PATTERNS[spec["pattern"]].pattern
+        _mark_pattern(prop, key, spec["pattern"])
+    if "default" in spec:
+        prop["default"] = spec["default"]
+    return prop, spec["required"] and "default" not in spec
+
+
+def _input_schema(spec):
+    if spec.get("type") == "mcp":
+        # server 的 schema 原样下发（拷一份，不改 server 那份）；管理员收紧项里的预置正则同样标出来
+        schema = json.loads(json.dumps(_live_schema(spec)))
+        properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        for key, rule in spec["restrict"].items():
+            if "pattern" in rule and isinstance(properties.get(key), dict):
+                _mark_pattern(properties[key], key, rule["pattern"])
+        return schema
+    properties, required = {}, []
+    for key, param in spec["params"].items():
+        properties[key], needed = _param_schema(key, param)
+        if needed:
+            required.append(key)
+    schema = {"type": "object", "properties": properties}
+    if required:
+        schema["required"] = required
+    return schema
+
+
+def _contract(name, spec):
+    """一个工具在 MCP Tool 格式里多出来的字段（name、description 就是 /tools 的键和 desc）。"""
+    open_world = False
+    if spec.get("type") == "mcp":
+        live = _mcp_state(spec)[2] or {}
+        open_world = (live.get("annotations") or {}).get("openWorldHint") is True
+    return {
+        "title": spec.get("label") or name,
+        "inputSchema": _input_schema(spec),
+        # 这里下发的都是只读工具：命令有写动词黑名单，接口只许 GET，MCP 工具执行前要有只读依据
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": open_world},
+        # export（能否出现在对外 MCP）要等对外出口做好后由主配置标，现在一律 false
+        "_meta": {"doc2sop": {"category": "data", "provider": "ops", "export": False,
+                              "group": spec.get("group", "")}},
+    }
+
+
 def available_tools():
     """Only advertise enabled tools that can actually run on this host."""
     out = {}
@@ -873,6 +960,7 @@ def available_tools():
             # 应用侧有 input_schema 就按它生成完整的 pydantic 模型（嵌套、枚举、必填都在）
             entry["input_schema"] = _live_schema(spec)
             entry["params"] = _mcp_params(spec)
+        entry.update(_contract(name, spec))
         out[name] = entry
     return out
 
