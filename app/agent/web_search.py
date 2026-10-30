@@ -4,18 +4,20 @@ The agent calls this when the knowledge base cannot fully answer a question.
 Two things matter more than result quality:
 
 1. **Nothing internal leaves the building.** The query is screened in code, not
-   just by prompt: IP addresses, hostnames on private domains, anything that
-   looks like a credential, and configured internal names are refused outright.
+   just by prompt (egress.py, the unified egress rules shared with web_fetch):
+   IP addresses, hostnames on private domains, anything that looks like a
+   credential, configured internal names, and identifiers this turn's data tools
+   touched are refused outright.
 2. **Web content is untrusted.** Results come back as plain quoted text with
    their URLs, numbered [W1], [W2]… so they can never be confused with the
    knowledge base, and the prompt tells the model to ignore any instructions in them.
 """
 import json
-import re
 import urllib.error
 import urllib.request
 
 from app import settings
+from app.agent import egress
 from app.config import (WEB_SEARCH_BLOCKLIST,
                         WEB_SEARCH_MAX_RESULTS, WEB_SEARCH_TOOL, log, why)
 
@@ -40,18 +42,9 @@ TOOL = {
     "_meta": {"doc2sop": {"category": "web", "provider": "app", "export": False, "group": "联网"}},
 }
 
-# 发出去之前在代码里拦一道：这些内容一旦进了公共搜索引擎就收不回来了。
-LEAK_PATTERNS = [
-    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "IP 地址"),
-    (re.compile(r"\b(?:sk|tvly|ghp|gho|xox[abp]|AKIA)[-_][A-Za-z0-9_-]{8,}", re.I), "疑似密钥"),
-    (re.compile(r"\b[A-Za-z0-9_-]{32,}\b"), "疑似令牌或哈希"),
-    (re.compile(r"\b[\w.-]+\.(?:internal|intranet|local|lan|corp)\b", re.I), "内网域名"),
-    (re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+"), "邮箱地址"),
-]
-
-
-class SearchRefused(ValueError):
-    """The query would leak something; explained in Chinese for the model to relay."""
+# 发出去之前在代码里拦一道（静态拦截，规则在 egress.py，web_fetch 的链接用同一套）。
+LEAK_PATTERNS = egress.LEAK_PATTERNS
+SearchRefused = egress.Refused   # The query would leak something; explained in Chinese for the model to relay.
 
 
 def enabled() -> bool:
@@ -63,13 +56,7 @@ def screen(query: str) -> str:
     query = " ".join(str(query or "").split())[:MAX_QUERY]
     if not query:
         raise SearchRefused("搜索词为空")
-    for pattern, label in LEAK_PATTERNS:
-        if pattern.search(query):
-            raise SearchRefused(f"搜索词里含有{label}，为防止内部信息外泄，已拒绝上网搜索")
-    lowered = query.lower()
-    for word in WEB_SEARCH_BLOCKLIST:
-        if word.lower() in lowered:
-            raise SearchRefused(f"搜索词里含有内部名词「{word}」，为防止内部信息外泄，已拒绝上网搜索")
+    egress.screen(query, blocklist=WEB_SEARCH_BLOCKLIST)
     return query
 
 
@@ -125,14 +112,21 @@ def describe_failure(exc: Exception) -> str:
 
 
 def run_tool(args, turn) -> str:
-    """注册表执行 web_search：搜索词先过 screen()，结果按 [W] 接着本轮的编号往下编，并推 web_sources 卡片。
+    """注册表执行 web_search：搜索词先过统一出网规则（严格模式、静态拦截、污点拦截，见 egress.py），
+    结果按 [W] 接着本轮的编号往下编，并推 web_sources 卡片；结果里的链接本轮可以用 web_fetch 读。
 
     拒绝和失败都以文字返回（[未搜索] / [搜索失败]），不抛异常；每轮限次由注册表按外网类统一做。
     """
     try:
-        _, found = search(args.get("query", ""))
+        query = " ".join(str(args.get("query") or "").split())[:MAX_QUERY]
+        egress.check_query(turn, query)
+        _, found = search(query)
     except Exception as exc:
+        if isinstance(exc, egress.Refused):
+            # 看误拦多不多、要不要加白名单靠这一行（日志只在本机）
+            log.info("web search refused by egress rule %s: %s", exc.rule, exc.word)
         return describe_failure(exc)
+    egress.allow_urls(turn, [r["url"] for r in found])
     first = turn.number("web_count", len(found))
     sources = [{"index": f"W{first + i}", "location": r["title"], "url": r["url"],
                 "text": r["snippet"], "web": True} for i, r in enumerate(found)]

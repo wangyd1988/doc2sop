@@ -9,18 +9,20 @@
 提供方：
     ops      工具服务（deploy/ops_readonly.py）下发的工具，全是数据类。新工具服务直接带契约字段；
              老工具服务只有 desc / params（MCP 工具多一份 input_schema），这里按同一规则补齐。
-    app      应用内的工具：web_search（外网类）；kb_search / kb_read / kb_catalog（知识类，KB_TOOLS）；
-             plan（流程类，PLAN_TOOL）。
+    app      应用内的工具：web_search、web_fetch（外网类，web_fetch 要 WEB_FETCH）；kb_search / kb_read /
+             kb_catalog（知识类，KB_TOOLS）；plan（流程类，PLAN_TOOL）。
     sandbox  计算沙箱（还没有）。
 
 权限与统计看类别，不看工具名：
 
-    类别        算「观察到系统」  可进 SOP  对外        绑定给模型                         记进图谱
-    data        是                是        看 export   超过 TOOL_LIMIT 时按问题筛选       是
-    knowledge   否                否        是          固定绑定（KB_TOOLS）               是
-    web         否                否        否          固定绑定（跟随联网开关）           是
-    compute     否                否        否          固定绑定                           是
-    internal    否                否        否          固定绑定（PLAN_TOOL）              否
+    类别        算「观察到系统」  可进 SOP  对外        绑定给模型                         记进图谱  出网污点
+    data        是                是        看 export   超过 TOOL_LIMIT 时按问题筛选       是        是
+    knowledge   否                否        是          固定绑定（KB_TOOLS）               是        否
+    web         否                否        否          固定绑定（跟随联网开关）           是        否
+    compute     否                否        否          固定绑定                           是        否（M5 接）
+    internal    否                否        否          固定绑定（PLAN_TOOL）              否        否
+
+「出网污点」：调用的实参（x-entity）和返回里像资源名的标识符，本轮不能再随搜索词、链接发出去（egress.py）。
 
 加一个应用内工具：写好契约（_meta.doc2sop 里给 category、provider）和执行函数 run(args, turn)，
 在 APP_TOOLS 里登记一个 AppTool，wanted 决定这一轮绑不绑。loop、graph、grow、main、页面都不用改。
@@ -34,7 +36,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from app.agent import kb_tools as kb
-from app.agent import ops_client, web_search
+from app.agent import ops_client, web_fetch, web_search
 from app.agent import plan as plan_tool
 from app.config import log, why
 
@@ -51,16 +53,18 @@ class Policy:
     limit_note: str = "[未执行] 本轮这类工具已调用 {limit} 次，请基于已有结果作答"
     record: bool = True         # 调用记不记进图谱（流程类不记）
     condense: bool = True       # 长输出给模型前要不要按日志的方式压缩（知识片段、清单不压）
+    per_tool: bool = False      # 限次按工具各自计数（外网类：搜索、读网页每轮各 limit 次），否则整个类别合计
+    taints: bool = False        # 实参和返回算不算出网污点（egress.py）：数据类；沙箱输出等 M5 再接
 
 
-# 每轮限次：知识 3、外网 2（和以前的联网限次一样）、计算 3。
+# 每轮限次：知识 3、外网 2（和以前的联网限次一样；web_search、web_fetch 各自计数）、计算 3。
 POLICIES = {
-    "data": Policy(observes=True, sop=True, export=None, selectable=True),
+    "data": Policy(observes=True, sop=True, export=None, selectable=True, taints=True),
     "knowledge": Policy(observes=False, sop=False, export=True, selectable=False, limit=3,
                         limit_note="[未执行] 本轮已查了 {limit} 次知识库，不能再查；请基于已有片段作答，"
                                    "片段里没有的如实说明", condense=False),
     "web": Policy(observes=False, sop=False, export=False, selectable=False, limit=web_search.MAX_SEARCHES,
-                  limit_note="[未搜索] 本轮已搜索 {limit} 次，请基于已有结果作答"),
+                  limit_note="[未搜索] 本轮已搜索 {limit} 次，请基于已有结果作答", per_tool=True),
     "compute": Policy(observes=False, sop=False, export=False, selectable=False, limit=3),
     "internal": Policy(observes=False, sop=False, export=False, selectable=False, record=False, condense=False),
 }
@@ -85,7 +89,7 @@ class TurnOptions:
 
 class Turn:
     """一轮对话里工具共享的状态：按类别的调用次数、跨调用续编的编号（[W1]、[W2]…；知识片段的 [9]…），
-    本轮的待办清单，以及往页面推事件。
+    本轮的待办清单、出网规则的状态（usage["egress"]：本轮的污点、可读的链接，见 egress.py），以及往页面推事件。
 
     usage 存在 LangGraph 的 TurnState 里、每轮清零：loop 的 tools 节点进来时建一个 Turn，出去时写回。
     """
@@ -94,14 +98,22 @@ class Turn:
         self.emit = emit or (lambda event: None)
         self.usage = copy.deepcopy(usage or {})
 
-    def admit(self, category) -> str | None:
-        """按类别限次：没到上限就记一次、返回 None；到了返回给模型看的说明，这次不执行。"""
+    def admit(self, category, name=None, note=None) -> str | None:
+        """按类别限次：没到上限就记一次、返回 None；到了返回给模型看的说明（note 优先），这次不执行。
+
+        类别的 per_tool 打开时（外网类）按工具名各自计数；usage["calls"] 始终按类别合计（评测统计用）。
+        """
         policy = POLICIES.get(category)
         calls = self.usage.setdefault("calls", {})
-        used = calls.get(category, 0)
+        counts, key = calls, category
+        if policy is not None and policy.per_tool and name:
+            counts, key = self.usage.setdefault("tool_calls", {}), name
+        used = counts.get(key, 0)
         if policy is not None and policy.limit is not None and used >= policy.limit:
-            return policy.limit_note.format(limit=policy.limit)
-        calls[category] = used + 1
+            return (note or policy.limit_note).format(limit=policy.limit)
+        counts[key] = used + 1
+        if counts is not calls:
+            calls[category] = calls.get(category, 0) + 1
         return None
 
     def number(self, key, count) -> int:
@@ -118,6 +130,9 @@ class Binding:
     category: str
     schema: dict                              # inputSchema，图谱按里面的 x-entity 播种
     run: Callable[[dict, Turn], Any]          # 返回文字，或 (文字, artifact)
+    limit_note: str | None = None             # 到了限次时给模型看的说明；None 用类别的
+    clip: int | None = None                   # 结果进记忆、给模型的字数上限；None 用 loop 的默认值
+    condense: bool | None = None              # 长输出要不要按日志压缩；None 看类别
 
 
 # --- 应用内提供方 ----------------------------------------------------------------
@@ -130,6 +145,9 @@ class AppTool:
                                                          # 可以 turn.emit 推事件
     wanted: Callable[[TurnOptions], bool] = lambda options: True   # 这一轮要不要绑
     describe: Callable[[], dict] | None = None           # 说明要每轮现算时用它（只改说明，参数和类别以 contract 为准）
+    limit_note: str | None = None                        # 以下三项见 Binding：同一类别里个别工具的不同处理
+    clip: int | None = None
+    condense: bool | None = None
 
     @property
     def name(self) -> str:
@@ -146,6 +164,10 @@ class AppTool:
 APP_TOOLS = (
     AppTool(web_search.TOOL, web_search.run_tool,
             wanted=lambda options: options.allow_web and web_search.enabled()),
+    # 读网页：联网开着且 WEB_FETCH 打开时才绑；正文最多 2 万字，不按日志压缩
+    AppTool(web_fetch.TOOL, web_fetch.run_tool,
+            wanted=lambda options: options.allow_web and web_fetch.enabled(),
+            limit_note=web_fetch.LIMIT_NOTE, clip=web_fetch.MAX_OUTPUT, condense=False),
     AppTool(kb.SEARCH, kb.run_search, wanted=lambda options: options.kb_tools, describe=kb.describe_search),
     AppTool(kb.READ, kb.run_read, wanted=lambda options: options.kb_tools),
     AppTool(kb.CATALOG, kb.run_catalog, wanted=lambda options: options.kb_tools),
@@ -190,7 +212,8 @@ def bind_data(tool, entry=None) -> Binding:
 
 
 def bind_app(tool: AppTool) -> Binding:
-    return Binding(tool.name, tool.category, tool.contract.get("inputSchema") or {}, tool.run)
+    return Binding(tool.name, tool.category, tool.contract.get("inputSchema") or {}, tool.run,
+                   limit_note=tool.limit_note, clip=tool.clip, condense=tool.condense)
 
 
 # --- 工具服务（数据类）-------------------------------------------------------------

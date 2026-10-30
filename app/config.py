@@ -108,6 +108,17 @@ WEB_SEARCH_MAX_RESULTS = int(os.environ.get("WEB_SEARCH_MAX_RESULTS", "5"))
 WEB_SEARCH_BLOCKLIST = [w.strip() for w in
                         os.environ.get("WEB_SEARCH_BLOCKLIST", "").split(",") if w.strip()]
 
+# --- 读网页与出网规则（docs/工具.md「出网规则」）-----------------------------------
+# WEB_FETCH 打开后，允许联网的轮次多一个 web_fetch：读本轮搜索结果或用户给的链接的正文。默认关。
+WEB_FETCH = os.environ.get("WEB_FETCH", "").strip().lower() in _TRUE
+# web_fetch 的出口代理：http://主机:端口（可带账号密码）。留空直连。经代理时 DNS 仍在本机解析、
+# CONNECT 到校验过的 IP，防 SSRF 的规则不变。
+WEB_FETCH_PROXY = os.environ.get("WEB_FETCH_PROXY", "").strip()
+# 一轮里调过数据类工具之后还能不能联网：screen（默认）照常联网，搜索词和链接过静态拦截与污点拦截；
+# deny 这一轮剩下的部分不再联网。
+WEB_AFTER_DATA_MODES = ("screen", "deny")
+WEB_AFTER_DATA = os.environ.get("WEB_AFTER_DATA", "screen").strip().lower()
+
 # --- Growing SOPs from practice -----------------------------------------------
 # After a free-form investigation that used several tools and reached a conclusion,
 # the agent may propose turning it into an SOP (saved disabled, pending human review).
@@ -134,6 +145,10 @@ if not log.handlers:
 if KB_RETRIEVAL_MODE not in RETRIEVAL_MODES:
     log.warning("KB_RETRIEVAL_MODE=%s is not one of %s, using prefetch", KB_RETRIEVAL_MODE, "/".join(RETRIEVAL_MODES))
     KB_RETRIEVAL_MODE = "prefetch"
+
+if WEB_AFTER_DATA not in WEB_AFTER_DATA_MODES:
+    log.warning("WEB_AFTER_DATA=%s is not one of %s, using screen", WEB_AFTER_DATA, "/".join(WEB_AFTER_DATA_MODES))
+    WEB_AFTER_DATA = "screen"
 
 
 def why(exc: Exception) -> str:
