@@ -452,33 +452,39 @@ class Tracker:
     """按令牌记着开着的 2025 版会话和正在处理的请求（只在事件循环里用，不用加锁）。
 
     两个用处：一枚令牌开的会话、并发的请求有上限，占不满全局的名额；吊销时把它还连着的流断掉、会话关掉，
-    名额马上空出来。会话什么时候算没了，和 SDK 同一个规则：客户端 DELETE、请求回 404，或者没有请求在处理已经
-    超过 SESSION_IDLE。
+    名额马上空出来。会话什么时候算没了，和 SDK 同一个规则：客户端 DELETE、请求回 404（都只看 2025 版的请求，
+    2026 版的请求碰不到 2025 版的会话），或者没有请求在处理已经超过 SESSION_IDLE（这边记的时间比 SDK 晚一点，
+    只会比 SDK 晚忘、不会早忘）。正在开的会话检查时就先占上名额，同时发来的一批开会话请求也超不过上限。
     """
 
     def __init__(self, idle=SESSION_IDLE):
         self.idle = idle
         self.sessions = {}      # 令牌 id -> {会话 id: [最近一次活动的时间, 正在处理的请求数]}
         self.flights = {}       # 令牌 id -> {这枚令牌正在处理的请求的 CancelScope}
+        self.opening = {}       # 令牌 id -> 正在开、还没开完的会话数
 
     def live(self, token_id, now=None) -> int:
         now = time.monotonic() if now is None else now
         sessions = self.sessions.get(token_id, {})
         for session_id in [s for s, (at, busy) in sessions.items() if not busy and now - at >= self.idle]:
             del sessions[session_id]
-        return len(sessions)
+        return len(sessions) + self.opening.get(token_id, 0)
 
     def inflight(self, token_id) -> int:
         return len(self.flights.get(token_id, ()))
 
-    def begin(self, token_id, session_id, scope):
+    def begin(self, token_id, session_id, scope, opening=False):
         self.flights.setdefault(token_id, set()).add(scope)
-        entry = self.sessions.get(token_id, {}).get(session_id)
+        if opening:
+            self.opening[token_id] = self.opening.get(token_id, 0) + 1
+        entry = self.sessions.get(token_id, {}).get(session_id) if session_id else None
         if entry is not None:
             entry[0], entry[1] = time.monotonic(), entry[1] + 1
 
-    def end(self, token_id, session_id, scope, method, status, opened):
+    def end(self, token_id, session_id, scope, method, status, opened, opening=False):
         self.flights.get(token_id, set()).discard(scope)
+        if opening:
+            self.opening[token_id] = max(0, self.opening.get(token_id, 0) - 1)
         sessions = self.sessions.setdefault(token_id, {})
         now = time.monotonic()
         if opened and status is not None and status < 400:
@@ -495,7 +501,12 @@ class Tracker:
         """吊销：断掉这枚令牌还在处理的请求（通知流、listen 流），返回它开着的会话，由调用方关掉。"""
         for scope in self.flights.pop(token_id, set()):
             scope.cancel()
+        self.opening.pop(token_id, None)
         return list(self.sessions.pop(token_id, {}))
+
+
+def _header(scope, name) -> list:
+    return [value.decode("latin-1") for key, value in scope.get("headers") or [] if key.lower() == name]
 
 
 class TokenGate:
@@ -521,11 +532,14 @@ class TokenGate:
             return await _reject(send, 429, "rate_limited", "请求太频繁，请稍后再试")
         if self.manager is None:
             return await _reject(send, 503, "unavailable", "对外 MCP 出口还没启动")
-        headers = {key.lower(): value.decode("latin-1") for key, value in scope.get("headers") or []}
-        session_id = headers.get(b"mcp-session-id", "")
-        version = headers.get(b"mcp-protocol-version")
-        opening = (scope["method"] == "POST" and not session_id
-                   and (version is None or version in HANDSHAKE_PROTOCOL_VERSIONS))
+        # 这两个头和 SDK 读的必须是同一个值：重复了就拒绝，免得这边以为是 2026 版、SDK 却开了 2025 版会话
+        session_ids, versions = _header(scope, b"mcp-session-id"), _header(scope, b"mcp-protocol-version")
+        if len(session_ids) > 1 or len(versions) > 1:
+            return await _reject(send, 400, "invalid_request", "请求头 Mcp-Session-Id、MCP-Protocol-Version 只能各有一个")
+        session_id = session_ids[0] if session_ids else ""
+        legacy = not versions or versions[0] in HANDSHAKE_PROTOCOL_VERSIONS
+        opening = scope["method"] == "POST" and legacy and not session_id
+        tracked = session_id if legacy else ""          # 2026 版的请求碰不到 2025 版的会话
         if opening and self.tracker.live(client.id) >= SESSIONS_PER_TOKEN:
             return await _reject(send, 429, "too_many_sessions",
                                  f"这枚令牌同时开着的会话太多（最多 {SESSIONS_PER_TOKEN} 个），请先关掉不用的客户端")
@@ -547,12 +561,13 @@ class TokenGate:
             await send(message)
 
         with anyio.CancelScope() as flight:
-            self.tracker.begin(client.id, session_id, flight)
+            # 检查和占名额之间没有 await：同时到的一批开会话请求，排在后面的看得到前面占的名额
+            self.tracker.begin(client.id, tracked, flight, opening)
             try:
                 await self.manager.handle_request(scope, receive, watch)
             finally:
-                self.tracker.end(client.id, session_id, flight, scope["method"], answer.get("status"),
-                                 None if session_id else answer.get("session"))
+                self.tracker.end(client.id, tracked, flight, scope["method"], answer.get("status"),
+                                 answer.get("session") if opening else None, opening)
 
     async def disconnect(self, token_id):
         """吊销之后：断掉这枚令牌还连着的流，关掉它开着的会话（走 SDK 自己的 DELETE），名额马上空出来。"""

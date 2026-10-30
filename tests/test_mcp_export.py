@@ -640,6 +640,23 @@ class GateTests(ExportCase):
         with patch.object(mcp_server, "INFLIGHT_PER_TOKEN", 0):
             self.assertEqual(self.http.post("/mcp", json=INIT, headers=bearer(other)).status_code, 429)
 
+    def test_the_session_cap_cannot_be_dodged(self):
+        """评审给出的三种绕法：重复的头、2026 版请求带着 2025 版会话 id 拿 404、同时发一批开会话请求（见端到端）。"""
+        with patch.object(mcp_server, "SESSIONS_PER_TOKEN", 2):
+            session = self.open_session(self.secret)
+            twice = [*bearer(self.secret).items(), ("Mcp-Protocol-Version", "2025-11-25"),
+                     ("Mcp-Protocol-Version", "2026-07-28")]
+            response = self.http.post("/mcp", json=INIT, headers=twice)
+            self.assertEqual(response.status_code, 400)
+            both = [*bearer(self.secret).items(), ("Mcp-Session-Id", "bogus"), ("Mcp-Session-Id", session)]
+            self.assertEqual(self.http.post("/mcp", json=rpc("tools/list"), headers=both).status_code, 400)
+            modern = {**bearer(self.secret), "Mcp-Protocol-Version": "2026-07-28", "Mcp-Session-Id": session}
+            self.http.post("/mcp", json=rpc("no/such/method"), headers=modern)
+            gate = next(r.app for r in self.app.router.routes if getattr(r, "path", "") == "/mcp")
+            self.assertEqual(gate.tracker.live(self.token["id"]), 1)        # 2026 版的 404 不算它关了
+            self.open_session(self.secret)
+            self.assertEqual(self.http.post("/mcp", json=INIT, headers=bearer(self.secret)).status_code, 429)
+
     def test_revoking_a_token_frees_its_sessions_at_once(self):
         """全局名额被一枚令牌占满时，吊销它马上就空出来，不用等会话闲置 30 分钟。"""
         with patch.object(mcp_server, "MAX_SESSIONS", 2):
@@ -887,6 +904,26 @@ class EndToEndTests(ExportCase):
                 self.assertIn("name=web01", prompt.messages[0].content.text)
         self.assertEqual(flooded, [False] * 5 + [True])                 # 每分钟 5 次，第 6 次被限流
         self.assertEqual(access.recent_calls(1)[0]["error"], "rate_limited")
+
+    def test_a_burst_of_openings_stays_under_the_cap(self):
+        import httpx
+        _, secret = access.issue("一拥而上", ["knowledge"])
+
+        async def burst():
+            statuses = []
+            async with httpx.AsyncClient(timeout=30) as http:
+                async def one():
+                    response = await http.post(served.url, json=INIT, headers=bearer(secret))
+                    statuses.append(response.status_code)
+
+                async with anyio.create_task_group() as tg:
+                    for _ in range(8):
+                        tg.start_soon(one)
+            return sorted(statuses)
+
+        with patch.object(mcp_server, "SESSIONS_PER_TOKEN", 3), Served(self.app) as served:
+            statuses = anyio.run(burst)
+        self.assertEqual(statuses, [200] * 3 + [429] * 5)
 
     def test_list_changed_reaches_both_eras(self):
         _, secret = access.issue("通知", ["knowledge", "sop"])
