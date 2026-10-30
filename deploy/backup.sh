@@ -41,9 +41,10 @@ done
 for item in chroma files vision_cache.json; do
   [ -e "$DATA/$item" ] && cp -a "$DATA/$item" "$WORK/data/"
 done
-# 工具配置也带上（宿主机侧，不在 data 里）：主文件、页面改的开关、脚本信任表、批准过的 MCP 工具、待审申请
+# 工具配置也带上（宿主机侧，不在 data 里）：主文件、页面改的开关、脚本信任表、批准过的 MCP 工具、待审申请、
+# 远程主机登记的 host key（私钥不在这里，也不该进备份包）
 for f in /opt/ops/ops_tools.yaml /opt/ops/ops_tools.overrides.yaml /opt/ops/ops_tools.trust.yaml \
-         /opt/ops/ops_tools.mcp.yaml /opt/ops/ops_tools.pending.yaml; do
+         /opt/ops/ops_tools.mcp.yaml /opt/ops/ops_tools.pending.yaml /opt/ops/ops_tools.known_hosts; do
   [ -f "$f" ] && { mkdir -p "$WORK/ops"; cp -a "$f" "$WORK/ops/"; }
 done
 

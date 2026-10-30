@@ -1,0 +1,36 @@
+{
+ "format": 1,
+ "host": "demo-host",
+ "generated_at": "",
+ "generator": "ops_readonly.py push",
+ "timeout": 20,
+ "max_output": 20000,
+ "tools": [
+  {
+   "name": "host_disk",
+   "argv": [
+    "df",
+    "-h"
+   ],
+   "params": {},
+   "fp": "sha256:b286cc1158d0f9dcf49131d7c1bc1f2b6d144783ee3d30ca83708750dc258d68"
+  },
+  {
+   "name": "host_resources",
+   "argv": [
+    "free",
+    "-m"
+   ],
+   "params": {},
+   "fp": "sha256:092d55ba9ee3139a684e6117f2c3c22b4b64a3a06626517fb383d0859949581c"
+  },
+  {
+   "name": "host_uptime",
+   "argv": [
+    "uptime"
+   ],
+   "params": {},
+   "fp": "sha256:0c47fa5f55723069335b5938678800aa14fea9d58b34ed81b0d4184c655d4240"
+  }
+ ]
+}

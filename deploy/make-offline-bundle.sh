@@ -29,7 +29,7 @@ docker save kb-embedding:offline | gzip -1 > "$OUT/images/kb-embedding.tar.gz"
 
 # --- 3. 只读运维接口（纯标准库，拷文件即可）-----------------------------
 echo "[3/5] 拷贝只读运维接口…"
-cp "$ROOT/deploy/ops_readonly.py" "$OUT/src/"
+cp "$ROOT/deploy/ops_readonly.py" "$ROOT/deploy/ops_exec.py" "$OUT/src/"
 cp "$ROOT/deploy/ops-readonly.service.example" "$OUT/src/"
 
 # --- 4. 示例语料与评测 ---------------------------------------------------

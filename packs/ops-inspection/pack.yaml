@@ -5,9 +5,11 @@ version: 1
 summary: 按《日常巡检规范》依次看磁盘、内存、负载、容器状态与资源占用，按「正常 / 告警 / 严重」给结论。
 roles: [运维, 单机 Docker 服务的负责人]
 requires:
-  - 数据来自工具服务所在的 Linux 宿主机：磁盘、内存、负载来自 df / free / uptime（coreutils、procps），容器状态来自 docker CLI（工具服务要能读 /var/run/docker.sock）
-  - 所以工具服务要部署在被巡检的宿主机上（deploy/ops_readonly.py），并在它的 ops_tools.yaml 里 include 本包的 tools.yaml；工具都声明了 os: linux，在别的系统上显示「不适用于这台机器」
-  - 随附的演示 sidecar 跑在容器里，查到的只是容器自己，所以本包不在 DEMO_PACKS 默认列表里
+  - 至少一台 linux 主机：磁盘、内存、负载来自 df / free / uptime（coreutils、procps），容器状态来自 docker CLI，执行账号要能读 docker
+  - 单机部署时这台主机就是工具服务所在的宿主机（工具服务要能读 /var/run/docker.sock），在它的 ops_tools.yaml 里 include 本包的 tools.yaml 即可
+  - 配了主机清单（hosts）后，工具多一个 target 参数，按 target 在别的主机上跑，target 写 @组名 就是多机巡检；受控模式的主机要先 push 白名单
+  - 工具都声明了 os: linux，在别的系统上显示「不适用」
+  - 演示站的多机巡检只用了本包的磁盘、内存、负载三个工具（演示主机上没有 docker），所以本包在 DEMO_HOST_PACKS 里、不在 DEMO_PACKS 里
 category: 运维规范
 examples:
   - 帮我做一次日常巡检

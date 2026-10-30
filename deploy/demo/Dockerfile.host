@@ -1,0 +1,28 @@
+# 演示主机（kb-host）：sshd + 受控模式的执行器（ops_exec.py），给演示 sidecar 当一台「远程主机」巡检。
+# 不挂 docker.sock；白名单只开放磁盘、内存、负载三个无害的工具（host-allowlist.json，由 push --print 生成）。
+# 构建上下文是 deploy/（见 docker-compose.yml），和 kb-ops 共用 python:3.12-slim 基础层：执行器要 python3。
+ARG BASE_IMAGE=python:3.12-slim
+FROM ${BASE_IMAGE}
+
+# 国内拉 Debian 包慢时传 DEBIAN_MIRROR（如 http://mirrors.aliyun.com），留空用官方源。
+# 执行账号 opsread：普通账号，不进 sudo。口令设成 *（不是锁定的 !）：不用 PAM 时 sshd 会拒绝锁定的账号，而口令登录本来就关了
+ARG DEBIAN_MIRROR=
+RUN if [ -n "$DEBIAN_MIRROR" ]; then \
+      sed -i "s#http://deb.debian.org#${DEBIAN_MIRROR}#g" /etc/apt/sources.list.d/debian.sources; fi \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends openssh-server procps \
+ && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_* \
+ && useradd --create-home --shell /bin/sh opsread \
+ && usermod -p '*' opsread \
+ && install -d -o root -g root -m 0755 /opt/ops-readonly /etc/ssh/authorized_keys /etc/ssh/keys /run/sshd
+
+# 执行器和白名单归 root，执行账号只能读：执行器发现自己能改它们就拒绝启动
+COPY ops_exec.py /opt/ops-readonly/ops_exec.py
+COPY demo/host-allowlist.json /opt/ops-readonly/allowlist.json
+COPY demo/host-sshd.conf /etc/ssh/sshd_demo.conf
+COPY demo/host-entrypoint.sh /usr/local/bin/host-entrypoint.sh
+RUN chmod 0755 /opt/ops-readonly/ops_exec.py /usr/local/bin/host-entrypoint.sh \
+ && chmod 0644 /opt/ops-readonly/allowlist.json /etc/ssh/sshd_demo.conf
+
+EXPOSE 22
+CMD ["/usr/local/bin/host-entrypoint.sh"]

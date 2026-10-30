@@ -1,4 +1,4 @@
-# 演示用的只读工具 sidecar（kb-ops）：标准库写的 ops_readonly.py + PyYAML，常驻内存几十 MB。
+# 演示用的只读工具 sidecar（kb-ops）：标准库写的 ops_readonly.py（+ 执行核心 ops_exec.py）+ PyYAML，常驻内存几十 MB。
 # 和 kb-app 共用 python:3.12-slim 基础层，不多下载一份；date_info 是内置函数，不依赖镜像里的 date 命令。
 # 构建上下文是 deploy/（见 docker-compose.yml）。BASE_IMAGE 与 kb-app 同一个值，由 compose 从 .env 透传。
 ARG BASE_IMAGE=python:3.12-slim
@@ -10,8 +10,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 ARG PIP_INDEX_URL=
 RUN pip install --no-cache-dir ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"} "pyyaml>=6,<7"
 
+# 演示多机巡检：ssh 客户端连演示主机（kb-host），procps 让 sidecar 自己（本机）也能看内存和负载。
+# 放在 pip 之后：改这一层不会让 pip 那一层的缓存失效
+ARG DEBIAN_MIRROR=
+RUN if [ -n "$DEBIAN_MIRROR" ]; then \
+      sed -i "s#http://deb.debian.org#${DEBIAN_MIRROR}#g" /etc/apt/sources.list.d/debian.sources; fi \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends openssh-client procps \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /srv
-COPY ops_readonly.py demo/entrypoint.py /srv/
+COPY ops_readonly.py ops_exec.py demo/entrypoint.py /srv/
 
 EXPOSE 8799
 CMD ["python", "/srv/entrypoint.py"]

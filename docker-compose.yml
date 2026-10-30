@@ -47,6 +47,7 @@ services:
       args:
         BASE_IMAGE: ${BASE_IMAGE:-python:3.12-slim}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
     image: ${OPS_IMAGE:-kb-ops:latest}
     container_name: ${OPS_CONTAINER:-kb-ops}
     restart: unless-stopped
@@ -55,14 +56,21 @@ services:
       OPS_TOKEN: ${OPS_TOKEN:?请在 .env 里给 OPS_TOKEN 填一串随机字符}
       # 导入哪些包，sidecar 就只提供哪些包的工具（入口脚本据此生成 include）
       DEMO_PACKS: ${DEMO_PACKS:-}
+      # 演示多机巡检：sidecar 自己算本机，kb-host 是经 SSH 受控模式巡检的远程主机（服务名就是地址）。
+      # DEMO_HOST_PACKS 里的场景包只取工具、不导入文档和 SOP（运维巡检包的 SOP 要读 docker，演示主机上没有）
+      DEMO_HOST: kb-host
+      DEMO_HOST_PACKS: ${DEMO_HOST_PACKS-ops-inspection}
       # 「模型网关」组工具复用 .env 里的模型地址与 key（入口脚本会去掉结尾的 /v1）。
       # 页面上填的模型不会传到这里——工具凭据永远不经过页面，这是既定边界。
       OPS_SECRET_GATEWAY_URL: ${LLM_BASE_URL:-}
       OPS_SECRET_GATEWAY_KEY: ${LLM_API_KEY:-}
     volumes:
       - ./packs:/packs:ro
-      # 生成的工具定义及其旁路文件（页面上的启停、待审申请）放在卷里，重启不丢
+      # 生成的工具定义及其旁路文件（页面上的启停、待审申请、登记的 host key、连演示主机的私钥）放在卷里，重启不丢
       - ops-state:/ops
+      # 和演示主机交换公钥：sidecar 的客户端公钥、演示主机的 host 公钥。私钥不在这里
+      - host-exchange:/exchange
+    depends_on: [kb-host]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # 故意不发布端口：只有同一 compose 网络里的 kb-app 能访问它（OPS_URL 里的 kb-ops 是服务名，容器改名不影响），令牌是第二道保险
@@ -74,5 +82,31 @@ services:
       timeout: 10s
       retries: 3
 
+  # 演示主机：sshd + 受控模式的执行器，白名单只开放磁盘、内存、负载三个无害的工具；不挂 docker.sock，不发布端口
+  kb-host:
+    profiles: [demo]
+    build:
+      context: deploy
+      dockerfile: demo/Dockerfile.host
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-python:3.12-slim}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
+    image: ${HOST_IMAGE:-kb-host:latest}
+    container_name: ${HOST_CONTAINER:-kb-host}
+    restart: unless-stopped
+    volumes:
+      - host-exchange:/exchange
+      # host key 放在卷里：重建容器指纹不变，sidecar 登记的一直对得上
+      - host-keys:/etc/ssh/keys
+    mem_limit: 64m
+    cpus: 0.25
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket;socket.create_connection(('127.0.0.1',22),3)\""]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
 volumes:
   ops-state:
+  host-exchange:
+  host-keys:
