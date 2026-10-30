@@ -921,6 +921,10 @@ def _load_all(path):
     MCP server 只认主文件顶层的 `mcp_servers:`：它是宿主机上要跑的一段代码，必须是 root 在
     主文件里亲手写下的。被包含的文件里出现 mcp_servers 会被忽略并报出来。连接（connections）同理只认主文件：
     被包含的文件里的工具只能用 conn: 引用主文件的连接，不能自己新建。
+
+    对外开放（export）也只认主文件：主文件里工具条目上的 `export: true`，或主文件顶层的 `export: [工具名…]`
+    （场景包、批准过的 MCP 工具不在主文件里，用这个列表开放）。被包含的文件和 MCP 批准文件里写的 export 一律忽略并报出来：
+    对外开放等于扩大了谁能触发这个工具，属于权限变更，归宿主机管理员。
     """
     document = _read_yaml(path)
     entries = document.get("tools")
@@ -930,6 +934,7 @@ def _load_all(path):
     files, problems = _expand_includes(patterns, os.path.dirname(os.path.abspath(str(path))))
     servers = _check_mcp_servers(document, problems)
     connections = _check_connections(document, problems)
+    exported = _check_export_list(document, problems)
 
     # 批准文件最先读：同名时它说了算（漂移后重新批准的条目要盖过主文件里的旧条目）。
     sources = []
@@ -953,6 +958,8 @@ def _load_all(path):
             problems.append(f"{included} 里的 mcp_servers 已忽略：MCP server 只能在主文件里声明")
         if sub.get("connections"):
             problems.append(f"{included} 里的 connections 已忽略：连接（地址和凭据）只能在主文件里声明")
+        if sub.get("export") is not None:
+            problems.append(f"{included} 里的 export 已忽略：对外开放只能由管理员在主配置文件里标")
         sub_entries = sub.get("tools")
         if not isinstance(sub_entries, list):
             problems.append(f"{included} 缺少 tools 列表")
@@ -994,8 +1001,40 @@ def _load_all(path):
                 problems.append(str(exc) if origin == str(path) else f"{exc}（{origin}）")
                 continue
             spec["origin"] = origin
+            spec["export"] = _entry_export(entry, spec["name"], origin == str(path), origin, problems)
             tools[spec["name"]] = spec
+    for name in sorted(exported):
+        if name in tools:
+            tools[name]["export"] = True
+        else:
+            problems.append(f"顶层 export 里的 {name} 不是已加载的工具，已忽略")
     return tools, problems, servers, connections
+
+
+def _check_export_list(document, problems):
+    """主文件顶层 export：要对外开放的工具名。场景包、批准过的 MCP 工具不在主文件里，靠它开放。"""
+    raw = document.get("export")
+    if raw is None:
+        return set()
+    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+        problems.append("顶层 export 必须是工具名列表：export: [holiday_calendar, …]，已忽略")
+        return set()
+    return {item.strip() for item in raw if item.strip()}
+
+
+def _entry_export(entry, name, in_main, origin, problems):
+    """工具条目上的 export：只有主文件里的 true 算数；别处写了报出来，当作 false。"""
+    flag = entry.get("export") if isinstance(entry, dict) else None
+    if flag is None or flag is False:
+        return False
+    if not in_main:
+        problems.append(f"{name} 的 export 已忽略：对外开放只能在主配置文件里标，"
+                        f"可以在主文件顶层 export: 里列出它（{origin}）")
+        return False
+    if flag is not True:
+        problems.append(f"{name} 的 export 只能写 true 或 false，已当作 false")
+        return False
+    return True
 
 
 # 覆盖层只允许改这几个字段：一个是开关（缩权方向），两个是给人和模型看的文字。
@@ -1291,8 +1330,8 @@ def _contract(name, spec):
         "inputSchema": _input_schema(spec),
         # 这里下发的都是只读工具：命令有写动词黑名单，接口只许 GET，MCP 工具执行前要有只读依据
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": open_world},
-        # export（能否出现在对外 MCP）要等对外出口做好后由主配置标，现在一律 false
-        "_meta": {"doc2sop": {"category": "data", "provider": "ops", "export": False,
+        # export：能否出现在对外 MCP。只认主配置文件（见 _load_all），场景包和 MCP 批准文件里写了不算
+        "_meta": {"doc2sop": {"category": "data", "provider": "ops", "export": bool(spec.get("export")),
                               "group": spec.get("group", "")}},
     }
 
@@ -1342,7 +1381,8 @@ def describe_tools():
                 "overridden": spec.get("overridden", []),
                 # 系统不符和缺命令分开报：前者是「不适用于这台机器」，不是坏了
                 "os": list(spec.get("os") or []),
-                "applicable": not _not_here(spec)}
+                "applicable": not _not_here(spec),
+                "export": bool(spec.get("export"))}
         if not item["runnable"] and spec.get("type") != "mcp":
             item["reason"] = _unusable_reason(spec)
         if spec.get("type") == "builtin":
@@ -1502,6 +1542,9 @@ def propose_tool(raw, author="web"):
             f"数字和下划线，例如 host_time。中文请填在「中文显示名」那一栏。")
 
     kind = _proposal_kind(raw)
+    if raw.get("export") is not None:
+        # 批准时申请原样追加进主配置文件：带着 export 就成了页面绕过管理员开放工具的口子
+        raise ConfigError("申请里不能带 export：工具要不要对外开放，只能由管理员在宿主机主配置文件里标")
     if kind == "mcp":
         # MCP 工具不由页面申请：它来自 server 的发现，而 server 只能由管理员在宿主机声明。
         raise ConfigError("页面不能申请 MCP 工具；在宿主机配置 mcp_servers 后，发现到的工具会自动进入待审列表")
@@ -2574,6 +2617,17 @@ def run_tool(name, args):
             "exit_code": done.returncode}
 
 
+# /exec 的调用方：应用带上「谁发起的」——项目 Agent 的会话，或对外 MCP 的客户端——写进日志，两边的日志对得上。
+# 只记录、不鉴权（鉴权仍是 X-Ops-Token）；值来自请求头，进日志前只留可打印的 ASCII，防止伪造日志行。
+CALLER_HEADER = "X-Ops-Caller"
+CALLER_MAX = 200
+
+
+def _caller(raw):
+    text = "".join(ch if " " <= ch <= "~" else "?" for ch in str(raw or ""))
+    return " ".join(text.split())[:CALLER_MAX]
+
+
 class Handler(BaseHTTPRequestHandler):
     token = ""
 
@@ -2633,7 +2687,8 @@ class Handler(BaseHTTPRequestHandler):
             result = run_tool(name, payload.get("args"))
         except Exception as exc:   # 不能让一个 server 报回来的怪数据把连接直接掐断
             result = {"ok": False, "error": f"执行失败：{exc.__class__.__name__}: {exc}"}
-        print(f"[exec] {name} args={payload.get('args')} ok={result.get('ok')}", flush=True)
+        caller = _caller(self.headers.get(CALLER_HEADER, ""))
+        print(f"[exec] {name} caller={caller or '-'} args={payload.get('args')} ok={result.get('ok')}", flush=True)
         self._send(200, result)
 
     def _override(self, payload):
@@ -2822,6 +2877,9 @@ def main():
         print(f"（不适用于这台机器（声明的 os 不是 {HOST_OS}）：{', '.join(elsewhere)}）")
     if missing:
         print(f"（本机缺少对应命令或 MCP server 尚未连上，暂不可用：{', '.join(missing)}）")
+    exported = sorted(name for name, spec in all_tools().items() if spec.get("export"))
+    if exported:
+        print(f"对外开放（export）的工具 {len(exported)} 个：{', '.join(exported)}")
     waiting = len(list_pending())
     if waiting:
         print(f"（有 {waiting} 条新工具申请待审：ops_readonly.py pending）")

@@ -67,6 +67,12 @@
 #   - ../packs/leave-planning/tools.yaml
 #   - /opt/doc2sop/packs/*/tools.yaml
 #
+# 对外开放（应用打开 MCP_ENABLED 后，外部智能体经 /mcp 能看到哪些数据工具；见 docs/工具.md「对外 MCP 出口」）：
+# 默认一个都不开放。只能写在本文件——工具条目上写 export: true，或顶层 export 列出名字（场景包、批准过的 MCP 工具
+# 不在本文件里，用这个列表）；被 include 的文件和 ops_tools.mcp.yaml 里写了会被忽略。页面申请工具不能带 export。
+#
+# export: [holiday__holiday_calendar, date_info]
+#
 # MCP server（第四种工具类型的来源；只能写在这里，被 include 的文件里写了会被忽略）：
 #
 # mcp_servers:
