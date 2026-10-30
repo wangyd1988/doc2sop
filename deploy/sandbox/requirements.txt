@@ -1,0 +1,6 @@
+# 计算沙箱镜像里标准库以外的库：越少越好，版本和哈希都锁定（pip install --require-hashes --only-binary=:all:）。
+# 加库时同时写上 x86_64 和 aarch64 两个 cp312 wheel 的 sha256（https://pypi.org/pypi/<名字>/<版本>/json），
+# 还要在 app/agent/sandbox.py 的工具说明里写上，模型才知道能用。
+PyYAML==6.0.2 \
+    --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476 \
+    --hash=sha256:1f71ea527786de97d1a0cc0eacd1defc0985dcf6b3f17bb77dcfc8c34bec4dc5

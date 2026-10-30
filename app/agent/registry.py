@@ -12,18 +12,18 @@
     app      应用内的工具：web_search、web_fetch（外网类，web_fetch 要 WEB_FETCH）；kb_search / kb_read /
              kb_catalog（知识类，KB_TOOLS）；sop_list / sop_get（知识类：对外出口总有，项目 Agent 在 SOP 多时才绑）；
              plan（流程类，PLAN_TOOL）。
-    sandbox  计算沙箱（还没有）。
+    sandbox  python_exec（计算类，SANDBOX_URL）：沙箱服务（deploy/sandbox/）起一次性容器，算本轮数据工具的完整返回。
 
 权限与统计看类别，不看工具名：
 
     类别        算「观察到系统」  可进 SOP  对外        绑定给模型                         记进图谱  出网污点
-    data        是                是        看 export   超过 TOOL_LIMIT 时按问题筛选       是        是
+    data        是                是        看 export   超过 TOOL_LIMIT 时按问题筛选       是        x-entity 实参和返回
     knowledge   否                否        是          固定绑定（KB_TOOLS）               是        否
     web         否                否        否          固定绑定（跟随联网开关）           是        否
-    compute     否                否        否          固定绑定                           是        否（M5 接）
+    compute     否                否        否          固定绑定（SANDBOX_URL）            是        输出（代码不算）
     internal    否                否        否          固定绑定（PLAN_TOOL）              否        否
 
-「出网污点」：调用的实参（x-entity）和返回里像资源名的标识符，本轮不能再随搜索词、链接发出去（egress.py）。
+「出网污点」：x-entity 实参、返回里像资源名的标识符，本轮不能再随搜索词、链接发出去（egress.py）。
 
 「对外」是类别 × 出口：对外 MCP（app/mcp_server.py）只看得到 exported_tools() 给的工具，下发前用 public_contract()
 剥掉 _meta.doc2sop 和参数上的 x-* 扩展；令牌再按范围（knowledge / sop / data，见 AppTool.scope）筛一遍。
@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from app.agent import kb_tools as kb
-from app.agent import ops_client, sop_tools, web_fetch, web_search
+from app.agent import ops_client, sandbox, sop_tools, web_fetch, web_search
 from app.agent import plan as plan_tool
 from app.config import log, why
 
@@ -58,18 +58,22 @@ class Policy:
     record: bool = True         # 调用记不记进图谱（流程类不记）
     condense: bool = True       # 长输出给模型前要不要按日志的方式压缩（知识片段、清单不压）
     per_tool: bool = False      # 限次按工具各自计数（外网类：搜索、读网页每轮各 limit 次），否则整个类别合计
-    taints: bool = False        # 实参和返回算不算出网污点（egress.py）：数据类；沙箱输出等 M5 再接
+    taints: bool = False        # 返回里像资源名的标识符算不算出网污点（egress.py）：数据类的返回、计算类的沙箱输出
+    taint_args: bool = False    # 声明了 x-entity 的实参也算污点、调过就算「本轮查过内部数据」（严格模式）：只有数据类
 
 
 # 每轮限次：知识 3、外网 2（和以前的联网限次一样；web_search、web_fetch 各自计数）、计算 3。
 POLICIES = {
-    "data": Policy(observes=True, sop=True, export=None, selectable=True, taints=True),
+    "data": Policy(observes=True, sop=True, export=None, selectable=True, taints=True, taint_args=True),
     "knowledge": Policy(observes=False, sop=False, export=True, selectable=False, limit=3,
                         limit_note="[未执行] 本轮已查了 {limit} 次知识库，不能再查；请基于已有片段作答，"
                                    "片段里没有的如实说明", condense=False),
     "web": Policy(observes=False, sop=False, export=False, selectable=False, limit=web_search.MAX_SEARCHES,
                   limit_note="[未搜索] 本轮已搜索 {limit} 次，请基于已有结果作答", per_tool=True),
-    "compute": Policy(observes=False, sop=False, export=False, selectable=False, limit=3),
+    # 计算类：输出是算出来的结果，不按日志压缩；代码是模型现写的，不可复现，不进 SOP（常用的计算转成工具服务的内置函数）
+    "compute": Policy(observes=False, sop=False, export=False, selectable=False, limit=3,
+                      limit_note="[未执行] 本轮已运行 {limit} 次计算，不能再算；请基于已有结果作答",
+                      condense=False, taints=True),
     "internal": Policy(observes=False, sop=False, export=False, selectable=False, record=False, condense=False),
 }
 
@@ -103,15 +107,19 @@ class Turn:
         categories  能看哪些文档分类；None 是全部（对外令牌可以按分类白名单限定）
         channel     web（项目页面）或 mcp（对外出口）：措辞不同，比如「未对外开放」和「当前不可用」
         tools       调用方此刻能调的数据类工具：名字 -> 界面显示名；SOP 工具据此标哪一步做不了。None 表示不知道
+        outputs     本轮数据类调用的完整返回 [{seq, tool, args, output}]（python_exec 挂进沙箱的就是这些）；
+                    loop 每轮新建一份、按调用顺序往里加，所以拿不到别的轮次、别的对话的数据
     """
 
-    def __init__(self, emit=None, usage=None, *, caller="", categories=None, channel="web", tools=None):
+    def __init__(self, emit=None, usage=None, *, caller="", categories=None, channel="web", tools=None,
+                 outputs=None):
         self.emit = emit or (lambda event: None)
         self.usage = copy.deepcopy(usage or {})
         self.caller = caller
         self.categories = None if categories is None else frozenset(categories)
         self.channel = channel
         self.tools = tools
+        self.outputs = outputs if outputs is not None else []
 
     def admit(self, category, name=None, note=None) -> str | None:
         """按类别限次：没到上限就记一次、返回 None；到了返回给模型看的说明（note 优先），这次不执行。
@@ -192,6 +200,8 @@ APP_TOOLS = (
     AppTool(sop_tools.LIST, sop_tools.run_list, wanted=lambda options: options.sop_tools, scope="sop"),
     AppTool(sop_tools.GET, sop_tools.run_get, wanted=lambda options: options.sop_tools, scope="sop"),
     AppTool(plan_tool.TOOL, plan_tool.run, wanted=lambda options: options.plan),
+    # 计算沙箱：配了 SANDBOX_URL 才绑；说明每次调模型前现算（列出本轮此刻的数据文件），loop 据此重新绑定
+    AppTool(sandbox.TOOL, sandbox.run_tool, wanted=lambda options: sandbox.enabled(), describe=sandbox.describe),
 )
 _APP = {tool.name: tool for tool in APP_TOOLS}
 
@@ -204,7 +214,8 @@ def app_tools(options: TurnOptions) -> list:
 def has_tools(allow_web=False, kb_tools=False, plan=False) -> bool:
     """有没有工具可绑（只看配置，不发请求）：有才走 Agent 分支，否则纯知识库问答。
 
-    KB_TOOLS 打开后，没配工具服务、也没开联网的部署也有知识类工具可绑，同样走 Agent 分支。
+    KB_TOOLS 打开后，没配工具服务、也没开联网的部署也有知识类工具可绑，同样走 Agent 分支；配了 SANDBOX_URL
+    （python_exec）也一样。
     """
     options = TurnOptions(allow_web=allow_web, kb_tools=kb_tools, plan=plan)
     return ops_client.enabled() or bool(app_tools(options))

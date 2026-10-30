@@ -11,11 +11,13 @@ os.environ.setdefault("WEB_USER", "tester")
 os.environ.setdefault("WEB_PASSWORD", "test-password")
 os.environ["DATA_DIR"] = _TEMP.name
 os.environ["LANGSMITH_TRACING"] = "false"
-# 这三个必须强制覆盖，不能 setdefault：在配好的机器上跑测试时，
-# 它们会让问答走 Agent 分支去调真实网关和宿主机接口，测试就不再可复现。
+# 这几个必须强制覆盖，不能 setdefault：在配好的机器上跑测试时，
+# 它们会让问答走 Agent 分支去调真实网关、宿主机接口和沙箱服务，测试就不再可复现。
 os.environ["AGENT_MODE"] = "off"
 os.environ["OPS_URL"] = ""
 os.environ["OPS_TOKEN"] = ""
+os.environ["SANDBOX_URL"] = ""
+os.environ["SANDBOX_TOKEN"] = ""
 # 场景包自动导入是后台线程，测试里必须关掉，要导入就在用例里显式调 packs.import_pack。
 os.environ["DEMO_PACKS"] = ""
 

@@ -428,6 +428,8 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .step.web .cmd { color: #0284c7; }
 .step.kb { border-left-color: #10b981; }
 .step.kb .cmd { color: #059669; }
+.step.compute { border-left-color: #8b5cf6; }
+.step.compute .cmd { color: #7c3aed; }
 .plan { background: var(--panel-2); border: 1px solid var(--border); border-left: 3px solid #10b981; border-radius: 10px;
         padding: 7px 11px; margin: 8px 0 2px; font-size: 13px; }
 .plan .hd { font-weight: 600; margin-bottom: 3px; }
@@ -619,6 +621,14 @@ body.manage.settings #mgroups, body.manage.settings #mlist, body.manage.settings
 .step .out .ret { margin: 0; font: inherit; white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow: auto; }
 .step .out .kv b { color: var(--text); font-weight: 600; }
 .step .out .trunc { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+/* 计算（python_exec）卡片：代码默认折叠，输出照常显示 */
+.step .out .code { margin-bottom: 6px; }
+.step .out .code > summary { display: block; padding: 0; font-size: 12px; color: var(--muted); }
+.step .out .code > summary::before { content: '▸ '; }
+.step .out .code[open] > summary::before { content: '▾ '; }
+.step .out .code pre { margin: 4px 0 0; font-family: ui-monospace, Consolas, monospace; font-size: 12px; white-space: pre;
+                       overflow: auto; max-height: 320px; background: var(--panel); border: 1px solid var(--border);
+                       border-radius: 6px; padding: 6px 8px; color: var(--text); }
 
 /* 来源卡片上的小标签 */
 .src summary .tag { font-size: 10.5px; padding: 1px 6px; border-radius: 6px; flex-shrink: 0; }
@@ -1123,24 +1133,33 @@ function sourcesHtml(sources) {
 }
 /* 工具调用卡片：摘要行显示工具与参数，展开看完整参数和返回预览。
    按类别换图标和文字（tool_call 事件带 category）；老记录没有类别，web_search 认作外网类，其余算数据类。
-   外网类的摘要行：搜索显示搜索词，读网页显示网址。流程类（plan）不画卡片，清单单独画在步骤上方 */
-function stepCategory(t) { return t.category || (t.tool === 'web_search' || t.tool === 'web_fetch' ? 'web' : 'data'); }
+   外网类的摘要行：搜索显示搜索词，读网页显示网址。流程类（plan）不画卡片，清单单独画在步骤上方。
+   计算类（python_exec）：摘要行是代码的第一行，展开后代码默认折叠、输出照常显示；代码和输出都按纯文本转义 */
+function stepCategory(t) {
+  return t.category || (t.tool === 'web_search' || t.tool === 'web_fetch' ? 'web' : t.tool === 'python_exec' ? 'compute' : 'data');
+}
 const KB_STEP = {kb_search: '检索知识库', kb_read: '读前后文', kb_catalog: '知识库目录'};
 const WEB_STEP = {web_search: '上网搜索', web_fetch: '读网页'};
+function codeHtml(code) {
+  const lines = code.split('\n').length;
+  return `<details class="code"><summary>代码（${lines} 行）</summary><pre>${esc(code)}</pre></details>`;
+}
 function stepHtml(t, running) {
-  const cat = stepCategory(t), isWeb = cat === 'web', isKb = cat === 'knowledge';
+  const cat = stepCategory(t), isWeb = cat === 'web', isKb = cat === 'knowledge', isCalc = cat === 'compute';
   if (cat === 'internal') return '';
   const args = t.args || {};
+  const code = isCalc ? String(args.code ?? '') : '';
   const brief = isWeb ? args.query || args.url || ''
     : isKb ? args.query || args.id || [args.source, args.page && `第 ${args.page} 页`, args.category].filter(Boolean).join(' ')
+    : isCalc ? (code.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#')) || '')
     : Object.entries(args).map(([k, v]) => `${k}=${v}`).join(' ');
-  const kv = Object.entries(args).map(([k, v]) => `<b>${esc(k)}</b> = ${esc(JSON.stringify(v))}`).join('<br>');
+  const kv = isCalc ? '' : Object.entries(args).map(([k, v]) => `<b>${esc(k)}</b> = ${esc(JSON.stringify(v))}`).join('<br>');
   const n = running ? '执行中…' : (t.lines != null ? `${t.lines} 行` : '');
-  return `<details class="step ${running ? 'running' : ''} ${isWeb ? 'web' : ''} ${isKb ? 'kb' : ''}" data-cat="${esc(cat)}"><summary><span class="ico">${isWeb ? '🌐' : isKb ? '📚' : '🔧'}</span>
-     <span class="cmd">${isWeb ? esc(WEB_STEP[t.tool] || t.tool) : isKb ? esc(KB_STEP[t.tool] || t.tool) : esc(t.tool)}</span>
+  return `<details class="step ${running ? 'running' : ''} ${isWeb ? 'web' : ''} ${isKb ? 'kb' : ''} ${isCalc ? 'compute' : ''}" data-cat="${esc(cat)}"><summary><span class="ico">${isWeb ? '🌐' : isKb ? '📚' : isCalc ? '🧮' : '🔧'}</span>
+     <span class="cmd">${isWeb ? esc(WEB_STEP[t.tool] || t.tool) : isKb ? esc(KB_STEP[t.tool] || t.tool) : isCalc ? 'Python 计算' : esc(t.tool)}</span>
      <span class="arg">${esc(brief)}</span>
      <span class="n">${n}</span></summary>
-   <div class="out">${kv ? `<div class="kv">参数<br>${kv}</div>` : ''}<pre class="ret">${esc(t.preview || '')}</pre>${
+   <div class="out">${isCalc ? codeHtml(code) : kv ? `<div class="kv">参数<br>${kv}</div>` : ''}<pre class="ret">${esc(t.preview || '')}</pre>${
      t.chars > (t.preview || '').length ? `<div class="trunc">仅显示前 ${(t.preview || '').length} 字，共 ${t.chars} 字 / ${t.lines} 行</div>` : ''}</div></details>`;
 }
 /* 待办清单（plan 事件，整体替换）：「▶ 执行」时按 SOP 步骤预填，模型逐项勾掉 */
@@ -2295,6 +2314,7 @@ async function ask() {
                   : cat === 'knowledge' ? (tool === 'kb_read' ? '正在读知识库原文的前后文…'
                                          : tool === 'kb_catalog' ? '正在查看知识库目录…' : '正在检索知识库…')
                   : cat === 'internal' ? '正在更新待办清单…'
+                  : cat === 'compute' ? '正在沙箱里运行计算…'
                   : `正在查询：${esc(tool)}…`);
           bot.querySelector('.steps').insertAdjacentHTML('beforeend', stepHtml(msg.tool_call, true));
           if (nearBottom()) toBottom();

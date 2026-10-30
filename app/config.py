@@ -119,6 +119,12 @@ WEB_FETCH_PROXY = os.environ.get("WEB_FETCH_PROXY", "").strip()
 WEB_AFTER_DATA_MODES = ("screen", "deny")
 WEB_AFTER_DATA = os.environ.get("WEB_AFTER_DATA", "screen").strip().lower()
 
+# --- 计算沙箱（docs/工具.md「计算类与沙箱」）---------------------------------------------
+# 配了 SANDBOX_URL 和 SANDBOX_TOKEN 才绑定 python_exec：模型写一段 Python，由沙箱服务（deploy/sandbox/）
+# 起一个用完即弃的 gVisor 容器，只算本轮数据工具的完整返回。留空时不绑定，行为和以前完全一样。
+SANDBOX_URL = os.environ.get("SANDBOX_URL", "").strip()
+SANDBOX_TOKEN = os.environ.get("SANDBOX_TOKEN", "").strip()
+
 # --- Growing SOPs from practice -----------------------------------------------
 # After a free-form investigation that used several tools and reached a conclusion,
 # the agent may propose turning it into an SOP (saved disabled, pending human review).

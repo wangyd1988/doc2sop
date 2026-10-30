@@ -11,9 +11,10 @@
              搜索引擎给的原样链接，模型改不了，夹带不了内部数据；其余几条照查。只在用户消息里出现过的链接全套检查。
 4. 污点拦截  本轮的污点有两种：
              - 数据类工具调用里声明了 x-entity 的实参值。工具真查了它，说明是内部对象；用户自己提过也算。
-             - 数据类工具返回里像资源名的标识符：同时有字母和数字或连字符（web01、payroll-db），
-               用户本轮消息里原样出现过的除外。带单位的数量（512MiB、30s）、v1.2 这类版本号、不到 3 个字符的不算。
-               按最终给模型看的那一份（压缩、截断之后）收集：模型看得到的都记上。
+             - 数据类工具返回、计算沙箱（python_exec）输出里像资源名的标识符：同时有字母和数字或连字符
+               （web01、payroll-db），用户本轮消息里原样出现过的除外。带单位的数量（512MiB、30s）、v1.2 这类版本号、
+               不到 3 个字符的不算。按最终给模型看的那一份（压缩、截断之后）收集：模型看得到的都记上。
+               沙箱的代码（实参）不收集，也不算「调过数据类工具」：它只能算本轮已经查到的数据。
              出网内容里按词边界出现了污点就拒绝（不分大小写）。只有字母的词（OOMKilled）和纯数字（137）不算污点，
              否则联网就没法用了。搜索结果里的链接也照查。
 
@@ -290,7 +291,22 @@ def observe(turn, schema, args, shown) -> None:
         return
     state["data"] = True
     _entities(state, schema, args)
-    taint = state["taint"]
+    _collect(state, shown)
+
+
+def observe_output(turn, shown) -> None:
+    """一次计算类调用（python_exec）之后：沙箱输出里像资源名的标识符记成污点，判定和数据类返回一样。
+
+    代码（实参）不收集，也不算「本轮调过数据类工具」：沙箱只能算本轮已经查到的数据，查数据的那几次调用已经算过了。
+    """
+    state = turn.usage.get(STATE)
+    if not isinstance(state, dict):
+        return
+    _collect(state, shown)
+
+
+def _collect(state, shown) -> None:
+    taint = state.setdefault("taint", {})
     question = state.get("question") or ""
     for ident in identifiers(shown):
         key = ident.lower()

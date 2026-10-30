@@ -1,0 +1,40 @@
+[Unit]
+Description=doc2sop compute sandbox for python_exec (gVisor)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+# 专用的系统账号；docker 组只给这个进程（SupplementaryGroups），不写进 /etc/group。
+# 能用 docker.sock 约等于宿主机 root，所以服务只拼固定的 docker run 参数，请求里带不进任何参数。
+User=doc2sop-sandbox
+Group=doc2sop-sandbox
+SupplementaryGroups=docker
+# 令牌写在单独的文件里（root:root 600，systemd 以 root 读入），不要写进这个单元文件；
+# 应用的 .env 里 SANDBOX_TOKEN 填同一个值
+EnvironmentFile=/etc/doc2sop-sandbox.env
+Environment=DOCKER_CONFIG=/var/lib/doc2sop-sandbox/docker-config
+ExecStart=/usr/bin/python3 /opt/doc2sop-sandbox/sandbox_service.py --port 8797
+Restart=on-failure
+RestartSec=10
+
+# 每次执行的临时目录在 /var/lib/doc2sop-sandbox/runs 下：bind mount 的源路径由 docker daemon 解析，
+# 所以不能放进 PrivateTmp（daemon 看不见服务私有的 /tmp）
+StateDirectory=doc2sop-sandbox
+StateDirectoryMode=0711
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+LockPersonality=yes
+# 服务自己加上 docker run 客户端进程的内存；容器本身不在这里（每个容器另有 256MB 上限）
+MemoryMax=200M
+
+[Install]
+WantedBy=multi-user.target

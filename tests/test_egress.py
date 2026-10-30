@@ -456,8 +456,10 @@ class RegistryTests(unittest.TestCase):
                 self.assertIn("web_fetch", [t.name for t in registry.app_tools(registry.TurnOptions(True))])
                 self.assertNotIn("web_fetch", [t.name for t in registry.app_tools(registry.TurnOptions(False))])
 
-    def test_only_data_calls_taint(self):
-        self.assertEqual([c for c, p in registry.POLICIES.items() if p.taints], ["data"])
+    def test_data_returns_and_sandbox_output_taint_but_only_data_arguments_do(self):
+        """返回（输出）里的标识符：数据类和计算类（沙箱输出）都算；x-entity 实参、「本轮查过内部数据」只有数据类。"""
+        self.assertEqual([c for c, p in registry.POLICIES.items() if p.taints], ["data", "compute"])
+        self.assertEqual([c for c, p in registry.POLICIES.items() if p.taint_args], ["data"])
 
     def test_per_tool_limits_keep_the_category_total_for_stats(self):
         turn = registry.Turn()
