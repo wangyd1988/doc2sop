@@ -1026,6 +1026,15 @@ class EvalScriptTests(unittest.TestCase):
         self.assertEqual((metrics["requery_rate"], metrics["hit_after"], metrics["hit_before"]), (0.5, 0.5, 0.0))
         self.assertEqual(metrics["model_calls"], 3)
 
+    def test_refusals_are_recognised_in_their_usual_wordings(self):
+        """生产上两道拒答题答的是「知识库里没有讲过…」「没有 MySQL 主从复制…的相关内容」，老判定词只认「知识库中没有」。"""
+        for answer in ("知识库里没有讲过 Kafka 分区再均衡机制。",
+                       "知识库里没有 MySQL 主从复制 GTID 模式的相关内容，前面给的片段都无关。",
+                       "抱歉，没有找到相关文档。", "知识库中没有这方面的资料"):
+            self.assertTrue(run_eval.refused(answer), answer)
+        for answer in ("年假 5 天，补班日要计入请假天数 [1]。", "没有问题，按 SOP 第 2 步核对即可。"):
+            self.assertFalse(run_eval.refused(answer), answer)
+
     def test_credentials_come_from_the_environment(self):
         """密码、评判 key、评测令牌可以不上命令行（ps 看得到）。"""
         env = {"EVAL_USER": "admin", "EVAL_PASSWORD": "pw", "EVAL_JUDGE_API_KEY": "jk", "EVAL_TOKEN": "tk"}

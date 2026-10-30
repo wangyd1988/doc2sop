@@ -37,7 +37,11 @@ import urllib.request
 from pathlib import Path
 
 REFUSAL_MARKERS = ["没有找到", "未找到", "没有相关", "无法找到", "知识库中没有",
-                   "没有收录", "不包含", "没有相关内容"]
+                   "没有收录", "不包含", "没有相关内容",
+                   # 「知识库里没有讲过…」「库里没有…的相关内容」「没有涉及」这类说法同样是拒答
+                   "知识库里没有", "库里没有", "没有讲过", "没有涉及", "未收录", "未涉及"]
+# 「没有 MySQL 主从复制的相关内容」：没有和相关内容之间夹着话题
+REFUSAL_PATTERN = re.compile(r"没有[^。！？\n]{0,40}(?:相关内容|相关资料|相关文档)")
 MODES = ("prefetch", "forced", "agentic")
 KB_TOOLS = ("kb_search", "kb_read", "kb_catalog")
 
@@ -131,6 +135,11 @@ def recall_hit(expected_sources, sources):
         return None  # refusal cases have nothing to recall
     found = {s["location"].split(" 第 ")[0] for s in sources}
     return all(expected in found for expected in expected_sources)
+
+
+def refused(answer):
+    """回答是不是在说「知识库里没有」。只用来给 refusal 类题判分。"""
+    return any(marker in answer for marker in REFUSAL_MARKERS) or bool(REFUSAL_PATTERN.search(answer))
 
 
 def requeried(outcome):
@@ -261,7 +270,6 @@ def main():
 
         answer = outcome["answer"]
         is_refusal = case["type"] == "refusal"
-        refused = any(marker in answer for marker in REFUSAL_MARKERS)
 
         points = []
         for point in case["expected_points"]:
@@ -274,7 +282,7 @@ def main():
                   "retrieved": [s["location"] for s in outcome["sources"]],
                   "recall": recall_hit(case["expected_sources"], outcome["sources"]),
                   "coverage": sum(points) / len(points) if points else 0.0,
-                  "refused_correctly": refused if is_refusal else None,
+                  "refused_correctly": refused(answer) if is_refusal else None,
                   "ttft": outcome["ttft"], "total": outcome["total"],
                   "error": outcome["error"],
                   "requeried": requeried(outcome),
