@@ -106,7 +106,7 @@ flowchart LR
 外部智能体（Claude Code、Copilot、Cursor…）
  │  Streamable HTTP + 令牌（Authorization: Bearer）；生产上前面放反向代理和 TLS
  ▼
-/mcp  TokenGate：只认令牌（不认 Basic）· 按令牌限流、限会话数 → 官方 MCP SDK 的会话管理器
+/mcp  TokenGate：先看来源地址（MCP_CLIENTS）· 只认令牌（不认 Basic）· 按令牌限流、限会话数 → 官方 MCP SDK 的会话管理器
  │  工具：知识类 kb_* / sop_*、宿主机标了 export 的数据工具（照样转给工具服务 /exec，带 X-Ops-Caller）
  │  提示词：每个启用的 SOP 一条；变了发 list_changed
  ▼

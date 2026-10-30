@@ -1,4 +1,4 @@
-"""对外 MCP 出口（M3a）：/mcp 只认令牌、范围与可见性、SOP 的三种对外形式、限流、审计、图谱 channel、list_changed。
+"""对外 MCP 出口（M3a）：/mcp 只认令牌、来源地址（MCP_CLIENTS）、范围与可见性、SOP 的三种对外形式、限流、审计、图谱 channel、list_changed。
 
 MCP_ENABLED 关着时 /mcp 不存在——测试环境里的 main.app 就是关着的（McpOffTests 钉住）。打开时的应用由 make_app() 另建：
 路由对象就是 main.app 的那一批（Basic 依赖已经装在每条路由上），再装上对外出口；没有改动 main.app。
@@ -765,6 +765,99 @@ class GateTests(ExportCase):
         self.assertEqual(self.http.delete("/api/mcp/tokens/nope", auth=BASIC).status_code, 404)
 
 
+class ClientAddressTests(ExportCase):
+    """MCP_CLIENTS：认令牌之前先看 TCP 对端地址（scope["client"]）。只走 SSH 隧道时填 127.0.0.1,::1。"""
+
+    def setUp(self):
+        super().setUp()
+        self.app, _, _ = make_app()
+        _, self.secret = access.issue("来源测试", ["knowledge", "sop"])
+        mcp_server._refused.clear()
+        mcp_server._client_networks.cache_clear()
+
+    def post(self, peer, headers, app=None):
+        with TestClient(app or self.app, client=(peer, 50000)) as http:
+            return http.post("/mcp", json=INIT, headers=headers)
+
+    def test_listed_peers_pass_and_everyone_else_gets_403_even_with_a_valid_token(self):
+        with patch.object(mcp_server, "MCP_CLIENTS", ["127.0.0.1", "::1"]):
+            for peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+                with self.subTest(peer=peer):
+                    self.assertEqual(self.post(peer, bearer(self.secret)).status_code, 200)
+                    self.assertEqual(self.post(peer, ACCEPT).status_code, 401)          # 来源过了，令牌照样要
+            with self.assertLogs("kb", level="WARNING") as logged:
+                for peer in ("203.0.113.7", "127.0.0.2", "::2", "testclient", ""):
+                    with self.subTest(peer=peer):
+                        refused = self.post(peer, bearer(self.secret))
+                        self.assertEqual(refused.status_code, 403)
+                        self.assertEqual(refused.json(), {
+                            "error": "client_not_allowed",
+                            "error_description": "只接受来自 127.0.0.1、::1 的连接，请经 SSH 隧道访问"})
+                        self.assertNotIn("www-authenticate", refused.headers)
+                        self.assertEqual(self.post(peer, ACCEPT).status_code, 403)      # 不带令牌也是 403，不是 401
+        text = "\n".join(logged.output)
+        self.assertIn("mcp connection from 203.0.113.7 refused: not in MCP_CLIENTS", text)
+        self.assertNotIn(self.secret, text)
+        self.assertEqual(text.count("203.0.113.7"), 1)                      # 同一个地址一分钟只记一行
+        self.assertEqual(access.recent_calls(10), [])                        # 进不了门，也就没有调用和审计
+
+    def test_networks_an_empty_list_and_bad_entries(self):
+        with patch.object(mcp_server, "MCP_CLIENTS", ["10.0.0.0/8", "2001:db8::/32", "192.168.1.5"]):
+            for peer, ok in (("10.1.2.3", True), ("11.0.0.1", False), ("2001:db8::5", True), ("2001:db9::1", False),
+                             ("192.168.1.5", True), ("192.168.1.6", False), ("::ffff:10.9.9.9", True)):
+                with self.subTest(peer=peer):
+                    self.assertIs(mcp_server.client_allowed(peer), ok)
+            self.assertEqual(self.post("10.1.2.3", ACCEPT).status_code, 401)
+            self.assertEqual(self.post("11.0.0.1", ACCEPT).json()["error_description"],
+                             "只接受来自 10.0.0.0/8、2001:db8::/32、192.168.1.5 的连接")   # 不全是本机地址，不提隧道
+        with patch.object(mcp_server, "MCP_CLIENTS", []):                      # 留空：不检查，和以前一样
+            for peer in ("203.0.113.7", "testclient", ""):
+                with self.subTest(peer=peer):
+                    self.assertTrue(mcp_server.client_allowed(peer))
+            self.assertEqual(self.post("203.0.113.7", bearer(self.secret)).status_code, 200)
+        with patch.object(mcp_server, "MCP_CLIENTS", ["localhost"]), \
+                self.assertLogs("kb", level="WARNING") as logged:                  # 写错了：宁可全拒，不当成没配
+            self.assertFalse(mcp_server.client_allowed("127.0.0.1"))
+            self.assertEqual(self.post("127.0.0.1", bearer(self.secret)).status_code, 403)
+        self.assertIn("MCP_CLIENTS: localhost is not an IP address or network, ignored", "\n".join(logged.output))
+        with patch.object(mcp_server, "MCP_CLIENTS", ["localhost", "127.0.0.1"]):
+            self.assertTrue(mcp_server.client_allowed("127.0.0.1"))
+
+    def test_a_forged_x_forwarded_for_does_not_change_the_peer(self):
+        """uvicorn 默认开着 proxy headers，只信 FORWARDED_ALLOW_IPS（默认 127.0.0.1,::1）发来的 X-Forwarded-For。
+        这里套上 uvicorn 自己的中间件、用同样的默认值，和生产上一样。"""
+        from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+        proxied = ProxyHeadersMiddleware(self.app, trusted_hosts="127.0.0.1,::1")
+        forged = {**bearer(self.secret), "X-Forwarded-For": "127.0.0.1"}
+        with patch.object(mcp_server, "MCP_CLIENTS", ["127.0.0.1", "::1"]):
+            self.assertEqual(self.post("203.0.113.7", forged, proxied).status_code, 403)      # 公网来的：头不算数
+            self.assertEqual(self.post("203.0.113.7", {**forged, "X-Forwarded-For": "::1, 127.0.0.1"},
+                                       proxied).status_code, 403)
+            self.assertEqual(self.post("127.0.0.1", forged, proxied).status_code, 200)        # 本机来的照常
+            # 本机的反向代理转来的：信它的 X-Forwarded-For，看到的是真实客户端，公网客户端照样 403
+            self.assertEqual(self.post("127.0.0.1", {**bearer(self.secret), "X-Forwarded-For": "203.0.113.7"},
+                                       proxied).status_code, 403)
+
+    def test_the_page_says_when_its_address_cannot_reach_mcp(self):
+        with patch.object(mcp_server, "MCP_CLIENTS", ["127.0.0.1", "::1"]), \
+                patch.object(mcp_server, "MCP_ALLOWED_HOSTS", ["127.0.0.1", "localhost"]):
+            with TestClient(self.app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:8765") as http:
+                status = http.get("/api/mcp", auth=BASIC).json()
+            self.assertEqual(status["clients"], ["127.0.0.1", "::1"])
+            self.assertEqual(status["reachable"], {"ok": True, "reasons": []})
+            with TestClient(self.app, client=("203.0.113.7", 50000), base_url="http://117.72.91.19:8765") as http:
+                page = http.get("/api/mcp", auth=BASIC)
+                self.assertEqual(http.get("/api/documents", auth=BASIC).status_code, 200)   # 网页和 /api 照常
+            self.assertEqual(page.status_code, 200)
+            reachable = page.json()["reachable"]
+            self.assertFalse(reachable["ok"])
+            self.assertEqual(reachable["reasons"], [
+                "/mcp 只接受来自 127.0.0.1、::1 的连接，请经 SSH 隧道访问；你现在的来源地址是 203.0.113.7",
+                "/mcp 只接受 Host 为 127.0.0.1、localhost 的请求；这个页面的地址是 117.72.91.19:8765"])
+        self.assertEqual(TestClient(self.app).get("/api/mcp", auth=BASIC).json()["reachable"],
+                         {"ok": True, "reasons": []})                                   # 都没配：不提示
+
+
 class McpOffTests(unittest.TestCase):
     def test_mcp_does_not_exist_when_switched_off(self):
         self.assertFalse(app_main.MCP_ENABLED)
@@ -956,6 +1049,23 @@ class EndToEndTests(ExportCase):
         with patch.object(mcp_server, "SESSIONS_PER_TOKEN", 3), Served(self.app) as served:
             statuses = anyio.run(burst)
         self.assertEqual(statuses, [200] * 3 + [429] * 5)
+
+    def test_the_peer_is_the_tcp_address_on_a_real_server(self):
+        """真起的 uvicorn（和生产一样默认开着 proxy headers）：从 127.0.0.2 连过来，伪造 X-Forwarded-For: 127.0.0.1 也是 403。"""
+        import httpx
+        _, secret = access.issue("真服务", ["knowledge"])
+        forged = {**bearer(secret), "X-Forwarded-For": "127.0.0.1"}
+        with patch.object(mcp_server, "MCP_CLIENTS", ["127.0.0.1"]), Served(self.app) as served:
+            try:
+                with httpx.Client(transport=httpx.HTTPTransport(local_address="127.0.0.2"), timeout=30) as other:
+                    refused = other.post(served.url, json=INIT, headers=forged)
+            except httpx.ConnectError as exc:
+                self.skipTest(f"这台机器不能从 127.0.0.2 发起连接：{exc}")
+            with httpx.Client(timeout=30) as local:
+                allowed = local.post(served.url, json=INIT, headers=forged)
+        self.assertEqual(refused.status_code, 403)
+        self.assertEqual(refused.json()["error"], "client_not_allowed")
+        self.assertEqual(allowed.status_code, 200)
 
     def test_list_changed_reaches_both_eras(self):
         _, secret = access.issue("通知", ["knowledge", "sop"])

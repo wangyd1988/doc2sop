@@ -2755,9 +2755,13 @@ async function renderAccess() {
       每个客户端一枚令牌，库里只存哈希；<code>/mcp</code> 只认令牌，不认这个页面的密码。</p>
     <div class="card"><h3>接入地址 <small>对内网开放时前面放反向代理和 TLS，换成 https 的地址（docs/正式部署.md「对外接入」）</small></h3>
       <dl><dt>地址</dt><dd><code>${esc(url)}</code></dd>
+        ${(s.clients || []).length ? `<dt>来源</dt><dd>只接受来自 ${s.clients.map(c => `<code>${esc(c)}</code>`).join('、')} 的连接</dd>` : ''}
         <dt>知识库</dt><dd>${byScope('knowledge')}</dd>
         <dt>SOP</dt><dd>${byScope('sop')}；启用的 SOP ${s.sops} 个，每个一条提示词（客户端里的「▶ 执行」）</dd>
         <dt>数据工具</dt><dd>${byScope('data')}<div class="note">只有宿主机在工具服务主配置里标了 <code>export</code> 的才会出现；页面改不了。</div></dd></dl>
+      ${s.reachable && !s.reachable.ok ? `<div class="warn"><b>从这里打开的页面，上面的接入地址连不上 /mcp：</b>
+        <ul class="ax">${s.reachable.reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>
+        换一个连得上的地址打开本页，再签发、复制配置片段。</div>` : ''}
       <div class="row"><button id="axSkills">导出 SKILL.md</button><span class="note">每个启用的 SOP 一个目录，放进客户端的 skills 目录离线使用；
         执行前会先调 <code>sop_get</code> 取最新版，SOP 改了不用重新导出。</span></div>
     </div>
