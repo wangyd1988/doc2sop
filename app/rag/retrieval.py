@@ -39,10 +39,12 @@ def _identifiers(text: str):
 
 
 def _cosine(a, b):
+    # 向量服务和 Chroma 取回的向量是 numpy 数组：结果要转成 Python 的 float，
+    # 否则 numpy 2 下是 float32，页面事件（json）和 Agent 记忆（msgpack）都序列化不了
     dot = sum(x * y for x, y in zip(a, b))
     na = sum(x * x for x in a) ** 0.5
     nb = sum(y * y for y in b) ** 0.5
-    return dot / (na * nb) if na and nb else 0.0
+    return float(dot / (na * nb)) if na and nb else 0.0
 
 
 def _location(meta):
@@ -97,7 +99,7 @@ def retrieve(question: str, progress=None, *, top_k=None, category=None, source=
         lap("vector")
         for cid, text, meta, distance in zip(result["ids"][0], result["documents"][0],
                                              result["metadatas"][0], result["distances"][0]):
-            records[cid] = {"text": text, "meta": meta, "score": round(1 - distance, 3)}
+            records[cid] = {"text": text, "meta": meta, "score": round(1 - float(distance), 3)}
             vector_rank.append(cid)
 
     try:

@@ -144,6 +144,35 @@ class RetrieveFilterTests(KbStoreCase):
                 patch.object(retrieval.rerank, "rerank", lambda q, hits, keep: hits[:keep]):
             self.assertEqual(len(retrieval.retrieve("内容")), 1)
 
+    def test_scores_are_plain_floats_even_when_chroma_returns_numpy(self):
+        """生产上 Chroma 取回的向量是 numpy float32（numpy 2）：只靠关键词召回的片段，余弦算出来也是 float32，
+        页面事件（json）和 Agent 记忆（msgpack）都序列化不了——kb_search 一轮调两次就整轮失败。分数一律转成 Python float。"""
+        import numpy as np
+        from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+        class NumpyCollection(FakeCollection):
+            def get(self, *args, **kwargs):
+                out = super().get(*args, **kwargs)
+                if "embeddings" in out:
+                    out["embeddings"] = [np.array(v, dtype=np.float32) for v in out["embeddings"]]
+                return out
+
+            def query(self, **kwargs):
+                out = super().query(**kwargs)
+                out["distances"] = [[np.float32(d) for d in out["distances"][0]]]
+                return out
+
+        collection = NumpyCollection()
+        collection.add(["v:0"], ["容器资源限制的一般原则"], [[1.0, 0.0]], [{"source": "v.md"}])
+        collection.add(["k:0"], ["mem_limit 字段控制容器内存上限"], [[0.6, 0.8]], [{"source": "k.md"}])
+        store._bump()
+        with patch.object(store, "collection", collection), patch.object(retrieval, "CANDIDATES", 1):
+            hits = retrieval.retrieve("mem_limit 怎么设")
+        self.assertEqual({h["match"] for h in hits}, {"vector", "lexical"})
+        self.assertTrue(all(type(h["score"]) is float for h in hits), [type(h["score"]) for h in hits])
+        json.dumps(hits)
+        JsonPlusSerializer().dumps_typed([ToolMessage(content="x", tool_call_id="1", artifact={"hits": hits})])
+
     def test_catalog_cache_follows_writes(self):
         self.add_doc("a.md", ["一"], category="运维")
         self.assertEqual([d["source"] for d in store.catalog()], ["a.md"])
@@ -452,6 +481,8 @@ class KbLoopCase(unittest.TestCase):
         clear_graph()
         agent_loop._no_tool_choice.clear()
         self.addCleanup(agent_loop._no_tool_choice.clear)
+        agent_loop._ignored.clear()
+        self.addCleanup(agent_loop._ignored.clear)
         for target, attr, value in ((agent_loop.playbooks, "as_prompt", ""),
                                     (kb_tools.store, "catalog", [{"source": "a.md", "chunks": 2, "category": "运维"}])):
             p = patch.object(target, attr, return_value=value)
@@ -591,9 +622,45 @@ class KbLoopTests(KbLoopCase):
         self.assertFalse(agent_loop.forced_unsupported("m"))
 
     def test_forced_falls_back_when_the_model_ignores_tool_choice(self):
-        """模型没照做、直接答了：这段回答不能流到页面上，退回 prefetch 重新答。"""
+        """模型没照做、直接答了：这段回答不能流到页面上，本轮退回 prefetch；偶尔一次不算不支持。"""
         model = Scripted([([], "答 [1]")], forced=AIMessage(content="unused"), stream_forced=True)
-        self.check_fallback(model, marked=True)
+        self.check_fallback(model, marked=False)
+        self.assertFalse(agent_loop._choice_rejected("fake-model", "required"))
+        self.assertEqual(len(model.seen), 2)                      # 没照做就不再试另一种写法
+
+    def test_forced_marks_a_form_only_after_repeated_ignores(self):
+        for turn in range(agent_loop.IGNORES_BEFORE_MARK):
+            self.assertFalse(agent_loop._choice_rejected("fake-model", "required"), turn)
+            self.check_fallback(Scripted([([], "答 [1]")], forced=AIMessage(content="不查了")), marked=False)
+        self.assertTrue(agent_loop._choice_rejected("fake-model", "required"))
+        self.assertFalse(agent_loop._choice_rejected("fake-model", "kb_search"))
+        # 照做一次就清零
+        agent_loop._no_tool_choice.clear()
+        agent_loop._note_ignored("fake-model", "required")
+        agent_loop._note_obeyed("fake-model", "required")
+        self.assertNotIn(("fake-model", "required"), agent_loop._ignored)
+
+    def test_artifacts_are_made_plain_before_they_reach_the_checkpoint(self):
+        """artifact 里混进 numpy 数字也不能让整轮失败：进记忆前转成纯 JSON 类型。"""
+        import numpy as np
+
+        def numbers(args, turn):
+            return "ok", {"score": np.float32(0.25), "rank": np.int64(3), "nested": [{"x": np.float64(1.5)}]}
+
+        tool = registry.AppTool({"name": "kb_numbers", "title": "t", "description": "d",
+                                 "inputSchema": {"type": "object", "properties": {}},
+                                 "_meta": {"doc2sop": {"category": "knowledge", "provider": "app", "export": False,
+                                                       "group": "知识库"}}}, numbers)
+        thread = uuid.uuid4().hex
+        self.addCleanup(agent_loop.forget, thread)
+        with patch.object(registry, "APP_TOOLS", registry.APP_TOOLS + (tool,)), \
+                patch.dict(registry._APP, {"kb_numbers": tool}):
+            events, _ = self.run_loop(Scripted([([{"name": "kb_numbers", "args": {}, "id": "n1"}], ""),
+                                                ([], "答")]), kb_tools=True, thread_id=thread)
+        self.assertNotIn("error", [k for k, _ in events])
+        stored = [m for m in agent_loop._build_graph(None, "", "", {}, False).get_state(
+            {"configurable": {"thread_id": thread}}).values["messages"] if isinstance(m, ToolMessage)]
+        self.assertEqual(stored[0].artifact, {"score": 0.25, "rank": 3, "nested": [{"x": 1.5}]})
 
     def test_known_unsupported_model_is_not_forced_again(self):
         agent_loop._mark_no_tool_choice("fake-model", "test")
@@ -695,6 +762,8 @@ class AskCase(unittest.TestCase):
         clear_graph()
         agent_loop._no_tool_choice.clear()
         self.addCleanup(agent_loop._no_tool_choice.clear)
+        agent_loop._ignored.clear()
+        self.addCleanup(agent_loop._ignored.clear)
         self.client = TestClient(app_main.app)
         self.addCleanup(self.client.close)
         self.auth = (WEB_USER, WEB_PASSWORD)

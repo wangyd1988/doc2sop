@@ -13,6 +13,7 @@ thread，**整轮过程**（工具调用、工具结果、搜索结果、最终�
 `run` 是一个生成器，边执行边把事件吐出来，前端可以实时看到它查了什么、
 看到了什么，而不是等一个黑盒答案。
 """
+import json
 import re
 import sqlite3
 import threading
@@ -274,6 +275,21 @@ def _clip(text, limit):
     return text if len(text) <= limit else text[:limit] + "\n…（已截断）"
 
 
+def _plain(artifact):
+    """artifact 跟着 ToolMessage 进 Agent 记忆（检查点用 msgpack）：先转成纯 JSON 类型。
+
+    numpy 的数字之类 msgpack 不认，整轮对话会在写检查点时失败；转不了的就丢掉 artifact，回答照常。
+    """
+    if artifact is None:
+        return None
+    try:
+        return json.loads(json.dumps(artifact, ensure_ascii=False,
+                                     default=lambda value: value.item() if hasattr(value, "item") else str(value)))
+    except Exception as exc:
+        log.warning("tool artifact dropped: %s", why(exc))
+        return None
+
+
 def _paired(messages):
     """Drop tool calls without results (and results without calls).
 
@@ -369,14 +385,17 @@ def _call(bound, view, emit, quiet=False):
 # --- forced 模式：第一轮用 tool_choice 强制调 kb_search --------------------------------
 #
 # 第一轮只绑 kb_search 一个工具，再用 tool_choice 强制调用。tool_choice 有两种写法，各家认的不一样：
-# 有的上游只认字符串（"required"，只绑一个工具时就等于强制调它），有的只认指定函数名的对象写法。按顺序试，
-# 某种写法被明确拒绝（报错点名 tool_choice）或模型不照做，就记住「这个模型 × 这种写法」一段时间、换下一种；
-# 都不行就退回 prefetch：本轮当场按预检索的方式查一次接着答，记住的这段时间里这个模型直接走 prefetch。
+# 有的上游只认字符串（"required"，只绑一个工具时就等于强制调它），有的只认指定函数名的对象写法。按顺序试：
+# 某种写法被明确拒绝（4xx 报错点名 tool_choice），就记住「这个模型 × 这种写法」一段时间、换下一种；
+# 模型偶尔没照做（没调 kb_search）本轮退回 prefetch，连续几次才记。都不行就退回 prefetch：本轮当场按预检索的方式
+# 查一次接着答，记住的这段时间里这个模型直接走 prefetch。
 # 网关的额度用完、内容审核、上下文超长也是 400，那些只退回本轮，不记、也不换写法。
 
 FORCED_CHOICES = ("required", kb.SEARCH_NAME)
 NO_TOOL_CHOICE_SECONDS = 1800
+IGNORES_BEFORE_MARK = 3             # 偶尔一次没照做（比如参数没生成全）不算不支持：连续这么多次才记
 _no_tool_choice: dict = {}          # (模型名, 写法) -> 到期时间（time.monotonic）
+_ignored: dict = {}                 # (模型名, 写法) -> 连续没照做的次数
 _tool_choice_lock = threading.Lock()
 
 
@@ -414,6 +433,25 @@ def _rejects_tool_choice(exc) -> bool:
     return "tool_choice" in text or "tool choice" in text
 
 
+def _note_ignored(model, choice) -> None:
+    """模型这次没按 tool_choice 调 kb_search：连续 IGNORES_BEFORE_MARK 次才记成不支持这种写法。"""
+    key = (str(model or ""), choice)
+    with _tool_choice_lock:
+        _ignored[key] = count = _ignored.get(key, 0) + 1
+        if count >= IGNORES_BEFORE_MARK:
+            del _ignored[key]
+    if count >= IGNORES_BEFORE_MARK:
+        _mark_no_tool_choice(model, f"连续 {count} 次没有按 tool_choice 调用 kb_search", choice)
+    else:
+        log.info("model %s ignored tool_choice=%s (%d/%d), falling back for this turn",
+                 model or "(default)", choice, count, IGNORES_BEFORE_MARK)
+
+
+def _note_obeyed(model, choice) -> None:
+    with _tool_choice_lock:
+        _ignored.pop((str(model or ""), choice), None)
+
+
 @dataclass
 class TurnSetup:
     """这一轮循环的设置。默认值就是原来的行为：4 轮、不强制检索。"""
@@ -428,7 +466,11 @@ class TurnSetup:
 
 
 def _forced(setup, view, emit):
-    """强制检索的那一轮：模型照做就返回只含 kb_search 调用的回复；几种写法都不行返回 None（退回 prefetch）。"""
+    """强制检索的那一轮：模型照做就返回只含 kb_search 调用的回复；几种写法都不行返回 None（退回 prefetch）。
+
+    写法被明确拒绝（4xx 点名 tool_choice）：记下来，换下一种写法；
+    模型没照做（没调 kb_search）：本轮退回，连续几次才记；其余报错（额度、超时……）：本轮退回，不记。
+    """
     for choice, bound in setup.forced:
         setup.stats["model_calls"] += 1
         try:
@@ -441,9 +483,11 @@ def _forced(setup, view, emit):
             continue
         calls = [c for c in reply.tool_calls if c.get("name") == kb.SEARCH_NAME][:1]
         if calls:
+            _note_obeyed(setup.model_key, choice)
             setup.stats["forced_with"] = choice
             return AIMessage(content=reply.content or "", tool_calls=calls, id=reply.id)
-        _mark_no_tool_choice(setup.model_key, "模型没有按 tool_choice 调用 kb_search", choice)
+        _note_ignored(setup.model_key, choice)
+        return None
     return None
 
 
@@ -520,7 +564,7 @@ def _build_graph(bound, system, current_prompt, by_name, allow_web=False, record
                         output = f"[执行失败] {why(exc)}"
             if isinstance(output, tuple) and len(output) == 2:
                 # 应用内工具可以返回 (文字, artifact)：结构化结果跟着 ToolMessage 进记忆
-                output, artifact = output
+                output, artifact = output[0], _plain(output[1])
             output = str(output)
             # 流程类（plan）不记：它只是本轮的待办清单，不是对系统或资料的一次查询
             if record is not None and policy.record:
