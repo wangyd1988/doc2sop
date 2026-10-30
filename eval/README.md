@@ -17,19 +17,30 @@
 ## 怎么跑
 
 ```bash
-# 1. 准备语料：把 sample_kb/ 下 6 个文件上传到知识库
-# 2. 跑评测
-python eval/run_eval.py --url http://127.0.0.1:8765 --user admin --password '你的密码'
+# 1. 准备语料：把 sample_kb/ 下的文件上传到知识库
+# 2. 跑评测。凭据走环境变量：写在命令行上的密码谁都能用 ps 看到
+export EVAL_USER=admin
+read -rsp '登录密码：' EVAL_PASSWORD && export EVAL_PASSWORD
+python eval/run_eval.py --url http://127.0.0.1:8765
+```
+
+| 环境变量 | 对应参数 | 用途 |
+|---|---|---|
+| `EVAL_USER` / `EVAL_PASSWORD` | `--user` / `--password` | 页面的登录账号 |
+| `EVAL_JUDGE_API_KEY` | `--judge-api-key` | 评判模型的 key |
+| `EVAL_TOKEN` | `--eval-token` | `--mode` 用的评测令牌（也可以 `--eval-token-file`） |
+
+在部署机上可以直接从应用的配置里取（和 `deploy/release.sh` 读法一样），不打印、不进命令行：
+
+```bash
+envget() { sed -n "s/^[[:space:]]*$1=//p" /opt/kb-app/.env | tail -n 1 | tr -d '\r'; }
+export EVAL_USER=$(envget WEB_USER) EVAL_PASSWORD=$(envget WEB_PASSWORD) EVAL_JUDGE_API_KEY=$(envget LLM_API_KEY)
 ```
 
 要点覆盖率默认用关键词匹配打分，结果偏保守。接入模型评判更准：
 
 ```bash
-python eval/run_eval.py --user admin --password '...' \
-  --judge-model kb-chat \
-  --judge-base-url http://127.0.0.1:4000/v1 \
-  --judge-api-key "$LLM_API_KEY" \
-  --out eval/result.json
+python eval/run_eval.py --judge-model kb-chat --judge-base-url http://127.0.0.1:4000/v1 --out eval/result.json
 ```
 
 ### 对比三种检索模式
@@ -39,7 +50,7 @@ python eval/run_eval.py --user admin --password '...' \
 
 ```bash
 for mode in prefetch forced agentic; do
-  python eval/run_eval.py --user admin --password '...' --dataset eval/dataset.local.jsonl \
+  python eval/run_eval.py --dataset eval/dataset.local.jsonl \
     --mode $mode --eval-token-file /opt/kb-app/data/eval_token --out eval/result.$mode.json
 done
 ```

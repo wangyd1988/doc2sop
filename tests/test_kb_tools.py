@@ -935,6 +935,16 @@ class EvalScriptTests(unittest.TestCase):
         self.assertEqual((metrics["requery_rate"], metrics["hit_after"], metrics["hit_before"]), (0.5, 0.5, 0.0))
         self.assertEqual(metrics["model_calls"], 3)
 
+    def test_credentials_come_from_the_environment(self):
+        """密码、评判 key、评测令牌可以不上命令行（ps 看得到）。"""
+        env = {"EVAL_USER": "admin", "EVAL_PASSWORD": "pw", "EVAL_JUDGE_API_KEY": "jk", "EVAL_TOKEN": "tk"}
+        args = run_eval.parse_args(["--mode", "forced"], environ=env)
+        self.assertEqual((args.user, args.password, args.judge_api_key, args.eval_token, args.mode),
+                         ("admin", "pw", "jk", "tk", "forced"))
+        self.assertEqual(run_eval.parse_args(["--password", "cli"], environ=env).password, "cli")
+        with patch("sys.stderr"), self.assertRaises(SystemExit):
+            run_eval.parse_args([], environ={})
+
 
 if __name__ == "__main__":
     unittest.main()

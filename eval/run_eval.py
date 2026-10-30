@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Run the evaluation set against a running knowledge base and print the metrics.
 
-    python eval/run_eval.py --url http://127.0.0.1:8765 --user admin --password ...
+    EVAL_USER=admin EVAL_PASSWORD=... python eval/run_eval.py --url http://127.0.0.1:8765
+
+凭据从环境变量取（EVAL_USER、EVAL_PASSWORD；评判模型的 key 用 EVAL_JUDGE_API_KEY），不放命令行：
+命令行参数谁都能用 ps 看到。--user / --password / --judge-api-key 仍然可用，只是不推荐。
 
 Measures four things, deliberately kept separate so a bad score points at one stage:
 
@@ -186,11 +189,14 @@ def covered_by_judge(judge, point, question, answer):
     return tokens[-1] == "是"
 
 
-def main():
+def parse_args(argv=None, environ=None):
+    """命令行参数。密码、评判模型的 key、评测令牌都可以从环境变量取，免得出现在命令行里（ps 看得到）。"""
+    env = os.environ if environ is None else environ
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://127.0.0.1:8765")
-    parser.add_argument("--user", required=True)
-    parser.add_argument("--password", required=True)
+    parser.add_argument("--user", default=env.get("EVAL_USER", ""), help="登录用户名，默认取 EVAL_USER 环境变量")
+    parser.add_argument("--password", default=env.get("EVAL_PASSWORD", ""),
+                        help="登录密码，默认取 EVAL_PASSWORD 环境变量（推荐，命令行上的值 ps 看得到）")
     parser.add_argument("--dataset", default=str(Path(__file__).parent / "dataset.jsonl"))
     parser.add_argument("--timeout", type=float, default=300)
     parser.add_argument("--web", action="store_true",
@@ -198,15 +204,23 @@ def main():
     parser.add_argument("--judge-model", default="",
                         help="Model alias for LLM-as-judge scoring; falls back to keywords.")
     parser.add_argument("--judge-base-url", default="")
-    parser.add_argument("--judge-api-key", default="")
+    parser.add_argument("--judge-api-key", default=env.get("EVAL_JUDGE_API_KEY", ""),
+                        help="评判模型的 key，默认取 EVAL_JUDGE_API_KEY 环境变量")
     parser.add_argument("--out", default="", help="Write per-case results to this JSON file.")
     parser.add_argument("--mode", choices=MODES, default="",
                         help="打开知识类工具并指定检索模式（要评测令牌）；不给则按服务端配置跑。")
-    parser.add_argument("--eval-token", default=os.environ.get("EVAL_TOKEN", ""),
+    parser.add_argument("--eval-token", default=env.get("EVAL_TOKEN", ""),
                         help="评测令牌，默认取 EVAL_TOKEN 环境变量")
     parser.add_argument("--eval-token-file", default="",
                         help="从文件读评测令牌，如宿主机上的 /opt/kb-app/data/eval_token")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if not args.user or not args.password:
+        parser.error("缺登录凭据：用 EVAL_USER / EVAL_PASSWORD 环境变量（或 --user / --password）")
+    return args
+
+
+def main():
+    args = parse_args()
 
     eval_token = args.eval_token
     if args.mode and not eval_token and args.eval_token_file:
