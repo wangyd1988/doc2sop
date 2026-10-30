@@ -15,13 +15,14 @@ Measures four things, deliberately kept separate so a bad score points at one st
 
 Point coverage is scored by an LLM judge when --judge-model is given, otherwise by
 keyword overlap. Keyword scoring is strict and will under-report; treat it as a
-lower bound.
+lower bound. 评判调用失败（限流等）先隔一会儿重试，仍判不出的要点才退回关键词法，
+汇总里会打印「N 个要点由关键词法判分」；上游限流时可以用 --judge-gap 给评判调用加间隔。
 
 --mode prefetch|forced|agentic 按请求打开知识类工具（KB_TOOLS）并指定检索模式，三种模式跑同一套题对比。
 这要带评测令牌（--eval-token / --eval-token-file，默认读 EVAL_TOKEN 环境变量），令牌在应用的
 DATA_DIR/eval_token 里，只有宿主机上读得到。打开后多三个指标：
 
-  补查率          第一次检索之后模型又查了知识库（kb_search / kb_read）的题占比
+  补查率          第一次检索之后模型又查了知识库（kb_search / kb_read）的题占比；按调用次数算，同一轮并行的多条也算
   补查后命中率    补查过的题里，最终来源（预检索 + 补查）命中期望文档的比例；同时给出补查前的命中率对照
   平均模型轮次    每题调用模型的次数（服务端 stats 事件给出）
 """
@@ -44,6 +45,7 @@ REFUSAL_MARKERS = ["没有找到", "未找到", "没有相关", "无法找到", 
 REFUSAL_PATTERN = re.compile(r"没有[^。！？\n]{0,40}(?:相关内容|相关资料|相关文档)")
 MODES = ("prefetch", "forced", "agentic")
 KB_TOOLS = ("kb_search", "kb_read", "kb_catalog")
+JUDGE_RETRY_WAITS = (10, 30, 60)   # 评判失败后依次等这么久再试（秒）；评判模型常和被测应用共用上游，限流时一起被限
 
 
 def percentile(values, pct):
@@ -181,21 +183,45 @@ def covered_by_keywords(point, answer):
     return hits / len(tokens) >= 0.5
 
 
-def covered_by_judge(judge, point, question, answer):
-    """Ask a model whether the answer contains the point. None means 'could not judge'."""
+def covered_by_judge(judge, point, question, answer, waits=JUDGE_RETRY_WAITS, sleep=time.sleep):
+    """Ask a model whether the answer contains the point. None means 'could not judge'.
+
+    评判失败（限流、超时、没给出「是/否」）先按 waits 等一会儿重试；都失败才返回 None，
+    由调用方退回关键词法并计数。
+    """
     prompt = ("判断「回答」是否包含了「要点」所表达的信息。\n"
               "只输出 是 或 否，不要解释。\n\n"
               f"问题：{question}\n\n要点：{point}\n\n回答：{answer[:2000]}")
-    try:
-        verdict = (judge.invoke([("human", prompt)]).content or "").strip()
-    except Exception:
-        return None
-    # A thinking model may emit reasoning first, so take the last verdict token,
-    # and fall back to keyword scoring when no verdict is found at all.
-    tokens = re.findall(r"[是否]", verdict)
-    if not tokens:
-        return None
-    return tokens[-1] == "是"
+    for wait in (0, *waits):
+        if wait:
+            sleep(wait)
+        try:
+            verdict = (judge.invoke([("human", prompt)]).content or "").strip()
+        except Exception:
+            continue
+        # A thinking model may emit reasoning first, so take the last verdict token.
+        tokens = re.findall(r"[是否]", verdict)
+        if tokens:
+            return tokens[-1] == "是"
+    return None
+
+
+def score_points(judge, case, answer, gap=0.0, sleep=time.sleep):
+    """逐个要点判分，返回 (每个要点是否覆盖, 由关键词法判分的要点数)。
+
+    给了评判模型就让它判，每次调用前停 gap 秒；重试后仍判不出的要点退回关键词法，并单独计数：
+    关键词法偏严，混进来会压低覆盖率，汇总时要说出来。没给评判模型时全部用关键词法，不计入这个数。
+    """
+    points, fallbacks = [], 0
+    for point in case["expected_points"]:
+        verdict = None
+        if judge:
+            if gap:
+                sleep(gap)
+            verdict = covered_by_judge(judge, point, case["question"], answer, sleep=sleep)
+            fallbacks += verdict is None
+        points.append(covered_by_keywords(point, answer) if verdict is None else verdict)
+    return points, fallbacks
 
 
 def parse_args(argv=None, environ=None):
@@ -215,6 +241,8 @@ def parse_args(argv=None, environ=None):
     parser.add_argument("--judge-base-url", default="")
     parser.add_argument("--judge-api-key", default=env.get("EVAL_JUDGE_API_KEY", ""),
                         help="评判模型的 key，默认取 EVAL_JUDGE_API_KEY 环境变量")
+    parser.add_argument("--judge-gap", type=float, default=0.0,
+                        help="每次调评判模型前停几秒，上游限流时用；失败的评判另有重试")
     parser.add_argument("--out", default="", help="Write per-case results to this JSON file.")
     parser.add_argument("--mode", choices=MODES, default="",
                         help="打开知识类工具并指定检索模式（要评测令牌）；不给则按服务端配置跑。")
@@ -271,17 +299,13 @@ def main():
         answer = outcome["answer"]
         is_refusal = case["type"] == "refusal"
 
-        points = []
-        for point in case["expected_points"]:
-            verdict = covered_by_judge(judge, point, case["question"], answer) if judge else None
-            if verdict is None:
-                verdict = covered_by_keywords(point, answer)
-            points.append(verdict)
+        points, fallbacks = score_points(judge, case, answer, args.judge_gap)
 
         record = {**case, "failed": False, "answer": answer, "mode": args.mode or None,
                   "retrieved": [s["location"] for s in outcome["sources"]],
                   "recall": recall_hit(case["expected_sources"], outcome["sources"]),
                   "coverage": sum(points) / len(points) if points else 0.0,
+                  "keyword_points": fallbacks,
                   "refused_correctly": refused(answer) if is_refusal else None,
                   "ttft": outcome["ttft"], "total": outcome["total"],
                   "error": outcome["error"],
@@ -294,10 +318,10 @@ def main():
         results.append(record)
 
         mark = "✓" if (record["recall"] is not False and record["coverage"] >= 0.5) else "✗"
-        extra = ""
+        extra = f"  关键词法判 {fallbacks} 个要点" if fallbacks else ""
         if args.mode:
-            extra = (f"  补查 {'是' if record['requeried'] else '否'}"
-                     f"  轮次 {record['model_calls'] if record['model_calls'] is not None else '-'}")
+            extra += (f"  补查 {'是' if record['requeried'] else '否'}"
+                      f"  轮次 {record['model_calls'] if record['model_calls'] is not None else '-'}")
         print(f"    {mark} 召回 {record['recall']}  要点 {record['coverage']:.0%}  "
               f"首字 {record['ttft']:.1f}s  总 {record['total']:.1f}s{extra}")
 
@@ -320,6 +344,8 @@ def main():
     if coverages:
         print(f"{'要点覆盖率':<14}{statistics.mean(coverages):>12.0%}   {len(coverages)} 条"
               + ("" if judge else "（关键词法，偏低）"))
+    if judge:
+        print(f"  {sum(r['keyword_points'] for r in ok)} 个要点由关键词法判分（评判模型重试后仍判不出）")
     if refusals:
         print(f"{'拒答正确率':<14}{sum(refusals) / len(refusals):>12.0%}   {len(refusals)} 条")
     print(f"{'首字 P50 / P95':<14}{percentile(ttfts, 50):>7.1f}s /{percentile(ttfts, 95):>5.1f}s")

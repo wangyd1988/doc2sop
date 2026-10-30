@@ -43,6 +43,10 @@ export EVAL_USER=$(envget WEB_USER) EVAL_PASSWORD=$(envget WEB_PASSWORD) EVAL_JU
 python eval/run_eval.py --judge-model kb-chat --judge-base-url http://127.0.0.1:4000/v1 --out eval/result.json
 ```
 
+评判调用失败（限流、超时、没答「是 / 否」）会隔 10、30、60 秒重试，仍判不出的要点才退回关键词法，
+汇总里打印「N 个要点由关键词法判分」，每题的数记在结果文件的 `keyword_points` 里。这个数不为 0 时，覆盖率混进了偏严的关键词分。
+评判模型和被测应用共用一个上游时容易一起被限流，可以加 `--judge-gap 8` 让每次评判前停几秒。
+
 ### 对比三种检索模式
 
 `--mode prefetch|forced|agentic` 按请求打开知识类工具（`KB_TOOLS`）并指定检索模式，服务端配置不用改。
@@ -59,7 +63,7 @@ done
 
 | 指标 | 怎么算 |
 |---|---|
-| 补查率 | 第一次检索之后模型又调了 `kb_search` / `kb_read` 的题占比（`prefetch` 下第一次是代码预检索，其余模式是模型的第一次 `kb_search`） |
+| 补查率 | 第一次检索之后模型又调了 `kb_search` / `kb_read` 的题占比（`prefetch` 下第一次是代码预检索，其余模式是模型的第一次 `kb_search`）。按调用次数算：模型在同一轮里并行发两条 `kb_search` 也算补查（`agentic` 下常见），要看「看了结果再查」结合平均模型轮次 |
 | 补查后命中率 | 补查过的题里，最终来源（预检索 + 补查）命中期望文档的比例；同时给出这些题补查前的命中率 |
 | 平均模型轮次 | 每题调用模型的次数（服务端在回答末尾的 `stats` 事件里给出） |
 

@@ -10,6 +10,7 @@ import sys
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -1056,6 +1057,42 @@ class EvalScriptTests(unittest.TestCase):
         self.assertEqual(run_eval.parse_args(["--password", "cli"], environ=env).password, "cli")
         with patch("sys.stderr"), self.assertRaises(SystemExit):
             run_eval.parse_args([], environ={})
+
+    class Judge:
+        """依次给出预设的回复；Exception 实例表示这次调用报错（限流之类）。"""
+        def __init__(self, *replies):
+            self.replies, self.calls = list(replies), 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            reply = self.replies.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return SimpleNamespace(content=reply)
+
+    def test_judge_failures_are_retried_before_giving_up(self):
+        """限流时评判调用会失败：先隔一会儿重试，别直接退回偏严的关键词法。"""
+        waits = []
+        judge = self.Judge(RuntimeError("429 too many requests"), "嗯……", "是")
+        self.assertTrue(run_eval.covered_by_judge(judge, "要点", "问", "答", sleep=waits.append))
+        self.assertEqual(waits, list(run_eval.JUDGE_RETRY_WAITS[:2]))
+        waits = []
+        judge = self.Judge(*[RuntimeError("429")] * 4)
+        self.assertIsNone(run_eval.covered_by_judge(judge, "要点", "问", "答", sleep=waits.append))
+        self.assertEqual((judge.calls, waits), (4, list(run_eval.JUDGE_RETRY_WAITS)))
+
+    def test_points_scored_by_keywords_are_counted(self):
+        case = {"question": "问", "expected_points": ["上限 留三成", "重启 次数"]}
+        answer = "内存上限要留三成余量"
+        waits = []
+        judge = self.Judge("否", *[RuntimeError("429")] * 4)
+        points, fallbacks = run_eval.score_points(judge, case, answer, gap=8, sleep=waits.append)
+        self.assertEqual((points, fallbacks), ([False, False], 1))     # 第二点评判没判出来，关键词法判「否」
+        self.assertEqual(waits, [8, 8, *run_eval.JUDGE_RETRY_WAITS])
+        points, fallbacks = run_eval.score_points(None, case, answer)   # 没配评判模型：全用关键词法，不计数
+        self.assertEqual((points, fallbacks), ([True, False], 0))
+        self.assertEqual(run_eval.parse_args(["--judge-gap", "8"], environ={"EVAL_USER": "a", "EVAL_PASSWORD": "b"})
+                         .judge_gap, 8.0)
 
 
 if __name__ == "__main__":
