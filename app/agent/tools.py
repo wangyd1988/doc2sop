@@ -1,12 +1,9 @@
 """Tool schemas exposed to the model.
 
-The ops host is the single source of truth. It reports each tool's description
-and parameter spec, and we turn that into the function signature the model sees.
-Adding a tool is therefore an edit to the host's definition file — no schema to
-keep in sync here, and no rebuild of this image.
-
-MCP 工具多带一份原始 input_schema（JSON Schema）。有它就按它生成完整的 pydantic 模型——
-嵌套对象、数组、枚举、必填都保得住；没有就退回 params 那条老路。
+签名统一按 JSON Schema 生成：工具服务下发的工具用契约里的 inputSchema（见 registry.py），
+应用内工具（web_search……）用它们自己的契约。嵌套对象、数组、枚举、必填都保得住。
+老工具服务没有 inputSchema 时，按它的 input_schema（MCP 工具）或 params 推一份，再走同一条路——
+params 只作兼容。所以加工具仍然只改宿主机的定义文件，这边不留第二份清单，也不用重建镜像。
 """
 import re
 import warnings
@@ -15,7 +12,7 @@ from typing import Any, Literal, Optional, Union
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field, create_model
 
-from app.agent import ops_client
+from app.agent import ops_client, registry
 from app.config import log, why
 
 
@@ -26,34 +23,9 @@ class Empty(BaseModel):
 _SCALAR = (str, int, float, bool)
 
 
-def _field(spec: dict):
-    """One declared parameter as a (type, Field) pair for create_model."""
-    description = str(spec.get("desc") or "")
-    kind = spec.get("type")
-    required = bool(spec.get("required"))
-    if kind == "int":
-        if required and "default" not in spec:
-            return int, Field(description=description)
-        return int, Field(default=int(spec.get("default", 100)), description=description)
-    if kind in ("float", "bool", "json", "enum"):
-        annotation = {"float": float, "bool": bool, "json": Any}.get(kind, str)
-        values = tuple(v for v in (spec.get("enum") or []) if isinstance(v, _SCALAR))
-        if kind == "enum" and values:
-            annotation = Literal[values]
-        if required:
-            return annotation, Field(description=description)
-        default = spec.get("default") if isinstance(spec.get("default"), _SCALAR) else None
-        return Optional[annotation], Field(default=default, description=description)
-    if required:
-        return str, Field(description=description)
-    return str, Field(default=str(spec.get("default", "")), description=description)
-
-
-def _args_schema(name: str, params: dict):
-    if not params:
-        return Empty
-    return create_model(f"{name}_args",
-                        **{key: _field(spec) for key, spec in params.items()})
+def _nullable(schema) -> bool:
+    kind = schema.get("type") if isinstance(schema, dict) else None
+    return isinstance(kind, list) and "null" in kind
 
 
 def _annotation(schema, name: str):
@@ -104,9 +76,13 @@ def _schema_model(name: str, schema: dict):
         annotation = _annotation(prop, f"{name}_{key}")
         if key in required:
             fields[key] = (annotation, Field(description=description))
+            continue
+        default = prop.get("default") if isinstance(prop, dict) and \
+            isinstance(prop.get("default"), _SCALAR) else None
+        if default is not None and not _nullable(prop):
+            # 有默认值、又不接受 null：签名就是这个类型带默认值（缺参时把默认值发出去），不放进 null
+            fields[key] = (annotation, Field(default=default, description=description))
         else:
-            default = prop.get("default") if isinstance(prop, dict) and \
-                isinstance(prop.get("default"), _SCALAR) else None
             fields[key] = (Optional[annotation], Field(default=default, description=description))
     if not fields:
         return Empty
@@ -140,13 +116,15 @@ def _make(name: str, description: str, schema):
 
 
 def _schema_for(name: str, meta: dict):
-    input_schema = meta.get("input_schema")
-    if isinstance(input_schema, dict):
-        try:
-            return _schema_model(f"{name}_args", input_schema)
-        except Exception as exc:
-            log.warning("tool %s: input_schema unusable (%s), falling back to params", name, why(exc))
-    return _args_schema(name, meta.get("params") or {})
+    """签名的来源：契约里的 inputSchema；老工具服务没有它，就按 input_schema / params 推一份。"""
+    schema = meta.get("inputSchema")
+    if not isinstance(schema, dict):
+        schema = registry.compat_schema(meta)
+    try:
+        return _schema_model(f"{name}_args", schema)
+    except Exception as exc:
+        log.warning("tool %s: input schema unusable (%s), falling back to params", name, why(exc))
+    return _schema_model(f"{name}_args", registry.schema_from_params(meta.get("params") or {}))
 
 
 def build_tools(available: dict | None = None):
@@ -165,8 +143,17 @@ def build_tools(available: dict | None = None):
     return tools
 
 
+def schema_tool(contract: dict):
+    """应用内工具绑给模型的签名：只描述参数；执行由注册表做，loop 不会调这个 func。"""
+    name = contract["name"]
+    return StructuredTool.from_function(
+        func=lambda **kwargs: "", name=name, description=contract.get("description", ""),
+        args_schema=_schema_model(f"{name}_args", contract.get("inputSchema") or {}))
+
+
 # 工具一多就不能全绑给模型：几百个 schema 会把上下文撑爆，模型也挑不准。
-# 超过这个数时按问题相关性筛选，SOP 引用到的工具无条件保留。
+# 超过这个数时按问题相关性筛选，SOP 引用到的工具无条件保留。只数、只筛数据类（工具服务下发的）；
+# 应用内的工具（web_search 等）固定绑定，不占这个名额。
 TOOL_LIMIT = 40
 _TOKEN = re.compile(r"[a-z0-9_]+|[\u4e00-\u9fff]")
 

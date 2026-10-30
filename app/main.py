@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from app import catalog, conversations, graph, jobs, models, packs, playbooks, settings
 from app.agent import grow
 from app.agent import loop as agent_loop
-from app.agent import ops_client, web_search
+from app.agent import ops_client, registry, web_search
 from app.agent.extract import extract as extract_playbooks
 from app.config import (AGENT_MODE, ALLOWED_SUFFIXES, CATEGORY_MAX, BOT_NAME,
                         FILES_DIR, IMAGE_SUFFIXES, MAX_FILE_BYTES, WEB_PASSWORD, WEB_USER,
@@ -76,23 +76,22 @@ def manage_page():
 # --- Documents ---------------------------------------------------------------
 
 def usable_tools() -> dict:
-    """宿主机当前对外提供的工具：名字 -> 说明。
+    """能写进 SOP 的工具：名字 -> 说明。
 
     工具定义只在宿主机那一份配置里维护，应用侧不再留第二份清单，
     否则两边迟早对不上（界面显示 6 个、模型实际拿到 5 个就是这么来的）。
+    哪些类别能进 SOP 由工具注册表定（registry.py）：今天就是工具服务下发的数据类工具。
     """
     if AGENT_MODE == "off":
         return {}
-    return {name: (meta.get("desc", "") if isinstance(meta, dict) else str(meta))
-            for name, meta in ops_client.available_tools().items()}
+    return registry.sop_tools()
 
 
 def tool_specs() -> dict:
     """工具名 -> {desc, params}。SOP 抽取要把参数名告诉模型，args 才填得对。"""
     if AGENT_MODE == "off":
         return {}
-    return {name: {"desc": meta.get("desc", ""), "params": meta.get("params") or {}}
-            for name, meta in ops_client.available_tools().items() if isinstance(meta, dict)}
+    return registry.sop_specs()
 
 
 @app.get("/api/documents")
@@ -441,7 +440,7 @@ def proposal_view(proposal):
     for index, call_id in enumerate(ids, 1):
         call = calls.get(call_id)
         if call:
-            # 序号按运维工具调用的先后排，和模型写的「第 n 次调用」一致
+            # 序号按数据类工具调用的先后排，和模型写的「第 n 次调用」一致
             evidence.append({"n": index, "tool": call["tool"], "args": call["args"], "ok": call["ok"],
                              "preview": call["output"][:300]})
     return {"id": proposal["id"], "kind": proposal["kind"], "status": proposal["status"],
@@ -801,9 +800,9 @@ def ask(payload: Question):
     root = start_root_run(question, conversation_id)
     overview = is_overview(question)
     continuation = is_continuation(question, history)
-    # Tools are opt-in and degrade gracefully: no ops endpoint and no web search means plain RAG.
+    # Tools are opt-in and degrade gracefully: nothing to bind (no ops endpoint, web off) means plain RAG.
     allow_web = AGENT_MODE != "off" and payload.web and web_search.enabled()
-    use_agent = AGENT_MODE != "off" and (ops_client.enabled() or allow_web)
+    use_agent = AGENT_MODE != "off" and registry.has_tools(allow_web)
     # 图谱里的这一轮：工具的完整返回、最终结论质量、人工反馈都挂在它下面
     execution_id = graph.start_execution(conversation_id, question, payload.playbook_id)
 
@@ -859,7 +858,10 @@ def ask(payload: Question):
                             elif kind == "error":
                                 failure = payload
                             elif kind == "tool_call":
-                                tool_calls.append({"tool": payload["tool"], "args": payload.get("args") or {}})
+                                call = {"tool": payload["tool"], "args": payload.get("args") or {}}
+                                if payload.get("category"):
+                                    call["category"] = payload["category"]
+                                tool_calls.append(call)
                             elif kind == "tool_result" and tool_calls:
                                 # 结果按顺序贴回最近一个还没有结果的调用，回放时能一起看到
                                 for call in reversed(tool_calls):
@@ -895,8 +897,8 @@ def ask(payload: Question):
             try:
                 graph.finish_execution(execution_id, answer, failed=failure is not None,
                                        message_id=message_id)
-                # 自由排查用了工具并答完了：后台看看值不值得沉淀为 SOP，不占这个请求
-                if use_agent and message_id is not None and any(c["tool"] != web_search.TOOL_NAME
+                # 自由排查调过数据类工具并答完了：后台看看值不值得沉淀为 SOP，不占这个请求
+                if use_agent and message_id is not None and any(registry.observes_system(c["tool"])
                                                                  for c in tool_calls):
                     grow.schedule(execution_id, answer, tool_specs)
             except Exception:

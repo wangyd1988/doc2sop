@@ -22,8 +22,23 @@ from app.config import (WEB_SEARCH_BLOCKLIST,
 MAX_QUERY = 200
 MAX_SNIPPET = 600
 TIMEOUT = 30
-# 模型看到的工具名。loop 用它来识别搜索请求，图谱用它把搜索和运维工具区分开。
+# 模型看到的工具名。工具注册表（registry.py）把它登记成「外网类」：不算观察系统、不进 SOP。
 TOOL_NAME = "web_search"
+MAX_SEARCHES = 2   # 每轮最多搜几次；注册表按外网类统一限次
+
+# 统一工具契约（MCP 的 Tool 格式，见 registry.py）：应用内提供，跟随页面的联网开关绑定。
+TOOL = {
+    "name": TOOL_NAME,
+    "title": "上网搜索",
+    "description": "上网搜索公开资料。仅当知识库片段无法回答、且问题不涉及公司内部信息时使用。",
+    "inputSchema": {
+        "type": "object",
+        "properties": {"query": {"type": "string",
+                                 "description": "搜索关键词。只写公开、通用的词，不要包含内部项目名、IP、账号、密钥。"}},
+        "required": ["query"]},
+    "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": True},
+    "_meta": {"doc2sop": {"category": "web", "provider": "app", "export": False, "group": "联网"}},
+}
 
 # 发出去之前在代码里拦一道：这些内容一旦进了公共搜索引擎就收不回来了。
 LEAK_PATTERNS = [
@@ -107,3 +122,20 @@ def describe_failure(exc: Exception) -> str:
     if isinstance(exc, SearchRefused):
         return f"[未搜索] {exc}"
     return f"[搜索失败] {why(exc)}"
+
+
+def run_tool(args, turn) -> str:
+    """注册表执行 web_search：搜索词先过 screen()，结果按 [W] 接着本轮的编号往下编，并推 web_sources 卡片。
+
+    拒绝和失败都以文字返回（[未搜索] / [搜索失败]），不抛异常；每轮限次由注册表按外网类统一做。
+    """
+    try:
+        _, found = search(args.get("query", ""))
+    except Exception as exc:
+        return describe_failure(exc)
+    first = turn.number("web_count", len(found))
+    sources = [{"index": f"W{first + i}", "location": r["title"], "url": r["url"],
+                "text": r["snippet"], "web": True} for i, r in enumerate(found)]
+    if sources:
+        turn.emit(("web_sources", sources))
+    return as_tool_output(found, first)

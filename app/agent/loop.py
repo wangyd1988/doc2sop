@@ -22,25 +22,22 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, Field
 
 from app import graph as org_graph
 from app import playbooks
-from app.agent import ops_client, web_search
-from app.agent.tools import TOOL_LIMIT, build_tools, select_tools
+from app.agent import ops_client, registry, web_search  # noqa: F401  ops_client：测试按 loop.ops_client 打桩
+from app.agent.tools import TOOL_LIMIT, build_tools, schema_tool, select_tools
 from app.clients import chat_model
 from app.config import BOT_NAME, DATA_DIR, HISTORY_CHARS, log, why
 
 MAX_ROUNDS = 4  # 最多几轮工具调用，防止模型来回绕
-MAX_WEB_SEARCHES = 2
-WEB_TOOL = web_search.TOOL_NAME
-# 工具层和搜索层用这些前缀报告失败（tools.py / web_search.py）；图谱据此记 ok 标志
-FAILURE_MARKS = ("[执行失败]", "[搜索失败]", "[未搜索]")
+MAX_WEB_SEARCHES = registry.POLICIES["web"].limit   # 每轮最多搜几次：注册表按外网类限次
+# 工具层、搜索层、限次用这些前缀报告失败（tools.py / web_search.py / registry.py）；图谱据此记 ok 标志
+FAILURE_MARKS = ("[执行失败]", "[搜索失败]", "[未搜索]", "[未执行]")
 CHINA = timezone(timedelta(hours=8))
 WEEKDAYS = "一二三四五六日"
 
@@ -157,17 +154,6 @@ SOP_FORMAT = """**按 SOP 执行时的输出格式**（用户点了「执行 SOP
 4. 不要在表格之外重复每一步的细节。"""
 
 
-class _WebQuery(BaseModel):
-    query: str = Field(description="搜索关键词。只写公开、通用的词，不要包含内部项目名、IP、账号、密钥。")
-
-
-def _web_tool():
-    """Schema-only tool so the model can request a search; executed by `run` itself."""
-    return StructuredTool.from_function(
-        func=lambda query: "", name=WEB_TOOL, args_schema=_WebQuery,
-        description="上网搜索公开资料。仅当知识库片段无法回答、且问题不涉及公司内部信息时使用。")
-
-
 def _today():
     now = datetime.now(CHINA)
     return f"{now:%Y-%m-%d} 星期{WEEKDAYS[now.weekday()]}"
@@ -212,8 +198,7 @@ def _condense(output: str) -> str:
 class TurnState(TypedDict):
     messages: Annotated[list, add_messages]
     rounds: int        # 本轮已经调用工具的次数
-    web_count: int     # 本轮已发出的网络来源编号
-    web_searches: int  # 本轮已搜索次数
+    usage: dict        # 本轮工具共享的计数：按类别的调用次数、[W] 编号……（registry.Turn），每轮清零
 
 
 _memory_lock = threading.Lock()
@@ -346,11 +331,13 @@ def _call(bound, view, emit):
     return AIMessage(content=content, tool_calls=list(acc.tool_calls or []), id=acc.id), streamed
 
 
-def _build_graph(bound, system, current_prompt, by_name, allow_web, record=None):
+def _build_graph(bound, system, current_prompt, by_name, allow_web=False, record=None):
     """Compile a model ⇄ tools loop for this turn.
 
     The graph is rebuilt per request because the tool set and the knowledge-base
     context change every turn; the checkpointer is shared, so memory persists.
+    `by_name` maps tool name -> registry.Binding；联网与否已经体现在里面有没有外网类工具，
+    `allow_web` 只为兼容老调用方保留。
     `record(tool, args, output, ok, duration_ms)`, when given, receives every tool
     call in full so the organisation graph can keep what the preview drops.
     """
@@ -372,35 +359,22 @@ def _build_graph(bound, system, current_prompt, by_name, allow_web, record=None)
     def tools(state: TurnState):
         emit = get_stream_writer()
         call_msg = state["messages"][-1]
-        web_count, web_searches = state["web_count"], state["web_searches"]
+        turn = registry.Turn(emit, state.get("usage"))
         results = []
         for call in call_msg.tool_calls:
             name, args = call["name"], call.get("args") or {}
-            emit(("tool_call", {"tool": name, "args": args}))
+            binding = by_name.get(name)
+            category = binding.category if binding else registry.category_of(name)
+            emit(("tool_call", {"tool": name, "args": args, "category": category}))
             started = time.monotonic()
-            if name == WEB_TOOL and allow_web:
-                if web_searches >= MAX_WEB_SEARCHES:
-                    output = f"[未搜索] 本轮已搜索 {MAX_WEB_SEARCHES} 次，请基于已有结果作答"
-                else:
-                    web_searches += 1
-                    try:
-                        _, found = web_search.search(args.get("query", ""))
-                        output = web_search.as_tool_output(found, web_count + 1)
-                        sources = [{"index": f"W{web_count + i + 1}", "location": r["title"],
-                                    "url": r["url"], "text": r["snippet"], "web": True}
-                                   for i, r in enumerate(found)]
-                        web_count += len(found)
-                        if sources:
-                            emit(("web_sources", sources))
-                    except Exception as exc:
-                        output = web_search.describe_failure(exc)
+            if binding is None:
+                output = f"[执行失败] 未知工具 {name}"
             else:
-                tool = by_name.get(name)
-                if tool is None:
-                    output = f"[执行失败] 未知工具 {name}"
-                else:
+                # 按类别限次（外网类每轮 2 次……）：到了上限不执行，把原因告诉模型
+                output = turn.admit(category)
+                if output is None:
                     try:
-                        output = tool.invoke(args)
+                        output = binding.run(args, turn)
                     except Exception as exc:
                         output = f"[执行失败] {why(exc)}"
             output = str(output)
@@ -414,8 +388,7 @@ def _build_graph(bound, system, current_prompt, by_name, allow_web, record=None)
             emit(("tool_result", {"tool": name, **_preview(output)}))
             results.append(ToolMessage(content=_clip(_condense(output), STORE_TOOL_CHARS),
                                        tool_call_id=call["id"], name=name))
-        return {"messages": results, "rounds": state["rounds"] + 1,
-                "web_count": web_count, "web_searches": web_searches}
+        return {"messages": results, "rounds": state["rounds"] + 1, "usage": turn.usage}
 
     def route(state: TurnState):
         last = state["messages"][-1]
@@ -436,12 +409,15 @@ def run(question: str, context: str, history, allow_web: bool = False,
     """跑一轮对话，边跑边产出事件。
 
     产出 (kind, payload)：
-      ("tool_call",   {"tool": ..., "args": {...}})
+      ("tool_call",   {"tool": ..., "args": {...}, "category": 类别})
       ("tool_result", {"tool": ..., "preview": ..., "lines": n})
       ("web_sources", [{"index": "W1", "location": 标题, "url": ..., "text": 摘要, "web": True}])
       ("thinking",    已收到的推理片段数)   ← 思考型模型出正文前，每半秒最多一次
       ("delta",       "答案文本片段")
       ("error",       "错误说明")
+
+    工具来自注册表（registry.py）：数据类超过 TOOL_LIMIT 时按问题筛选，其余类别（如 web_search）
+    按开关固定绑定。执行、按类别限次、记图谱都按类别来，这里没有哪个工具的特判。
 
     thread_id 一般就是会话 ID；记忆里还没有这个会话时（例如升级前的老会话），
     用 history 里的文字历史补种，之后就以完整记忆为准。
@@ -449,13 +425,17 @@ def run(question: str, context: str, history, allow_web: bool = False,
     execution_id 是图谱里这一轮的记录：给了就把每次工具调用的完整返回记进去
     （对外事件仍只带预览），不给则这一轮不进图谱。
     """
-    available = ops_client.available_tools()
+    options = registry.TurnOptions(allow_web=allow_web and web_search.enabled())
+    allow_web = options.allow_web
+    # 按问题筛选只作用于数据类（POLICIES 里 selectable 的）：TOOL_LIMIT 只数它们，应用内工具固定绑定
+    available = registry.data_tools()
     if len(available) > TOOL_LIMIT:
         available = select_tools(available, question, playbooks.referenced_tools())
     tools = build_tools(available)
-    by_name = {tool.name: tool for tool in tools}
-    allow_web = allow_web and web_search.enabled()
-    bindable = tools + ([_web_tool()] if allow_web else [])
+    extra = registry.app_tools(options)
+    by_name = {tool.name: registry.bind_data(tool, available.get(tool.name)) for tool in tools}
+    by_name.update({tool.name: registry.bind_app(tool) for tool in extra})
+    bindable = tools + [schema_tool(tool.current()) for tool in extra]
     if not bindable:
         log.info("no tools available, agent answers from knowledge base only")
     client = chat_model(timeout=120, max_retries=1, **({"model": model} if model else {}))
@@ -463,17 +443,16 @@ def run(question: str, context: str, history, allow_web: bool = False,
 
     record = None
     if execution_id:
-        # 参数声明（含 pattern）来自宿主机，图谱靠它判断哪些实参是对象名。
-        specs = {name: (meta.get("params") or {}) for name, meta in available.items()
-                 if isinstance(meta, dict)}
-
+        # 参数声明（inputSchema 里的 x-entity）来自工具契约，图谱靠它判断哪些实参是对象名。
         def record(name, args, output, ok, duration_ms):
+            binding = by_name.get(name)
             org_graph.record_tool_call(execution_id, name, args, output, ok, duration_ms,
-                                       params=specs.get(name))
+                                       schema=binding.schema if binding else None)
 
     system = AGENT_PROMPT + (WEB_RULES if allow_web else NO_WEB_RULES)
-    # SOP 只在确实有工具可用时注入，否则模型会照着 SOP 去调不存在的工具。
-    book = playbooks.as_prompt(set(by_name)) if by_name else ""
+    # SOP 只在确实有能进 SOP 的工具时注入，否则模型会照着 SOP 去调不存在的工具。
+    steps = {name for name, binding in by_name.items() if registry.POLICIES[binding.category].sop}
+    book = playbooks.as_prompt(steps) if steps else ""
     prompt = f"今天是 {_today()}（北京时间）。\n\n知识库片段：\n{context}\n\n"
     if book:
         prompt += (f"可用 SOP（从团队文档沉淀的标准做法，匹配时优先按它执行）：\n{book}\n\n"
@@ -493,8 +472,7 @@ def run(question: str, context: str, history, allow_web: bool = False,
         seed = [HumanMessage(content=c[:HISTORY_CHARS]) if role == "user"
                 else AIMessage(content=c[:HISTORY_CHARS]) for role, c in history]
 
-    turn = {"messages": seed + [HumanMessage(content=question)],
-            "rounds": 0, "web_count": 0, "web_searches": 0}
+    turn = {"messages": seed + [HumanMessage(content=question)], "rounds": 0, "usage": {}}
     try:
         for event in graph.stream(turn, config, stream_mode="custom"):
             yield event

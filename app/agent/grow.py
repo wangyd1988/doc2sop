@@ -22,9 +22,9 @@ from datetime import datetime, timezone
 from langsmith import traceable
 
 from app import config, graph, playbooks
+from app.agent import registry
 from app.agent.extract import _clean_args, _listing, _parse, _spec
 from app.agent.loop import _clip, _condense
-from app.agent.web_search import TOOL_NAME as WEB_TOOL
 from app.clients import chat_model
 from app.config import log, why
 
@@ -81,9 +81,9 @@ def enabled():
     return bool(config.AUTO_SOP_PROPOSALS)
 
 
-def ops_calls(execution):
-    """本轮的运维工具调用（去掉联网搜索——SOP 不能引用它，也不算观察系统）。"""
-    return [c for c in execution.get("tool_calls", []) if c["tool"] != WEB_TOOL]
+def data_calls(execution):
+    """本轮的数据类调用：只有它们算观察到系统、能写进 SOP（联网搜索这类按类别去掉）。"""
+    return [c for c in execution.get("tool_calls", []) if registry.observes_system(c["tool"])]
 
 
 def signature(tools):
@@ -120,7 +120,7 @@ def should_propose(execution, answer, enabled_playbooks):
         return False, "本轮是按 SOP 执行的"
     if execution.get("outcome") not in ("ok", "anomaly"):
         return False, f"outcome 是 {execution.get('outcome')}"
-    calls = ops_calls(execution)
+    calls = data_calls(execution)
     if len({c["tool"] for c in calls}) < MIN_TOOLS:
         return False, f"不同工具少于 {MIN_TOOLS} 个"
     if not has_conclusion(answer):
@@ -144,7 +144,7 @@ def should_propose(execution, answer, enabled_playbooks):
 
 def trajectory(execution, answer):
     """喂给模型的本轮轨迹。每次调用的返回先按 loop 的方式压缩，再按总预算分摊。"""
-    calls = ops_calls(execution)
+    calls = data_calls(execution)
     question = str(execution.get("question") or "")[:500]
     conclusion = (answer or "").strip()[:ANSWER_CHARS]
     budget = TRAJECTORY_CHARS - len(question) - len(conclusion) - 200
@@ -183,7 +183,7 @@ def generate(execution, answer, known_tools):
     """
     if not known_tools:
         return None
-    calls = ops_calls(execution)
+    calls = data_calls(execution)
     model = chat_model(timeout=150, max_retries=0, max_tokens=MAX_OUTPUT_TOKENS)
     messages = [("system", GROW_PROMPT.format(tools=_listing(known_tools))),
                 ("human", trajectory(execution, answer))]
@@ -257,7 +257,7 @@ def propose(execution_id, answer, known_tools):
     if not candidate:
         return None
 
-    calls = ops_calls(execution)
+    calls = data_calls(execution)
     payload = {"name": candidate["name"], "trigger": candidate["trigger"],
                "steps": candidate["steps"], "source": SOURCE,
                "summary": {"tools": len({c["tool"] for c in calls}), "calls": len(calls)}}

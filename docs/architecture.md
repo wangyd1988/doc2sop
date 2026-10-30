@@ -108,7 +108,8 @@ flowchart LR
 
 ```
 保存 SOP      sop —checks→ tool；sop —defined_in→ doc；检查点里可靠解析出的「80%」「3 次」→ threshold 实体
-调用工具      execution —called→ tool；调用成功时，pattern 为 name / k8s_name 的实参成为实体并刷新 last_seen
+调用工具      execution —called→ tool；调用成功时，工具声明了 x-entity 的实参成为实体并刷新 last_seen
+             （老写法由工具服务按 name / k8s_name 预置正则推出，见 docs/工具.md「工具契约」）
 人工反馈      execution —judged→ verdict（按 SOP 执行的，SOP 也记一笔）
 ```
 
@@ -123,7 +124,7 @@ flowchart LR
 ```
 回答结束
  └─ 该不该提      自动提议开着 ∧ 当日未达上限 ∧ 不是「▶ 执行」∧ outcome ∈ {ok, anomaly}
-                 ∧ ≥2 个不同运维工具 ∧ 回答有结论（≥40 字且开头不是「没查到 / 请提供…」）
+                 ∧ ≥2 个不同数据类工具（联网搜索这类不算）∧ 回答有结论（≥40 字且开头不是「没查到 / 请提供…」）
                  ∧ 没套用启用中的 SOP（回答未写「按 SOP《」、工具序列也不按顺序覆盖某个 SOP 的步骤）
                  ∧ 同样的轨迹签名 30 天内没被忽略、也没有待确认的提议
  └─ 生成          把本轮轨迹（问题 + 第 n 次调用 xxx 的参数与返回摘要 + 结论）喂给模型，
@@ -167,7 +168,8 @@ app/
 ├── tracing.py         LangSmith 追踪
 ├── agent/
 │   ├── loop.py        LangGraph Agent：模型 ⇄ 工具循环，检查点记住每轮完整过程
-│   ├── tools.py       按宿主机下发的定义动态生成工具签名（MCP 工具按 input_schema 生成嵌套 pydantic）
+│   ├── registry.py    工具注册表：统一契约（MCP 的 Tool 格式）与类别策略，合并工具服务和应用内的工具
+│   ├── tools.py       按 JSON Schema 生成工具签名（契约里的 inputSchema；老工具服务按 params 推）
 │   ├── extract.py     从文档抽取 SOP
 │   ├── grow.py        从一次自由排查长出 SOP 提议（回答后后台判断、生成、去重）
 │   ├── web_search.py  联网搜索（经网关）与泄漏拦截
@@ -188,6 +190,7 @@ deploy/
 ├── release.sh         正式发版：base 镜像按依赖哈希预烘焙 → 只 COPY 代码 → 停旧起新 → 比对片段数 → 不一致回滚（docs/正式部署.md）
 ├── Dockerfile.release 发版用的应用镜像：FROM base 只 COPY app/ packs/（根 Dockerfile 的 base 阶段装依赖，app 阶段给 compose）
 ├── ops_readonly.py    宿主机上的只读运维接口（白名单 + 令牌），支持 include 场景包的工具定义；
+│                      /tools 按统一契约多回 inputSchema 等字段；
 │                      内置标准库手写的 MCP stdio 客户端，发现的工具进待审、批准后写 ops_tools.mcp.yaml
 ├── ops_tools.yaml     工具定义的唯一真相源，改完即时生效；顶层 mcp_servers 声明 MCP server
 ├── mcp/               玩具 MCP server holiday_mcp.py（测试 + 演示）与把拼假工具换成 MCP 来源的 holiday_tools.yaml

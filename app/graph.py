@@ -23,7 +23,7 @@ import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from app.agent.web_search import TOOL_NAME as WEB_TOOL
+from app.agent import registry
 from app.config import DATA_DIR
 
 OUTCOMES = ("ok", "anomaly", "failed", "unknown")
@@ -31,8 +31,6 @@ VERDICTS = ("correct", "false_alarm", "wrong_threshold", "missing_step")
 PROPOSAL_KINDS = ("new_sop", "extend_sop", "adjust_threshold", "update_doc", "retire_sop")
 # SOP 的这些来源值不是文档名，保存时不为它们建 doc 实体
 NON_DOC_SOURCES = ("", "手工创建", "从实践沉淀")
-# 宿主机参数声明里，取值是「某个对象的名字」的两种 pattern；其余（资源类型、日期）不是实体
-ENTITY_PATTERNS = ("name", "k8s_name")
 
 db = sqlite3.connect(DATA_DIR / "graph.db", check_same_thread=False)
 db.row_factory = sqlite3.Row
@@ -240,29 +238,42 @@ def start_execution(conversation_id, question, playbook_id=None):
     return execution_id
 
 
-def _entity_kind(key, pattern, args):
-    """实参该算哪类实体。只用宿主机已经下发的信息，不猜。
+def _entities(args, schema):
+    """实参里哪些是对象名：(参数名, 值, 实体类型, 属性)。只看工具声明的 x-entity，不猜。
 
-    namespace 键一律是命名空间；其余 K8s 名字统一算 k8s_object（Pod 日志和 describe 看到的
-    是同一个对象，分成两类反而对不上）；容器名一类的 pattern 按参数键区分，`name` 就是容器。
+    老写法的参数由工具服务（或应用侧兜底）按参数名和预置正则推出 x-entity，规则见 registry.entity_of；
+    预置正则名在 x-pattern 里，照旧记进属性。K8s 对象另记它是哪类资源（同一次调用里的 resource 实参）。
     """
-    if pattern not in ENTITY_PATTERNS:
-        return None
-    if key == "namespace":
-        return "namespace"
-    if pattern == "k8s_name":
-        return "k8s_object"
-    return "container" if key == "name" else key
+    properties = (schema or {}).get("properties") if isinstance(schema, dict) else None
+    if not isinstance(properties, dict):
+        return
+    for key, value in args.items():
+        prop = properties.get(key)
+        kind = prop.get("x-entity") if isinstance(prop, dict) else None
+        if not kind or not isinstance(kind, str) or not isinstance(value, str) or not value.strip():
+            continue
+        attrs = {"param": key}
+        if prop.get("x-pattern"):
+            attrs["pattern"] = prop["x-pattern"]
+        if kind == "k8s_object" and args.get("resource"):
+            attrs["resources"] = [str(args["resource"])]
+        yield key, value.strip(), kind, attrs
 
 
-def record_tool_call(execution_id, tool, args, output, ok, duration_ms, params=None):
+def record_tool_call(execution_id, tool, args, output, ok, duration_ms, params=None, schema=None):
     """记下一次工具调用的完整返回（对外展示的是预览，这里是全文）。
 
-    零成本播种：工具本身成为实体；调用成功时，取值为对象名的实参也成为实体并刷新
+    零成本播种：工具本身成为实体；调用成功时，工具声明了 x-entity 的实参也成为实体并刷新
     last_seen——失败的调用不播种，否则一个打错的容器名就会变成一个「实体」。
+    schema 是工具契约里的 inputSchema；只给老写法的 params 时按同一规则推一份。
     事实的出处都是这次调用本身（tool_call:<id>）。
     """
     args = args if isinstance(args, dict) else {}
+    if schema is None and params:
+        try:
+            schema = registry.schema_from_params(params)
+        except Exception:
+            schema = None
     timestamp = now_iso()
     with lock:
         seq = db.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM tool_calls WHERE execution_id = ?",
@@ -277,16 +288,8 @@ def record_tool_call(execution_id, tool, args, output, ok, duration_ms, params=N
         tool_entity = _touch("tool", tool)
         _fact(_touch("execution", execution_id), "called", "tool", ref, object_entity=tool_entity)
         if ok:
-            for key, value in args.items():
-                spec = (params or {}).get(key)
-                pattern = spec.get("pattern") if isinstance(spec, dict) else None
-                kind = _entity_kind(key, pattern, args)
-                if not kind or not isinstance(value, str) or not value.strip():
-                    continue
-                attrs = {"param": key, "pattern": pattern}
-                if kind == "k8s_object" and args.get("resource"):
-                    attrs["resources"] = [str(args["resource"])]
-                subject = _touch(kind, value.strip(), attrs)
+            for _key, value, kind, attrs in _entities(args, schema):
+                subject = _touch(kind, value, attrs)
                 _fact(subject, "checked_by", "tool", ref, object_entity=tool_entity)
         db.commit()
     return call_id
@@ -295,16 +298,16 @@ def record_tool_call(execution_id, tool, args, output, ok, duration_ms, params=N
 def _outcome(answer, failed, calls):
     """一轮的结论质量。规则写死在这里，便于单测钉住；后续可换成以人工反馈为准。
 
-    calls 是 [(tool, ok)]。联网搜索不算「观察到了系统」，所以只看运维工具：
-    没调过工具的轮次是 unknown，不是 ok——什么都没看到，谈不上正常。
+    calls 是 [(tool, ok)]。只数「算观察到系统」的类别（数据类）；联网搜索这类不算，
+    没调过数据类工具的轮次是 unknown，不是 ok——什么都没看到，谈不上正常。
     """
-    ops = [ok for tool, ok in calls if tool != WEB_TOOL]
+    observed = [ok for tool, ok in calls if registry.observes_system(tool)]
     text = (answer or "").strip()
     if failed or not text:
         return "failed"
-    if not ops:
+    if not observed:
         return "unknown"
-    if not any(ops):
+    if not any(observed):
         return "failed"
     if "❌" in text or "⚠" in text:
         return "anomaly"

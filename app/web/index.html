@@ -1086,14 +1086,16 @@ function sourcesHtml(sources) {
       <div class="body">${esc(tidy(s.text))}</div></details>`;
   }).join('');
 }
-/* 工具调用卡片：摘要行显示工具与参数，展开看完整参数和返回预览 */
+/* 工具调用卡片：摘要行显示工具与参数，展开看完整参数和返回预览。
+   按类别换图标和文字（tool_call 事件带 category）；老记录没有类别，web_search 认作外网类，其余算数据类 */
+function stepCategory(t) { return t.category || (t.tool === 'web_search' ? 'web' : 'data'); }
 function stepHtml(t, running) {
-  const isWeb = t.tool === 'web_search';
+  const cat = stepCategory(t), isWeb = cat === 'web';
   const args = t.args || {};
   const brief = isWeb ? args.query || '' : Object.entries(args).map(([k, v]) => `${k}=${v}`).join(' ');
   const kv = Object.entries(args).map(([k, v]) => `<b>${esc(k)}</b> = ${esc(JSON.stringify(v))}`).join('<br>');
   const n = running ? '执行中…' : (t.lines != null ? `${t.lines} 行` : '');
-  return `<details class="step ${running ? 'running' : ''} ${isWeb ? 'web' : ''}"><summary><span class="ico">${isWeb ? '🌐' : '🔧'}</span>
+  return `<details class="step ${running ? 'running' : ''} ${isWeb ? 'web' : ''}" data-cat="${esc(cat)}"><summary><span class="ico">${isWeb ? '🌐' : '🔧'}</span>
      <span class="cmd">${isWeb ? '上网搜索' : esc(t.tool)}</span>
      <span class="arg">${esc(brief)}</span>
      <span class="n">${n}</span></summary>
@@ -2173,7 +2175,7 @@ async function ask() {
           bot.querySelector('.sources').innerHTML = sourcesHtml(msg.sources);
           arrangeSources(bot, '', false);
         } else if (msg.tool_call) {
-          const isWeb = msg.tool_call.tool === 'web_search';
+          const isWeb = stepCategory(msg.tool_call) === 'web';
           setStatus(isWeb ? '知识库里没有足够信息，正在上网搜索…' : `正在查询：${esc(msg.tool_call.tool)}…`);
           bot.querySelector('.steps').insertAdjacentHTML('beforeend', stepHtml(msg.tool_call, true));
           if (nearBottom()) toBottom();
@@ -2226,8 +2228,8 @@ async function ask() {
     addTools(bot, text, q, webSrc);
     $('askBtn').disabled = false; $('question').focus();
     loadConvs();
-    // 自由排查（没带 SOP）用了 ≥2 个运维工具：服务端可能在后台长出一个 SOP 提议，退避轮询取回
-    if (sopGrowth && !playbookId && bot.dataset.exec && bot.querySelectorAll('.step:not(.web)').length >= 2) pollProposal(bot);
+    // 自由排查（没带 SOP）用了 ≥2 次数据类工具：服务端可能在后台长出一个 SOP 提议，退避轮询取回
+    if (sopGrowth && !playbookId && bot.dataset.exec && bot.querySelectorAll('.step[data-cat="data"]').length >= 2) pollProposal(bot);
   }
 }
 
