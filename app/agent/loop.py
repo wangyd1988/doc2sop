@@ -19,7 +19,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Callable, TypedDict
 
@@ -690,7 +690,7 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
     sop_count = len(playbooks.usable(data_names)) if data_names else 0
     brief = sop_count > SOP_PROMPT_MAX
     if brief:
-        options = registry.TurnOptions(allow_web=options.allow_web, kb_tools=kb_tools, plan=plan, sop_tools=True)
+        options = replace(options, sop_tools=True)
     extra = registry.app_tools(options)
     by_name = {tool.name: registry.bind_data(tool, available.get(tool.name)) for tool in tools}
     by_name.update({tool.name: registry.bind_app(tool) for tool in extra})

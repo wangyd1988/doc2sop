@@ -34,7 +34,7 @@ from langchain_core.messages import AIMessage
 
 from app import access, graph, mcp_server, playbooks
 from app import main as app_main
-from app.agent import grow, ops_client, registry, sop_tools, web_search
+from app.agent import egress, grow, ops_client, registry, sop_tools, web_fetch, web_search
 from app.agent import loop as agent_loop
 from app.config import WEB_PASSWORD, WEB_USER
 from app.rag import chunking, lexical, retrieval, store
@@ -196,7 +196,8 @@ def names(client):
 
 class VisibilityTests(ExportCase):
     def test_only_knowledge_sop_and_exported_data_tools_go_out(self):
-        with patch.object(web_search, "enabled", return_value=True):
+        with patch.object(web_search, "enabled", return_value=True), \
+                patch.object(web_fetch, "enabled", return_value=True):
             full = names(make_client())
         self.assertEqual(full, ["container_logs", "host_disk", "kb_catalog", "kb_read", "kb_search", "sop_get",
                                 "sop_list"])
@@ -265,10 +266,11 @@ class VisibilityTests(ExportCase):
     def test_tools_outside_the_scope_cannot_be_called(self):
         sent = []
         with patch.object(ops_client, "_request", side_effect=lambda *a, **k: sent.append(a) or {"ok": True}), \
-                patch.object(web_search, "enabled", return_value=True):
+                patch.object(web_search, "enabled", return_value=True), \
+                patch.object(web_fetch, "enabled", return_value=True):
             for name, client in (("secret_tool", make_client()), ("host_disk", make_client(["knowledge", "sop"])),
-                                 ("web_search", make_client()), ("plan", make_client()),
-                                 ("kb_search", make_client(["data"]))):
+                                 ("web_search", make_client()), ("web_fetch", make_client()),
+                                 ("plan", make_client()), ("kb_search", make_client(["data"]))):
                 with self.subTest(tool=name):
                     text, ok = mcp_server.call_tool(client, name, {"query": "x"})
                     self.assertFalse(ok)
@@ -343,6 +345,36 @@ class DataToolTests(ExportCase):
         self.assertFalse(ok)
         self.assertTrue(text.startswith("[执行失败]"))
         self.assertEqual(sent, [])
+
+    def test_calls_never_touch_the_egress_rules(self):
+        """外网类不对外开放，对外出口没有出网通道：调用不经过 egress，建出的 Turn 里也没有出网状态。"""
+        turns, touched = [], []
+        real_turn = mcp_server._turn
+
+        def keep(*args, **kwargs):
+            turns.append(real_turn(*args, **kwargs))
+            return turns[-1]
+
+        sent, exec_patch = self.fake_exec("pod payroll-db-7f9c 重启了 3 次")
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(exec_patch)
+            stack.enter_context(patch.object(mcp_server, "_turn", side_effect=keep))
+            for fn in ("start", "expect", "observe", "poison", "allow_urls", "check_query", "check_url"):
+                stack.enter_context(patch.object(egress, fn, side_effect=lambda *a, _fn=fn, **k: touched.append(_fn)))
+            client = make_client()
+            for name, args in (("container_logs", {"name": "payroll-db"}), ("host_disk", {}),
+                               ("kb_search", {"query": "磁盘"}),
+                               ("kb_read", {"id": f"{chunking.document_key('巡检规范.md')}:0"}),
+                               ("kb_catalog", {}), ("sop_list", {}), ("sop_get", {"name": "磁盘巡检"})):
+                with self.subTest(tool=name):
+                    text, ok = mcp_server.call_tool(client, name, args)
+                    self.assertTrue(ok, text)
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(touched, [])
+        self.assertGreaterEqual(len(turns), 7)
+        for turn in turns:
+            self.assertEqual(turn.channel, "mcp")
+            self.assertLessEqual(set(turn.usage), {"kb"})    # 只有知识片段的续编号；没有 egress、限次计数
 
 
 class AgentCallerTests(unittest.TestCase):
