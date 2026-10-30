@@ -552,6 +552,18 @@ body.manage.settings #mgroups, body.manage.settings #mlist, body.manage.settings
 .sf dt { color: var(--muted); } .sf dd { margin: 0; }
 .sf .note { font-size: 12px; color: var(--muted); line-height: 1.7; }
 .sf .note b { color: var(--text); }
+/* 对外接入页：令牌表、勾选组、可复制的配置片段 */
+.sf .checks { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.sf .checks label { display: inline-flex; grid-template-columns: none; gap: 6px; margin: 0; align-items: center; color: var(--text); }
+.sf .checks input { width: auto; }
+.sf table.ax { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.sf table.ax th, .sf table.ax td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.sf table.ax th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+.sf table.ax td.bad { color: var(--danger); }
+.sf table.ax button { font-size: 12px; padding: 3px 10px; border-radius: 6px; background: var(--panel-2); color: var(--danger); }
+.sf pre.ax { background: var(--panel-2); border-radius: 8px; padding: 8px 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; margin: 6px 0 10px; }
+.sf ul.ax { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.8; }
+.sf .result button { font-size: 12.5px; padding: 6px 14px; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); color: var(--text); }
 .md-doc .hd { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .md-doc .hd .ico { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 700; }
 .md-doc .hd .nm { font-weight: 650; font-size: 14.5px; word-break: break-all; }
@@ -699,6 +711,9 @@ body.manage.settings #mgroups, body.manage.settings #mlist, body.manage.settings
       <button data-tab="settings">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>
         模型设置</button>
+      <button data-tab="access" id="mAccessBtn" hidden title="外部智能体（Claude Code、Copilot、Cursor…）经 MCP 接入">
+        <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+        对外接入</button>
       <div class="mnav-note">文档写了怎么做 → SOP 定好顺序 → 工具去执行。<br>工具只能在宿主机批准；SOP 只能引用已有工具。</div>
     </nav>
     <div id="mgroups"></div>
@@ -2437,7 +2452,10 @@ const TAB = {
   sop:   {panel: 'pb', title: 'SOP', unit: '个生效', key: 'source', newLabel: '＋ 新建'},
   docs:  {title: '文档', unit: '个文档'},
   settings: {title: '模型设置'},
+  access: {title: '对外接入'},
 };
+// 单栏表单页：不要分组栏、列表栏和详情栏
+const PAGE_TABS = ['settings', 'access'];
 function tlRow(name, t) {
   const st = t.enabled && t.runnable ? ['ok', '可用'] : t.applicable === false ? ['', '不适用于这台机器']
            : !t.runnable ? ['bad', '不可运行'] : ['', '已停用'];
@@ -2470,10 +2488,11 @@ function mgHtml(name, live, total, special) {
 async function renderManage() {
   const cfg = TAB[mTab];
   document.querySelectorAll('#mnav button').forEach(b => b.classList.toggle('on', b.dataset.tab === mTab));
-  document.querySelector('.head-title .t').textContent = cfg.title + (mTab === 'settings' ? '' : '管理');
-  document.body.classList.toggle('settings', mTab === 'settings');
-  $('msettings').hidden = mTab !== 'settings';
+  document.querySelector('.head-title .t').textContent = cfg.title + (PAGE_TABS.includes(mTab) ? '' : '管理');
+  document.body.classList.toggle('settings', PAGE_TABS.includes(mTab));
+  $('msettings').hidden = !PAGE_TABS.includes(mTab);
   if (mTab === 'settings') return renderSettings();
+  if (mTab === 'access') return renderAccess();
 
   // 1. 分组栏
   let groups, live, count, pending = [], proposals = 0, origins = null, mcpServers = {};
@@ -2703,9 +2722,121 @@ $('msettings').addEventListener('click', async e => {
   }
 });
 
+/* ---------- 对外接入页：外部智能体经 MCP 接入（MCP_ENABLED 打开时才有） ---------- */
+const SCOPE_NAMES = {knowledge: '知识库', sop: 'SOP', data: '数据工具'};
+const TOKEN_STATE = {active: ['', '有效'], revoked: ['bad', '已吊销'], expired: ['bad', '已过期']};
+let axIssued = null;   // 刚签发的令牌：明文只在这里出现一次，离开这一页就清掉
+const axTime = s => s ? new Date(s).toLocaleString('zh-CN', {hour12: false}) : '—';
+function axSnippets(url, secret) {
+  const headers = {Authorization: 'Bearer ' + secret};
+  return `<div class="note" style="margin-top:10px"><b>Claude Code</b></div>
+    <pre class="ax">claude mcp add --transport http doc2sop ${esc(url)} --header "Authorization: Bearer ${esc(secret)}"</pre>
+    <div class="note"><b>VS Code（GitHub Copilot）</b>：工作区的 .vscode/mcp.json</div>
+    <pre class="ax">${esc(JSON.stringify({servers: {doc2sop: {type: 'http', url, headers}}}, null, 2))}</pre>
+    <div class="note"><b>Cursor</b>：~/.cursor/mcp.json</div>
+    <pre class="ax">${esc(JSON.stringify({mcpServers: {doc2sop: {url, headers}}}, null, 2))}</pre>`;
+}
+async function renderAccess() {
+  const r = await fetch('/api/mcp');
+  if (!r.ok) {
+    $('msettings').innerHTML = `<div class="sf"><h2>对外接入</h2><p class="lead">对外 MCP 出口没有打开。要让 Claude Code、Copilot、Cursor 这类外部智能体接入，
+      在 .env 里设 <code>MCP_ENABLED=true</code> 后重新发版（见 docs/正式部署.md「对外接入」）。</p></div>`;
+    return;
+  }
+  const s = await r.json();
+  const [tokens, calls] = await Promise.all([
+    fetch('/api/mcp/tokens').then(x => x.json()).then(x => x.tokens || []).catch(() => []),
+    fetch('/api/mcp/calls?limit=30').then(x => x.json()).then(x => x.calls || []).catch(() => [])]);
+  const url = location.origin + s.path;
+  const byScope = sc => s.tools.filter(t => t.scope === sc).map(t => `<code>${esc(t.name)}</code>`).join('、') || '无';
+  $('msettings').innerHTML = `<div class="sf">
+    <h2>对外接入</h2>
+    <p class="lead">外部智能体（Claude Code、GitHub Copilot、Cursor…）经 MCP 接入：查知识库、按 SOP 排查、调宿主机开放的只读工具。
+      每个客户端一枚令牌，库里只存哈希；<code>/mcp</code> 只认令牌，不认这个页面的密码。</p>
+    <div class="card"><h3>接入地址 <small>对内网开放时前面放反向代理和 TLS，换成 https 的地址（docs/正式部署.md「对外接入」）</small></h3>
+      <dl><dt>地址</dt><dd><code>${esc(url)}</code></dd>
+        <dt>知识库</dt><dd>${byScope('knowledge')}</dd>
+        <dt>SOP</dt><dd>${byScope('sop')}；启用的 SOP ${s.sops} 个，每个一条提示词（客户端里的「▶ 执行」）</dd>
+        <dt>数据工具</dt><dd>${byScope('data')}<div class="note">只有宿主机在工具服务主配置里标了 <code>export</code> 的才会出现；页面改不了。</div></dd></dl>
+      <div class="row"><button id="axSkills">导出 SKILL.md</button><span class="note">每个启用的 SOP 一个目录，放进客户端的 skills 目录离线使用；
+        执行前会先调 <code>sop_get</code> 取最新版，SOP 改了不用重新导出。</span></div>
+    </div>
+    <div class="card"><h3>签发令牌 <small>明文只显示一次</small></h3>
+      <label><span>名字<i>谁、在哪个客户端用</i></span><input id="axName" maxlength="40" placeholder="例如：张三的 Claude Code"></label>
+      <label><span>范围</span><div class="checks">${s.scopes.map(sc => `<label><input type="checkbox" data-axscope="${esc(sc)}" ${sc !== 'data' ? 'checked' : ''}>${esc(SCOPE_NAMES[sc] || sc)}</label>`).join('')}</div></label>
+      <label><span>文档分类<i>知识库和 SOP 能看哪些分类</i></span><div class="checks"><label><input type="checkbox" id="axAllCats">全部分类（含以后新增的）</label>
+        ${s.categories.map(c => `<label><input type="checkbox" data-axcat="${esc(c)}">${esc(c)}</label>`).join('')}</div></label>
+      <label><span>有效期</span><select id="axDays"><option value="30">30 天</option><option value="90" selected>90 天</option><option value="365">一年</option><option value="">永不过期</option></select></label>
+      <label><span>限额<i>留空用默认</i></span><div class="inline"><input id="axRate" type="number" min="1" placeholder="每分钟 ${s.defaults.rate_per_minute} 次">
+        <input id="axChars" type="number" min="1000" placeholder="单次返回 ${s.defaults.max_result_chars} 字"></div></label>
+      <div class="row"><button class="pri" id="axIssue">签发</button><span class="note">范围不会超过这个页面看得到的；数据工具还要宿主机先标 export。</span></div>
+      ${axIssued ? `<div class="result ok"><b>令牌「${esc(axIssued.token.name)}」已签发。</b>明文只显示这一次，离开这一页就看不到了，请现在交给使用的人：
+        <pre class="ax">${esc(axIssued.secret)}</pre><button id="axCopy">复制令牌</button>${axSnippets(url, axIssued.secret)}</div>` : ''}
+    </div>
+    <div class="card"><h3>令牌 <small>吊销后下一个请求就失效</small></h3>
+      ${tokens.length ? `<table class="ax"><tr><th>名字</th><th>范围</th><th>分类</th><th>有效期至</th><th>最近使用</th><th>状态</th><th></th></tr>
+        ${tokens.map(t => { const st = TOKEN_STATE[t.status] || ['', t.status]; return `<tr><td>${esc(t.name)}<div class="note"><code>${esc(t.id)}</code></div></td>
+          <td>${t.scopes.map(sc => esc(SCOPE_NAMES[sc] || sc)).join('、')}</td><td>${t.categories ? esc(t.categories.join('、')) : '全部'}</td>
+          <td>${t.expires_at ? axTime(t.expires_at) : '永不过期'}</td><td>${axTime(t.last_used_at)}</td><td class="${st[0]}">${st[1]}</td>
+          <td>${t.status === 'active' ? `<button data-axrevoke="${esc(t.id)}">吊销</button>` : ''}</td></tr>`; }).join('')}</table>`
+        : '<div class="note">还没有令牌。</div>'}
+    </div>
+    <div class="card"><h3>最近调用 <small>每次工具、提示词调用都记：客户端、参数、返回大小、耗时、成败</small></h3>
+      ${calls.length ? `<table class="ax"><tr><th>时间</th><th>客户端</th><th>调用</th><th>参数</th><th>结果</th><th>耗时</th></tr>
+        ${calls.map(c => `<tr><td>${axTime(c.at)}</td><td>${esc(c.client)}</td><td>${c.kind === 'prompt' ? '提示词 ' : ''}<code>${esc(c.name)}</code></td>
+          <td><code>${esc((typeof c.args === 'string' ? c.args : JSON.stringify(c.args)).slice(0, 160))}</code></td>
+          <td class="${c.ok ? '' : 'bad'}">${c.ok ? c.result_chars + ' 字' : esc(c.error || '失败')}</td><td>${c.duration_ms} ms</td></tr>`).join('')}</table>`
+        : '<div class="note">还没有外部调用。</div>'}
+    </div>
+    <div class="card"><h3>接入须知</h3><ul class="ax">
+      <li><b>外部客户端对写操作要保持人工确认。</b>这里的工具全部只读，但外部智能体通常能执行命令、改文件；知识库文档和工具输出都可能夹带指令，诱导它做坏事。</li>
+      <li><b>能上传文档的人，也就能影响外部智能体。</b>上传权限要和对外开放一起考虑。</li>
+      <li>知识库片段和工具返回会进入外部智能体所用的模型服务商，不再只经过自己的模型网关；只开放不涉及个人的数据。</li>
+      <li>令牌只存哈希：丢了就吊销重签，找不回来。</li></ul></div>
+  </div>`;
+}
+$('msettings').addEventListener('click', async e => {
+  if (mTab !== 'access') return;
+  const id = e.target.id;
+  if (id === 'axAllCats') {
+    document.querySelectorAll('[data-axcat]').forEach(x => { x.disabled = e.target.checked; if (e.target.checked) x.checked = false; });
+    return;
+  }
+  if (id === 'axCopy') {
+    if (navigator.clipboard) navigator.clipboard.writeText(axIssued?.secret || '').then(() => toast('已复制', 'ok'));
+    else toast('浏览器不允许脚本复制（非 https），请手动选中上面的令牌复制', '', 6000);
+    return;
+  }
+  if (id === 'axSkills') { location.href = '/api/mcp/skills.zip'; return; }
+  const revoke = e.target.dataset.axrevoke;
+  if (revoke) {
+    if (!confirm('吊销这枚令牌？用它的客户端下一个请求就会失败，不能恢复。')) return;
+    const r = await fetch('/api/mcp/tokens/' + encodeURIComponent(revoke), {method: 'DELETE'});
+    toast(r.ok ? '已吊销' : '吊销失败', r.ok ? 'ok' : 'err');
+    return renderAccess();
+  }
+  if (id === 'axIssue') {
+    const scopes = [...document.querySelectorAll('[data-axscope]:checked')].map(x => x.dataset.axscope);
+    const all = $('axAllCats').checked;
+    const cats = [...document.querySelectorAll('[data-axcat]:checked')].map(x => x.dataset.axcat);
+    const body = {name: $('axName').value.trim(), scopes, categories: all ? null : cats,
+                  expires_days: $('axDays').value ? +$('axDays').value : null,
+                  rate_per_minute: $('axRate').value ? +$('axRate').value : null,
+                  max_result_chars: $('axChars').value ? +$('axChars').value : null};
+    if (!body.name) return toast('先给令牌起个名字', 'err');
+    if (!scopes.length) return toast('至少选一个范围', 'err');
+    if (!all && !cats.length && scopes.some(sc => sc !== 'data')) return toast('选几个文档分类，或者勾「全部分类」', 'err');
+    const r = await fetch('/api/mcp/tokens', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    const d = await r.json();
+    if (!r.ok) return toast('签发失败：' + (Array.isArray(d.detail) ? d.detail.map(x => x.msg).join('；') : d.detail), 'err', 8000);
+    axIssued = d;
+    return renderAccess();
+  }
+});
+
 $('mnav').addEventListener('click', e => {
   const b = e.target.closest('[data-tab]'); if (!b) return;
-  mTab = b.dataset.tab; mGroup = null; mItem = null; mSearch = '';
+  mTab = b.dataset.tab; mGroup = null; mItem = null; mSearch = ''; axIssued = null;
   tlEditing = null; tlProposing = false; pbEditing = null; pbPicking = false;
   localStorage.setItem('kb-mtab', mTab); renderManage();
 });
@@ -2786,7 +2917,9 @@ document.querySelectorAll('.msplit').forEach(bar => {
 });
 if (MANAGE) {
   mReady = true; applySplit();
-  mTab = location.hash === '#settings' ? 'settings' : (localStorage.getItem('kb-mtab') || 'tools');
+  mTab = ['#settings', '#access'].includes(location.hash) ? location.hash.slice(1) : (localStorage.getItem('kb-mtab') || 'tools');
+  // 对外接入只在 MCP_ENABLED 打开时出现；关着时 /api/mcp 是 404，按钮一直藏着，存下来的页签退回工具
+  fetch('/api/mcp').then(r => { $('mAccessBtn').hidden = !r.ok; if (!r.ok && mTab === 'access') { mTab = 'tools'; renderManage(); } }).catch(() => {});
   loadDocs().then(() => { $('mlist').insertBefore($('queue'), $('mrows')); renderManage(); });
 } else {
   applySplit();
