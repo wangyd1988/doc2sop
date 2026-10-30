@@ -96,6 +96,10 @@ flowchart LR
 **待办清单（`PLAN_TOOL`，默认关）。** 流程类工具 `plan`：模型维护整张清单（每次整体替换），经 `plan` 事件画成勾选列表；
 点「▶ 执行」时代码先按 SOP 步骤预填。流程类调用不算观察到系统、不进 SOP、不记进图谱。
 
+**联网与出网规则。** 联网打开时绑 `web_search`，再打开 `WEB_FETCH` 时多绑 `web_fetch`（读本轮搜索结果或用户给的链接的正文，
+作为 `[W]` 来源接着编号）。两条出网通道——搜索词和链接——发出去之前都过 `egress.py` 的同一套规则：静态拦截、
+本轮数据类调用留下的污点、链接来源、可选的严格模式（`WEB_AFTER_DATA=deny`），见 `docs/工具.md`「出网规则」。
+
 ## 组织运行图谱（graph.db）
 
 文档 → SOP → 工具 原本是一条单向流，工具查到的真实数据和人对一次回答的判断答完就丢。
@@ -184,7 +188,9 @@ app/
 │   ├── tools.py       按 JSON Schema 生成工具签名（契约里的 inputSchema；老工具服务按 params 推）
 │   ├── extract.py     从文档抽取 SOP
 │   ├── grow.py        从一次自由排查长出 SOP 提议（回答后后台判断、生成、去重）
-│   ├── web_search.py  联网搜索（经网关）与泄漏拦截
+│   ├── web_search.py  联网搜索（经网关）
+│   ├── web_fetch.py   读网页正文（WEB_FETCH）：只读搜索结果和用户给的链接，防 SSRF、限大小和类型、HTML 转正文
+│   ├── egress.py      统一出网规则：搜索词和链接的静态拦截、污点拦截、链接来源、严格模式
 │   └── ops_client.py  只读接口客户端
 ├── rag/
 │   ├── chunking.py    切分
