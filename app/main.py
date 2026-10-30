@@ -516,11 +516,12 @@ class ToolProposal(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     label: str = Field(default="", max_length=40)
     desc: str = Field(min_length=1, max_length=300)
-    # 按实现类型申请（命令型 binary + argv + 适用系统 os；脚本型 script；接口型 http，可带 conn 选已有连接），
-    # 具体校验在工具服务一侧。页面发的是这种老写法，新老工具服务都认；新写法 impl = {type, …} 也接受。
+    # 按实现类型申请（命令型 binary + argv + 适用系统 os + 适用分组 groups；脚本型 script；接口型 http，可带 conn
+    # 选已有连接），具体校验在工具服务一侧。页面发的是这种老写法，新老工具服务都认；新写法 impl = {type, …} 也接受。
     binary: str = Field(default="", max_length=40)
     argv: list[str] = Field(default_factory=list, max_length=20)
     os: list[str] = Field(default_factory=list, max_length=3)
+    groups: list[str] = Field(default_factory=list, max_length=10)
     script: str = Field(default="", max_length=80)
     http: dict | None = None
     impl: dict | None = None
@@ -532,10 +533,12 @@ def tools_overview(q: str = "", group: str = "", offset: int = 0, limit: int = c
     """工具面板数据：分组 + 一页条目。默认只回分组；带 group 或 q 才回条目。"""
     detail = ops_client.describe_tools()
     page = catalog.page_tools(detail.get("tools", {}), q, group, offset, limit)
-    # connections、host 给申请表单用：选已有连接、默认勾上工具服务所在的系统。连接里只有名字和地址模板，没有凭据
+    # connections、host 给申请表单用：选已有连接、默认勾上工具服务所在的系统。连接里只有名字和地址模板，没有凭据。
+    # hosts 是主机清单（地址、账号、模式、最近一次检查的结果），没有私钥；老工具服务不回它
     return {**page, "pending": detail.get("pending", 0),
             "mcp_servers": detail.get("mcp_servers", {}),
             "connections": detail.get("connections", {}), "host": detail.get("host", {}),
+            "hosts": detail.get("hosts", {"configured": False}),
             "error": detail.get("error", ""), "agent_mode": AGENT_MODE}
 
 
@@ -569,14 +572,14 @@ def tools_propose(body: ToolProposal):
     tool = body.model_dump()
     if tool.get("impl") is not None:
         # 新写法：老写法的字段一律不转发，免得一条申请里两种写法打架
-        for field in ("binary", "argv", "script", "http", "os"):
+        for field in ("binary", "argv", "script", "http", "os", "groups"):
             tool.pop(field, None)
     else:
         tool.pop("impl", None)
         kind = "script" if tool.get("script") else "http" if tool.get("http") else "command"
-        keep = {"script": ("script", "os"), "http": ("http",), "command": ("binary", "argv", "os")}[kind]
-        for field in ("binary", "argv", "script", "http", "os"):
-            if field not in keep or (field == "os" and not tool.get("os")):
+        keep = {"script": ("script", "os"), "http": ("http",), "command": ("binary", "argv", "os", "groups")}[kind]
+        for field in ("binary", "argv", "script", "http", "os", "groups"):
+            if field not in keep or (field in ("os", "groups") and not tool.get(field)):
                 tool.pop(field, None)
     try:
         result = ops_client.propose(tool, author=WEB_USER)

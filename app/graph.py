@@ -258,6 +258,7 @@ def _entities(args, schema):
 
     老写法的参数由工具服务（或应用侧兜底）按参数名和预置正则推出 x-entity，规则见 registry.entity_of；
     预置正则名在 x-pattern 里，照旧记进属性。K8s 对象另记它是哪类资源（同一次调用里的 resource 实参）。
+    主机（x-entity: host，工具服务给命令型工具加的 target）的实参可以是 @组名：那是一组主机，记成 host_group。
     """
     properties = (schema or {}).get("properties") if isinstance(schema, dict) else None
     if not isinstance(properties, dict):
@@ -267,12 +268,17 @@ def _entities(args, schema):
         kind = prop.get("x-entity") if isinstance(prop, dict) else None
         if not kind or not isinstance(kind, str) or not isinstance(value, str) or not value.strip():
             continue
+        value = value.strip()
         attrs = {"param": key}
         if prop.get("x-pattern"):
             attrs["pattern"] = prop["x-pattern"]
         if kind == "k8s_object" and args.get("resource"):
             attrs["resources"] = [str(args["resource"])]
-        yield key, value.strip(), kind, attrs
+        if kind == "host" and value.startswith("@"):
+            kind, value = "host_group", value[1:]
+            if not value:
+                continue
+        yield key, value, kind, attrs
 
 
 def record_tool_call(execution_id, tool, args, output, ok, duration_ms, params=None, schema=None):
