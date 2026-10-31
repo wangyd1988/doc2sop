@@ -125,6 +125,15 @@ class ComposeTests(unittest.TestCase):
         self.assertEqual(env["DEMO_PACKS"], "${DEMO_PACKS:-}")
         self.assertEqual(self.app["env_file"], ".env")
 
+    def test_demo_page_approval_keeps_its_hash_in_the_state_volume(self):
+        """演示站也能在页面上审批：口令哈希在 sidecar 的状态卷里（默认不设），页面给的命令是 docker exec 进这个容器。"""
+        env = self.ops["environment"]
+        self.assertEqual(env["OPS_APPROVAL_FILE"], "/ops/approval.hash")
+        self.assertIn("ops-state:/ops", self.ops["volumes"])
+        self.assertEqual(env["OPS_CLI"], "docker exec -it ${OPS_CONTAINER:-kb-ops} python /srv/ops_readonly.py "
+                                         "--config /ops/ops_tools.yaml")
+        self.assertNotIn("approval", (REPO / "deploy" / "demo" / "entrypoint.py").read_text(encoding="utf-8"))
+
     def test_both_containers_see_the_packs_directory(self):
         self.assertIn("./packs:/packs:ro", self.ops["volumes"])
         self.assertIn("ops-state:/ops", self.ops["volumes"])

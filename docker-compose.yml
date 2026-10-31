@@ -64,6 +64,11 @@ services:
       # 页面上填的模型不会传到这里——工具凭据永远不经过页面，这是既定边界。
       OPS_SECRET_GATEWAY_URL: ${LLM_BASE_URL:-}
       OPS_SECRET_GATEWAY_KEY: ${LLM_API_KEY:-}
+      # 页面审批的口令哈希放在状态卷里，默认不设（页面上只能看、能拒绝）。要演示页面审批时自己设一次：
+      #   docker exec -it <这个容器> python /srv/ops_readonly.py set-approval-passphrase
+      OPS_APPROVAL_FILE: /ops/approval.hash
+      # 页面上给出的宿主机命令（批准、确认脚本、设置口令）按这个前缀拼
+      OPS_CLI: docker exec -it ${OPS_CONTAINER:-kb-ops} python /srv/ops_readonly.py --config /ops/ops_tools.yaml
     volumes:
       - ./packs:/packs:ro
       # 生成的工具定义及其旁路文件（页面上的启停、待审申请、登记的 host key、连演示主机的私钥）放在卷里，重启不丢
