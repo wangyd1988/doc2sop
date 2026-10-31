@@ -163,10 +163,15 @@ class ToolServiceContractTests(unittest.TestCase):
                     self.assertEqual(sorted(set(meta) - {"desc", "params", "input_schema"}), CONTRACT_FIELDS)
                     # 老字段原样：desc、params 和改造前一样取自工具定义
                     self.assertEqual((meta["desc"], meta["params"]), (specs[name]["desc"], specs[name]["params"]))
-                    self.assertEqual(meta["_meta"], {"doc2sop": {"category": "data", "provider": "ops",
-                                                                 "export": False, "group": specs[name]["group"]}})
+                    # 外部工具（实参会发到组织外面：字面公网主机的 holiday_calendar）多一个 external 标记、openWorldHint；
+                    # 内部工具的契约字段和以前一个字节都不差
+                    external = specs[name].get("external") is True
+                    if name == "holiday_calendar":
+                        self.assertTrue(external)
+                    doc2sop = {"category": "data", "provider": "ops", "export": False, "group": specs[name]["group"]}
+                    self.assertEqual(meta["_meta"], {"doc2sop": {**doc2sop, **({"external": True} if external else {})}})
                     self.assertEqual(meta["annotations"], {"readOnlyHint": True, "destructiveHint": False,
-                                                           "openWorldHint": False})
+                                                           "openWorldHint": external})
                     self.assertEqual(meta["title"], specs[name]["label"] or name)
                     self.assertEqual(meta["inputSchema"]["type"], "object")
 

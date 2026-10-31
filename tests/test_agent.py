@@ -374,14 +374,16 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(sorted(tools), ["nn"])
         self.assertTrue(any("不能再包含" in p for p in problems), problems)
 
-    def test_main_file_wins_on_duplicate_names(self):
+    def test_main_file_replaces_an_included_tool_of_the_same_name(self):
+        """主文件里写和被包含文件同名的工具，就是替换它的实现：参数兼容时不算重复，主文件的生效并标明替换了谁。"""
         Path(self.tmp.name, "dup.yaml").write_text(
             "tools:\n  - {name: one, binary: df, argv: [df, -h], params: {}}\n", encoding="utf-8")
         tools, problems = self.load(
             "include: [dup.yaml]\n"
             "tools:\n  - {name: one, binary: free, argv: [free, -m], params: {}}\n")
         self.assertEqual(tools["one"]["binary"], "free")
-        self.assertTrue(any("工具名重复" in p for p in problems), problems)
+        self.assertEqual(tools["one"]["replaces"]["pack"], "dup.yaml")
+        self.assertEqual(problems, [])
 
     def test_bad_entry_in_included_file_names_the_file(self):
         Path(self.tmp.name, "bad.yaml").write_text(

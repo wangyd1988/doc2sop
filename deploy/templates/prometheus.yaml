@@ -1,0 +1,81 @@
+# Prometheus 的几个常用即时查询（PromQL 写死在模板里，模型只能填主机名）。格式和 deploy/ops_tools.yaml 一样，用法：
+#
+#   # /opt/ops/ops_tools.yaml（主配置）
+#   connections:
+#     - name: prom
+#       type: http
+#       base: https://prometheus.example.internal:9090   # 写到端口为止，不带 /api
+#       ca: /etc/ops-readonly/prom-ca.pem                # 可选：内部 CA
+#       bearer: ${prom_token}                            # 可选：只读令牌，值在 OPS_SECRET_PROM_TOKEN
+#   include: [/opt/doc2sop/deploy/templates/prometheus.yaml]
+#
+# 主机名嵌在 PromQL 的标签值里：instance=~"{host}(:[0-9]+)?"。只有字母、数字和 . _ - 的预置正则（这里是 name）
+# 才能嵌进查询值——参数值里不可能有引号、反斜杠、花括号，关不掉字符串、加不了别的匹配条件（见 docs/工具.md）。
+# 注意 =~ 是正则匹配：主机名里的 . 匹配任意字符，比如 10.0.1.1 也会匹配 10x0y1z1，查不到别的东西，只是范围略宽。
+# 指标名按 node_exporter 写；instance 标签不是「主机名:端口」的组织，替换成自己的写法（主配置里写同名工具即可）。
+tools:
+  - name: prom_targets
+    label: 抓取目标状态
+    group: 监控
+    desc: 查看 Prometheus 各个抓取目标是否在线（value 的第二项 1 是在线，0 是掉线）。监控数据缺失、怀疑 exporter 挂了时先看它。
+    impl:
+      type: http
+      conn: prom
+      url: /api/v1/query
+      query: {query: up}
+      pick: ["data.result[].metric.job", "data.result[].metric.instance", "data.result[].value"]
+
+  - name: prom_firing_alerts
+    label: 正在告警
+    group: 监控
+    desc: 查看正在触发（firing）的告警：告警名、实例、级别。排查前先看看监控已经报了什么。
+    impl:
+      type: http
+      conn: prom
+      url: /api/v1/query
+      query: {query: 'ALERTS{alertstate="firing"}'}
+      pick: ["data.result[].metric.alertname", "data.result[].metric.instance", "data.result[].metric.severity"]
+      notes:
+        empty: {"data.result[].metric.alertname": 现在没有正在触发的告警。}
+
+  - name: node_cpu_usage
+    label: 主机 CPU 使用率
+    group: 监控
+    desc: 查看一台主机最近 5 分钟的 CPU 使用率（%）。怀疑主机过载时用它。
+    params:
+      host: {type: str, pattern: name, required: true, desc: 主机名或 IP（instance 标签里端口前面的部分）}
+    impl:
+      type: http
+      conn: prom
+      url: /api/v1/query
+      query:
+        query: '100 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle",instance=~"{host}(:[0-9]+)?"}[5m])) * 100'
+      pick: ["data.result[].metric.instance", "data.result[].value"]
+
+  - name: node_memory_available
+    label: 主机可用内存
+    group: 监控
+    desc: 查看一台主机可用内存占总内存的百分比（%）。怀疑内存不足、进程被 OOM 杀掉时用它。
+    params:
+      host: {type: str, pattern: name, required: true, desc: 主机名或 IP（instance 标签里端口前面的部分）}
+    impl:
+      type: http
+      conn: prom
+      url: /api/v1/query
+      query:
+        query: 'node_memory_MemAvailable_bytes{instance=~"{host}(:[0-9]+)?"} / node_memory_MemTotal_bytes{instance=~"{host}(:[0-9]+)?"} * 100'
+      pick: ["data.result[].metric.instance", "data.result[].value"]
+
+  - name: node_disk_usage
+    label: 主机磁盘使用率
+    group: 监控
+    desc: 查看一台主机各挂载点的磁盘使用率（%），不含 tmpfs、overlay。写日志失败、镜像拉不下来时先看这个。
+    params:
+      host: {type: str, pattern: name, required: true, desc: 主机名或 IP（instance 标签里端口前面的部分）}
+    impl:
+      type: http
+      conn: prom
+      url: /api/v1/query
+      query:
+        query: '100 - node_filesystem_avail_bytes{instance=~"{host}(:[0-9]+)?",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{instance=~"{host}(:[0-9]+)?",fstype!~"tmpfs|overlay"} * 100'
+      pick: ["data.result[].metric.mountpoint", "data.result[].value"]

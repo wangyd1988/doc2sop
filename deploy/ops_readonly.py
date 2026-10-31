@@ -18,8 +18,12 @@ this file, so local and remote execution share one copy of the rules.
 
 Binds loopback only and requires a shared token. Standard library only (plus
 PyYAML), so it runs on any box with Python 3.9+. That includes the MCP client:
-the host may declare stdio MCP servers, and their tools go through the same
-approve-before-use flow as everything else.
+the host may declare MCP servers — stdio child processes or remote Streamable
+HTTP endpoints — and their tools go through the same approve-before-use flow as
+everything else. Database tools (sql) need a driver only when a connection of
+that type is configured: sqlite is in the standard library, PostgreSQL and MySQL
+drivers are imported lazily (from the system or from the vendor/ directory next
+to this file); a missing driver disables only the tools that need it.
 
     OPS_TOKEN=... python ops_readonly.py --port 8799
 """
@@ -30,12 +34,14 @@ import datetime
 import glob
 import hashlib
 import importlib.util
+import ipaddress
 import json
 import os
 import re
 import secrets
 import shlex
 import shutil
+import ssl
 import stat
 import subprocess
 import sys
@@ -83,9 +89,40 @@ SECRET_PREFIX = "OPS_SECRET_"
 SECRET_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 SECRET_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 ENV_BASE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}(.*)$")
-# 连接：一个数据源的地址和凭据引用，多个工具共用。本期只给接口型工具用。
+# 连接：一个数据源的地址和凭据引用，多个工具共用。接口型工具用 http 连接，sql 工具用数据库连接。
 CONN_NAME = re.compile(r"^[a-z][a-z0-9_]{0,30}$")
-CONN_TYPES = ("http",)
+DB_TYPES = ("postgres", "mysql", "sqlite")
+CONN_TYPES = ("http",) + DB_TYPES
+# 每种连接认哪些字段：不认识的字段整条拒绝（写了 insecure: true 却被悄悄忽略，比加载失败危险）
+CONN_FIELDS = {
+    "http": ("name", "type", "label", "base", "headers", "ca", "bearer", "bearer_file", "external"),
+    "postgres": ("name", "type", "label", "host", "port", "database", "user", "password", "tls", "ca", "timeout",
+                 "external"),
+    "mysql": ("name", "type", "label", "host", "port", "database", "user", "password", "tls", "ca", "timeout",
+              "external"),
+    "sqlite": ("name", "type", "label", "path", "timeout", "external"),
+}
+DB_PORTS = {"postgres": 5432, "mysql": 3306}
+DB_TLS = {"postgres": ("disable", "prefer", "require", "verify"), "mysql": ("disable", "require", "verify")}
+DB_IDENT = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.$@-]{0,62}$")
+SQL_TIMEOUT = (5, 1, 60)          # 语句超时（秒）：默认、最小、最大
+SQL_ROWS = (100, 1, 1000)         # 每次最多返回几行：默认、最小、最大
+SQL_CELL = 500                    # 每个格子最多多少字
+
+# 「外部」：调用会把实参发到组织外面（公网上的接口、远程 MCP server、数据库）。按地址判断，管理员可以声明覆盖。
+# 这几类主机名按内部处理：localhost、不带点的单标签名、常见的内网后缀。其余主机名、公网 IP 都算外部。
+INTERNAL_SUFFIXES = (".localhost", ".local", ".localdomain", ".internal", ".intranet", ".lan", ".corp", ".home",
+                     ".home.arpa", ".svc", ".cluster.local")
+
+# 模板里嵌参数（PromQL 的 {instance="{host}"}、K8s 的 labelSelector=app={app}）：只对这些预置正则开放。
+# 它们只允许字母、数字和 . _ -：没有引号、反引号、反斜杠、花括号、空白、逗号、= ! ( )，参数值关不掉
+# 字符串字面量、加不了匹配条件，也拼不出别的选择器。整数同理。新增的预置正则要逐个判断能不能进这个集合。
+EMBED_SAFE = ("name", "k8s_name", "resource", "date")
+# 替换场景包工具时，参数的 pattern 不能放宽：键是场景包的 pattern，值是「不比它宽」的预置正则
+# （K8S_NAME、RESOURCE、DATE 允许的字符串都是 NAME 的子集；RESOURCE、DATE 又都是 K8S_NAME 的子集）
+PATTERN_WITHIN = {"name": ("name", "k8s_name", "resource", "date"),
+                  "k8s_name": ("k8s_name", "resource", "date"),
+                  "resource": ("resource",), "date": ("date",)}
 
 # 命令型、脚本型工具可以声明适用的系统；和工具服务所在机器不符时是「不适用」，不是「缺命令」。
 OS_NAMES = ("linux", "darwin", "windows")
@@ -113,15 +150,29 @@ INTERPRETERS = ops_exec.INTERPRETERS
 FORBIDDEN = ops_exec.FORBIDDEN
 
 # ---- MCP：第四种工具类型 ----------------------------------------------------
-# 工具服务自己当 MCP 客户端（stdio 传输，标准库手写，不引入 SDK——单文件零依赖是这个脚本的卖点）。
-# server 由主文件顶层 mcp_servers 声明，它是跑在宿主机上的任意代码，所以只能由 root 手写，
+# 工具服务自己当 MCP 客户端，两种传输都是标准库手写：stdio（宿主机上的子进程），和 Streamable HTTP（远程 server）。
+# 不用官方 SDK：它是异步的（anyio + httpx），要在这个同步的线程模型里另起事件循环；跳转、响应大小、超时这些安全边界
+# 也得钻进它的内部去改。我们只用得到 initialize / server/discover、tools/list、tools/call 这几个方法，手写更好审。
+# 互通性由测试保证：tests/test_remote_mcp.py 用官方 SDK 起真的 server，两个协议版本都跑。
+# server 由主文件顶层 mcp_servers 声明，它是跑在宿主机上的任意代码（或一个能拿到实参的远程服务），所以只能由 root 手写，
 # 页面连申请都不能申请。发现到的工具一律先进 pending，批准前不出现在 /tools、不能执行。
-MCP_PROTOCOL = "2025-06-18"     # 本期只用 tools/list、tools/call，各版本一致；接受 server 回复的任何版本
+MCP_PROTOCOL = "2025-06-18"     # stdio 用这个版本握手；只用 tools/list、tools/call，各版本一致；接受 server 回复的任何版本
 MCP_REFRESH = 600               # 每隔多久重新 tools/list 一次，看看 schema 有没有变
 MCP_BACKOFF = (5, 30, 120)      # 连接失败后的重试间隔；三次都失败则标离线，等下一次调用再试
 MCP_INIT_TIMEOUT = 30
 MCP_SERVER_ID = re.compile(r"^[a-z][a-z0-9_]{0,30}$")
 MCP_STDERR_KEEP = 20            # 每个 server 最多保留多少行 stderr 供排错
+# 远程 server（Streamable HTTP）：2025-11-25 是 initialize 握手 + Mcp-Session-Id 会话；2026-07-28 没有握手和会话，
+# 每个请求自带 _meta 信封（协议版本、客户端信息、能力）和 Mcp-Method / Mcp-Name 请求头，用 server/discover 问能力。
+# protocol: auto（默认）先按 2026-07-28 发 server/discover，server 不认再退回 initialize。
+MCP_MODERN = "2026-07-28"
+MCP_HANDSHAKE = "2025-11-25"
+MCP_HANDSHAKE_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
+MCP_HTTP_PROTOCOLS = ("auto", MCP_HANDSHAKE, MCP_MODERN)
+MCP_HTTP_MAX = 4 * 1024 * 1024  # 一次响应最多读多少字节（JSON 或整条 SSE 流），再多就断开、报错
+MCP_HTTP_FIELDS = ("label", "url", "headers", "protocol", "timeout", "ca", "external")
+MCP_STDIO_FIELDS = ("label", "command", "args", "env", "cwd", "external")
+MCP_META = "io.modelcontextprotocol/"
 # 子进程只拿到这些环境变量 + 配置里显式声明的。不继承 OPS_TOKEN 和任何 OPS_SECRET_*：
 # server 是第三方代码，它不该知道工具服务自己的凭据。SYSTEMROOT/PATHEXT 是 Windows 起进程的硬需求。
 MCP_PASS_ENV = ("PATH", "HOME", "USERPROFILE", "LANG", "LC_ALL", "TEMP", "TMP", "TMPDIR",
@@ -293,8 +344,19 @@ def _check_http_tool(raw, name):
         if whole_param and whole_param.group(1) not in params:
             raise ConfigError(f"{name}.http.query 用到了未声明的参数 {whole_param.group(1)}")
         # 先去掉凭据引用再找 {参数}：${weather_key} 里的 {weather_key} 不是模型参数
-        if not whole_param and URL_PARAM.search(SECRET_REF.sub("", value)):
-            raise ConfigError(f"{name}.http.query 的值要么是固定值，要么整个是 {{参数名}}")
+        embedded = [] if whole_param else URL_PARAM.findall(SECRET_REF.sub("", value))
+        if embedded:
+            # 参数嵌在查询值里（PromQL 的 {instance="{host}"}、K8s 的 labelSelector=app={app}）：
+            # 只对 EMBED_SAFE 的预置正则和整数开放，参数值里不可能有引号、花括号、反斜杠，见 EMBED_SAFE 的说明
+            if "$" in value:
+                raise ConfigError(f"{name}.http.query.{key} 嵌了参数，就不能再引用凭据或写 $")
+            for found in embedded:
+                if found not in params:
+                    raise ConfigError(f"{name}.http.query 用到了未声明的参数 {found}")
+                if not _embed_safe(params[found]):
+                    raise ConfigError(f"{name}.http.query.{key} 嵌了参数 {found}：只有整数和 {'、'.join(EMBED_SAFE)} "
+                                      f"这几种预置正则能嵌进查询值（它们不含引号、花括号、反斜杠），"
+                                      f"要么改用这几种，要么让 {{{found}}} 整个占一个值")
         _check_secret_refs(name, value)
         query[key] = value
 
@@ -338,7 +400,11 @@ def _check_http_tool(raw, name):
     return {**_common(raw, name), "type": "http", "binary": "", "argv": [],
             "params": params,
             "http": {"url": url, "conn": conn, "query": query, "headers": headers, "pick": pick,
-                     "notes": notes}}
+                     "notes": notes, "external": _check_external(name, http.get("external"))}}
+
+
+def _embed_safe(param):
+    return param.get("type") == "int" or param.get("pattern") in EMBED_SAFE
 
 
 # ---- MCP 工具条目 -----------------------------------------------------------
@@ -515,6 +581,8 @@ def _check_tool(raw):
     if raw.get("http") is not None:
         _no_os(raw, name, "接口型")
         return _check_http_tool(raw, name)
+    if raw.get("sql") is not None:
+        raise ConfigError(f"{name}：sql 工具只能写成 impl: {{type: sql, conn: 连接名, query: …, max_rows: …}}")
     return _check_command_tool(raw, name)
 
 
@@ -536,15 +604,16 @@ def _check_command_tool(raw, name):
 
 
 # impl 里每种实现认哪些字段。不认识的一律报错而不是忽略：比如写了 via: ssh 却被悄悄当成本机执行，
-# 比加载失败危险得多。在哪台主机上跑是主机清单（hosts）和 target 参数的事，不写在工具上；sql 在后面几期。
+# 比加载失败危险得多。在哪台主机上跑是主机清单（hosts）和 target 参数的事，不写在工具上。
 IMPL_FIELDS = {
     "builtin": ("func",),
     "command": ("argv", "binary", "os", "groups"),
     "script": ("script", "os"),
-    "http": ("url", "conn", "method", "query", "headers", "pick", "notes"),
+    "http": ("url", "conn", "method", "query", "headers", "pick", "notes", "external"),
+    "sql": ("conn", "query", "max_rows"),
     "mcp": ("server", "tool"),
 }
-LEGACY_FIELDS = ("binary", "argv", "script", "http", "mcp")
+LEGACY_FIELDS = ("binary", "argv", "script", "http", "mcp", "sql")
 
 
 def _check_impl(raw, name):
@@ -582,7 +651,144 @@ def _check_impl(raw, name):
         return spec
     if kind == "http":
         return _check_http_tool({**base, "http": body}, name)
+    if kind == "sql":
+        return _check_sql_tool({**base, "sql": body}, name)
     return _check_mcp_tool({**base, "mcp": body}, name)
+
+
+# ---- sql：只读的查询模板 ---------------------------------------------------------------
+# 查询由管理员写成模板，模型只能填参数，参数一律用驱动的占位符绑定，从不拼进 SQL 文本。只读有三层：
+#   1. 连接用只读账号（文档要求，见 docs/工具.md）；
+#   2. 工具服务以只读方式执行：sqlite 只读打开 + query_only + 授权回调只放行读；PostgreSQL 只读事务
+#      （default_transaction_read_only + BEGIN READ ONLY）；MySQL START TRANSACTION READ ONLY；
+#   3. 模板只能是一条 SELECT 或 WITH：不能有分号、注释、反斜杠、$ ? { }，写语句和副作用函数的关键字一律拒绝。
+# 另有语句超时、最多行数、每格和整体的输出上限，输出里出现的连接凭据（密码、来自 ${名字} 的地址和账号）替换成 ***。
+#
+#   - name: cmdb_host
+#     params: {host: {type: str, pattern: name, required: true}}
+#     impl: {type: sql, conn: cmdb, query: "SELECT owner, env FROM v_hosts WHERE hostname = :host", max_rows: 5}
+
+SQL_MAX = 4000
+SQL_PLACEHOLDER = re.compile(r":([a-z_][a-z0-9_]*)")
+SQL_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
+# 引号外出现这些词就拒绝：写语句（WITH 里的 DELETE、SELECT … INTO、FOR UPDATE 也都靠它拦）、导入导出、锁
+SQL_DENY_WORDS = frozenset({
+    "insert", "update", "delete", "merge", "upsert", "into", "truncate", "drop", "alter", "create", "grant",
+    "revoke", "copy", "call", "exec", "execute", "attach", "detach", "pragma", "vacuum", "reindex", "lock",
+    "unlock", "handler", "outfile", "dumpfile", "prepare", "deallocate", "notify", "listen", "savepoint",
+    "commit", "rollback", "begin"})
+# 有副作用、能读服务器文件、能拖住数据库的函数
+SQL_DENY_FUNCS = frozenset({
+    "pg_read_file", "pg_read_binary_file", "pg_ls_dir", "pg_stat_file", "lo_import", "lo_export", "lo_get",
+    "lo_put", "lo_from_bytea", "dblink", "dblink_exec", "dblink_connect", "pg_sleep", "pg_sleep_for",
+    "pg_sleep_until", "pg_terminate_backend", "pg_cancel_backend", "pg_reload_conf", "pg_rotate_logfile",
+    "set_config", "nextval", "setval", "pg_advisory_lock", "pg_notify", "load_file", "sleep", "benchmark",
+    "get_lock", "release_lock", "sys_exec", "sys_eval", "load_extension", "readfile", "writefile", "edit",
+    "fts3_tokenizer"})
+
+
+def _sql_segments(owner, query):
+    """查询模板 → [("text", 原文) | ("param", 参数名)]。逐字扫一遍，引号里的内容原样保留、不当成语法。
+
+    扫描时顺带落实第三层：一条语句、没有注释、没有 $ ? { } 反斜杠、冒号只用于 :参数 和 :: 类型转换。
+    返回 (片段, 引号外的文字)：后者给关键字检查用，引号里的字符串字面量、带引号的标识符都换成了空格。
+    """
+    if "\\" in query or "\x00" in query:
+        raise ConfigError(f"{owner} 里不能有反斜杠（各家数据库对它的转义规则不一样，扫描和执行会理解得不一样）")
+    segments, outside, buffer, i, n = [], [], [], 0, len(query)
+    while i < n:
+        char = query[i]
+        if char in "'\"`":
+            end = i + 1
+            while True:
+                end = query.find(char, end)
+                if end < 0:
+                    raise ConfigError(f"{owner} 的引号没有闭合")
+                if end + 1 < n and query[end + 1] == char:   # 两个引号是转义的一个引号
+                    end += 2
+                    continue
+                break
+            buffer.append(query[i:end + 1])
+            outside.append(" ")
+            i = end + 1
+            continue
+        if char == ";":
+            raise ConfigError(f"{owner} 只能是一条语句，中间不能有分号")
+        if query.startswith("--", i) or query.startswith("/*", i) or char == "#":
+            raise ConfigError(f"{owner} 里不能有注释（-- /* #）")
+        if char in "$?{}":
+            raise ConfigError(f"{owner} 里不能有 {char}：参数只能写成 :名字")
+        if char == ":":
+            if query.startswith("::", i):
+                buffer.append("::")
+                outside.append(" :: ")
+                i += 2
+                continue
+            found = SQL_PLACEHOLDER.match(query, i)
+            if not found:
+                raise ConfigError(f"{owner} 里的冒号后面要跟参数名（:小写名字），或者写成 :: 类型转换")
+            if buffer:
+                segments.append(("text", "".join(buffer)))
+                buffer = []
+            segments.append(("param", found.group(1)))
+            outside.append(" ")
+            i = found.end()
+            continue
+        buffer.append(char)
+        outside.append(char)
+        i += 1
+    if buffer:
+        segments.append(("text", "".join(buffer)))
+    return segments, "".join(outside)
+
+
+def _check_sql_query(owner, query, params):
+    """校验查询模板（第三层），返回 (去掉结尾分号的模板, 片段)。"""
+    text = query.strip()
+    if text.endswith(";"):
+        text = text[:-1].rstrip()
+    if not text:
+        raise ConfigError(f"{owner} 不能为空")
+    if len(text) > SQL_MAX:
+        raise ConfigError(f"{owner} 太长：最多 {SQL_MAX} 个字符")
+    segments, outside = _sql_segments(owner, text)
+    words = [word.lower() for word in SQL_WORD.findall(outside)]
+    if not words or words[0] not in ("select", "with"):
+        raise ConfigError(f"{owner} 只能是一条 SELECT 或 WITH 查询")
+    denied = [word for word in words if word in SQL_DENY_WORDS]
+    if denied:
+        raise ConfigError(f"{owner} 里有 {denied[0].upper()}：查询模板只能读，不能有写语句、导入导出和加锁")
+    denied = [word for word in words if word in SQL_DENY_FUNCS]
+    if denied:
+        raise ConfigError(f"{owner} 用了函数 {denied[0]}：它有副作用、能读服务器上的文件或拖住数据库，不能用")
+    used = [value for kind, value in segments if kind == "param"]
+    for name in used:
+        if name not in params:
+            raise ConfigError(f"{owner} 用到了未声明的参数 {name}")
+    for name in params:
+        if name not in used:
+            raise ConfigError(f"{owner} 没有用到参数 {name}：声明了就要用 :{name} 写进查询")
+    return text, segments
+
+
+def _check_sql_tool(raw, name):
+    """sql 工具：模板 + 参数，连接（地址、账号、密码）由管理员在主配置的 connections 里定。"""
+    sql = raw.get("sql")
+    if not isinstance(sql, dict):
+        raise ConfigError(f"{name}.impl 必须是映射")
+    params = _check_params(name, raw)
+    conn = str(sql.get("conn") or "").strip()
+    if not CONN_NAME.match(conn):
+        raise ConfigError(f"{name}.impl.conn 要写主配置里一个数据库连接的名字")
+    query = sql.get("query")
+    if not isinstance(query, str):
+        raise ConfigError(f"{name}.impl.query 要写成一条 SELECT 或 WITH 查询")
+    query, segments = _check_sql_query(f"{name}.impl.query", query, params)
+    rows = sql.get("max_rows", SQL_ROWS[0])
+    if isinstance(rows, bool) or not isinstance(rows, int) or not SQL_ROWS[1] <= rows <= SQL_ROWS[2]:
+        raise ConfigError(f"{name}.impl.max_rows 要是 {SQL_ROWS[1]}..{SQL_ROWS[2]} 之间的整数")
+    return {**_common(raw, name), "type": "sql", "binary": "", "argv": [], "params": params,
+            "sql": {"conn": conn, "query": query, "max_rows": rows, "segments": segments}}
 
 
 # ---- 内置函数（builtin）--------------------------------------------------------
@@ -655,8 +861,16 @@ def _run_builtin(spec, args):
 
 
 # ---- 连接 --------------------------------------------------------------------
-# 一个数据源的地址前缀和凭据引用，写在主文件顶层 connections 里，多个工具用 conn: 共用。
+# 一个数据源的地址和凭据引用，写在主文件顶层 connections 里，多个工具用 conn: 共用。
 # 地址和凭据去哪儿是宿主机管理员的决定：被 include 的文件、页面申请都只能引用已有的连接，不能新建。
+#
+#   connections:
+#     - {name: prom, type: http, base: https://prom.example.internal:9090, ca: /etc/ops-readonly/prom-ca.pem,
+#        bearer: ${prom_token}}
+#     - {name: k8s, type: http, base: https://127.0.0.1:16443, ca: ${k8s_ca}, bearer_file: /etc/ops-readonly/k8s-token}
+#     - {name: cmdb, type: postgres, host: db.example.internal, database: cmdb, user: doc2sop_ro,
+#        password: ${cmdb_password}}
+#     - {name: assets, type: sqlite, path: /srv/data/assets.db}
 
 def _check_conn_base(name, base):
     env_base = ENV_BASE.match(base)
@@ -677,16 +891,160 @@ def _check_conn_base(name, base):
     return base.rstrip("/")
 
 
-def _check_connections(document, problems):
-    """主文件顶层 connections → {name: 连接}。坏条目跳过并记 problem，不拖垮别的连接和工具。"""
+def _ref_or_literal(owner, raw, literal=None, what="值"):
+    """一个字段：要么整个是凭据引用 ${名字}，要么是符合 literal 的字面量（literal 为 None 表示只能写引用）。"""
+    text = str(raw if raw is not None else "").strip()
+    found = KEY_REF.match(text)
+    if found:
+        if _secret_env(found.group(1)) is None:
+            raise ConfigError(f"{owner} 引用了 {text}；凭据只能写成 ${{小写名字}}（环境变量 {SECRET_PREFIX}大写名字）"
+                              f"或 ${{{SECRET_PREFIX}…}}")
+        return text
+    if literal is None:
+        raise ConfigError(f"{owner} 只能写凭据引用 ${{名字}}（值放在宿主机环境变量里），不能直接写{what}")
+    if not literal.match(text):
+        raise ConfigError(f"{owner} 不合法：{text[:60]!r}")
+    return text
+
+
+def _resolve(text, used=None):
+    """字段的值：${名字} 取凭据（记进 used，输出脱敏用），字面量原样。凭据没配置抛 ValueError。"""
+    found = KEY_REF.match(text or "")
+    if not found:
+        return text
+    value = _secret(found.group(1))
+    if used is not None:
+        used.append(value)
+    return value
+
+
+ABS_PATH = re.compile(r"^(/|[A-Za-z]:[\\/])[^\x00\r\n]{0,4000}$")
+
+
+def _check_path_value(owner, raw):
+    return _ref_or_literal(owner, raw, ABS_PATH, "路径")
+
+
+_ssl_cache = {}
+_ssl_lock = threading.Lock()
+
+
+def _ssl_context(cafile):
+    """只信这一个 CA 文件的 TLS 上下文（不再信系统自带的根证书）。文件换了（mtime、大小变了）就重新读。"""
+    try:
+        info = os.stat(cafile)
+    except OSError as exc:
+        raise ConfigError(f"CA 文件读不到（{exc.strerror or exc.__class__.__name__}）") from None
+    if not stat.S_ISREG(info.st_mode):
+        raise ConfigError("CA 文件不是普通文件")
+    key = (cafile, info.st_mtime_ns, info.st_size)
+    with _ssl_lock:
+        context = _ssl_cache.get(key)
+        if context is None:
+            try:
+                context = ssl.create_default_context(cafile=cafile)
+            except (ssl.SSLError, OSError, ValueError) as exc:
+                raise ConfigError(f"CA 文件不是合法的 PEM 证书（{exc.__class__.__name__}）") from None
+            if len(_ssl_cache) > 32:
+                _ssl_cache.clear()
+            _ssl_cache[key] = context
+    return context
+
+
+def _check_ca(owner, raw):
+    """ca：固定路径或 ${名字}（值是路径）。加载时就读一遍：文件不在、不是合法的 PEM 证书，连接不加载。"""
+    if raw is None or str(raw).strip() == "":
+        return ""
+    text = _check_path_value(f"{owner} 的 ca", raw)
+    try:
+        _ssl_context(_resolve(text))
+    except (ValueError, ConfigError) as exc:
+        raise ConfigError(f"{owner} 的 ca：{exc}") from None
+    return text
+
+
+def _check_external(owner, raw):
+    if raw is None:
+        return None
+    if not isinstance(raw, bool):
+        raise ConfigError(f"{owner} 的 external 只能写 true 或 false")
+    return raw
+
+
+def _bounded_int(owner, raw, field, bounds):
+    default, low, high = bounds
+    value = raw.get(field, default)
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise ConfigError(f"{owner} 的 {field} 要是 {low}..{high} 之间的整数")
+    return value
+
+
+def _check_http_connection(name, entry):
+    owner = f"连接 {name}"
+    base = _check_conn_base(name, str(entry.get("base", "")).strip())
+    headers = entry.get("headers") or {}
+    if not isinstance(headers, dict):
+        raise ConfigError(f"{owner} 的 headers 必须是映射")
+    clean = {}
+    for key, value in headers.items():
+        key, value = str(key), str(value)
+        if not HEADER_NAME.match(key):
+            raise ConfigError(f"{owner} 的请求头名字不合法：{key[:40]!r}")
+        if URL_PARAM.search(SECRET_REF.sub("", value)):
+            raise ConfigError(f"{owner} 的请求头 {key} 只能写固定值或凭据引用 ${{名字}}")
+        _check_secret_refs(f"{owner} 的请求头 {key}", value)
+        clean[key] = value
+    bearer = entry.get("bearer")
+    bearer = "" if bearer in (None, "") else _ref_or_literal(f"{owner} 的 bearer", bearer, None, "令牌")
+    bearer_file = entry.get("bearer_file")
+    bearer_file = "" if bearer_file in (None, "") else _check_path_value(f"{owner} 的 bearer_file", bearer_file)
+    if bearer and bearer_file:
+        raise ConfigError(f"{owner} 的 bearer 和 bearer_file 只能写一个")
+    if (bearer or bearer_file) and any(key.lower() == "authorization" for key in clean):
+        raise ConfigError(f"{owner} 写了 bearer，就不能再写 Authorization 请求头")
+    return {"base": base, "headers": clean, "ca": _check_ca(owner, entry.get("ca")),
+            "bearer": bearer, "bearer_file": bearer_file}
+
+
+def _check_db_connection(name, kind, entry):
+    owner = f"连接 {name}"
+    if kind == "sqlite":
+        if entry.get("path") in (None, ""):
+            raise ConfigError(f"{owner} 缺少 path：sqlite 数据库文件的绝对路径，或 ${{名字}}")
+        return {"path": _check_path_value(f"{owner} 的 path", entry["path"]),
+                "timeout": _bounded_int(owner, entry, "timeout", SQL_TIMEOUT)}
+    port = entry.get("port", DB_PORTS[kind])
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ConfigError(f"{owner} 的 port 要是 1..65535 的整数")
+    password = entry.get("password")
+    tls = str(entry.get("tls") or DB_TLS[kind][0 if kind == "mysql" else 1]).strip()
+    if tls not in DB_TLS[kind]:
+        raise ConfigError(f"{owner} 的 tls 只能是 {'、'.join(DB_TLS[kind])}")
+    out = {"host": _ref_or_literal(f"{owner} 的 host", entry.get("host"), HOST_ADDRESS, "地址"), "port": port,
+           "database": _ref_or_literal(f"{owner} 的 database", entry.get("database"), DB_IDENT, "库名"),
+           "user": _ref_or_literal(f"{owner} 的 user", entry.get("user"), DB_IDENT, "账号"),
+           "password": "" if password in (None, "") else _ref_or_literal(f"{owner} 的 password", password, None, "密码"),
+           "tls": tls, "ca": _check_ca(owner, entry.get("ca")),
+           "timeout": _bounded_int(owner, entry, "timeout", SQL_TIMEOUT)}
+    if out["ca"] and tls == "disable":
+        raise ConfigError(f"{owner} 写了 ca，tls 就不能是 disable")
+    return out
+
+
+def _check_connections(document, problems, broken=None):
+    """主文件顶层 connections → {name: 连接}。坏条目跳过并记 problem，不拖垮别的连接和工具。
+
+    broken 收集写坏了的连接名 → 原因：引用它们的工具报「连接写错了」，而不是「引用了未声明的连接」。
+    """
     raw = document.get("connections")
     if raw is None:
         return {}
     if not isinstance(raw, list):
-        problems.append("connections 必须是列表：- {name, type: http, base, headers}")
+        problems.append("connections 必须是列表：- {name, type: http | postgres | mysql | sqlite, …}")
         return {}
     out = {}
     for entry in raw:
+        name = ""
         try:
             if not isinstance(entry, dict):
                 raise ConfigError("connections 的每一项必须是映射")
@@ -697,37 +1055,185 @@ def _check_connections(document, problems):
                 raise ConfigError(f"连接名重复：{name}")
             kind = str(entry.get("type", "")).strip()
             if kind not in CONN_TYPES:
-                raise ConfigError(f"连接 {name} 的 type 必须是 {'、'.join(CONN_TYPES)}"
-                                  f"（数据库等其他类型在后续版本）")
-            base = _check_conn_base(name, str(entry.get("base", "")).strip())
-            headers = entry.get("headers") or {}
-            if not isinstance(headers, dict):
-                raise ConfigError(f"连接 {name} 的 headers 必须是映射")
-            clean = {}
-            for key, value in headers.items():
-                key, value = str(key), str(value)
-                if not HEADER_NAME.match(key):
-                    raise ConfigError(f"连接 {name} 的请求头名字不合法：{key[:40]!r}")
-                if URL_PARAM.search(SECRET_REF.sub("", value)):
-                    raise ConfigError(f"连接 {name} 的请求头 {key} 只能写固定值或凭据引用 ${{名字}}")
-                _check_secret_refs(f"连接 {name} 的请求头 {key}", value)
-                clean[key] = value
-            out[name] = {"name": name, "type": kind, "label": str(entry.get("label", "")).strip()[:MAX_LABEL],
-                         "base": base, "headers": clean}
+                raise ConfigError(f"连接 {name} 的 type 必须是 {'、'.join(CONN_TYPES)}")
+            unknown = sorted(str(key) for key in entry if key not in CONN_FIELDS[kind])
+            if unknown:
+                raise ConfigError(f"连接 {name} 里有不认识的字段 {'、'.join(unknown)}"
+                                  f"（{kind} 连接只认 {'、'.join(CONN_FIELDS[kind])}）")
+            body = _check_http_connection(name, entry) if kind == "http" else _check_db_connection(name, kind, entry)
+            conn = {"name": name, "type": kind, "label": str(entry.get("label", "")).strip()[:MAX_LABEL], **body,
+                    "declared_external": _check_external(f"连接 {name}", entry.get("external"))}
+            conn["external"], conn["external_why"] = _judge_connection(conn)
+            out[name] = conn
         except ConfigError as exc:
             problems.append(str(exc))
+            if broken is not None and name and CONN_NAME.match(name):
+                broken.setdefault(name, str(exc))
     return out
 
 
-def _bind_connection(spec, connections):
-    """接口型工具用了连接：把连接挂到 spec 上，执行时从这里取地址和请求头。连接不存在就不能用。"""
-    conn = spec.get("http", {}).get("conn") if spec.get("type") == "http" else ""
+def _bind_connection(spec, connections, broken=None):
+    """接口型、sql 工具用了连接：把连接挂到 spec 上，执行时从这里取地址和凭据。连接不存在、类型不对就不能用。"""
+    kind = spec.get("type")
+    conn = (spec.get(kind) or {}).get("conn") if kind in ("http", "sql") else ""
     if not conn:
         return spec
     if conn not in connections:
+        if broken and conn in broken:
+            raise ConfigError(f"{spec['name']} 用的连接 {conn} 写错了，没有加载：{broken[conn]}")
         raise ConfigError(f"{spec['name']} 引用了未声明的连接 {conn}；连接只能由管理员写在主配置文件的 connections 里")
-    spec["connection"] = connections[conn]
+    connection = connections[conn]
+    if kind == "http" and connection["type"] != "http":
+        raise ConfigError(f"{spec['name']} 是接口型工具，连接 {conn} 却是 {connection['type']} 数据库")
+    if kind == "sql" and connection["type"] not in DB_TYPES:
+        raise ConfigError(f"{spec['name']} 是 sql 工具，连接 {conn} 却是 {connection['type']} 连接")
+    spec["connection"] = connection
     return spec
+
+
+# ---- 外部：调用会把实参发到组织外面 ------------------------------------------------
+# 应用侧对「外部」工具的字符串实参套用出网规则（静态拦截 + 本轮污点），返回标成外部资料。
+# 判断依据只有地址：公网 IP、公网主机名是外部；回环、内网 IP、单标签名、常见内网后缀是内部。
+# 地址来自 ${名字} 时按取到的值判断，但页面上不显示那个值。管理员可以在连接、MCP server、接口工具上写 external: true/false 覆盖；
+# 场景包只能把自己的接口工具声明成外部（更严），写 false 会被忽略并报出来。
+
+def _external_host(host):
+    """(是不是外部, 依据)。依据给人看，带主机名。"""
+    host = str(host or "").strip().lower().rstrip(".")
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if not host:
+        return False, "没有地址"
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None:
+        return (True, f"公网地址 {host}") if address.is_global else (False, f"内网地址 {host}")
+    if host == "localhost" or "." not in host or host.endswith(INTERNAL_SUFFIXES):
+        return False, f"内网主机名 {host}"
+    return True, f"公网主机名 {host}"
+
+
+def _url_host(url):
+    try:
+        return urllib.parse.urlsplit(str(url or "")).hostname or ""
+    except ValueError:
+        return ""
+
+
+def _judge_address(raw, url=True):
+    """地址（url=True 时是 http(s) 地址，否则是主机名）→ (是不是外部, 依据)。${名字} 按取到的值判断，依据里不写值。"""
+    text = str(raw or "")
+    found = ENV_BASE.match(text) if url else KEY_REF.match(text)
+    if found:
+        env = _secret_env(found.group(1)) or ""
+        value = os.environ.get(env, "").strip()
+        if not value:
+            return False, f"地址 ${{{found.group(1)}}} 还没配置，按内部处理"
+        external, _ = _external_host(_url_host(value) if url else value)
+        return external, f"按 ${{{found.group(1)}}} 取到的地址判断：{'公网' if external else '内网'}"
+    return _external_host(_url_host(text) if url else text)
+
+
+def _judge_connection(conn):
+    declared = conn.get("declared_external")
+    if declared is not None:
+        return declared, f"管理员声明为{'外部' if declared else '内部'}"
+    if conn["type"] == "sqlite":
+        return False, "本机的数据库文件"
+    if conn["type"] == "http":
+        return _judge_address(conn["base"], url=True)
+    return _judge_address(conn["host"], url=False)
+
+
+def _tool_external(spec, servers, problems=None, in_main=True):
+    """(是不是外部, 依据)：接口型看自己的声明、连接或地址；sql 看连接；MCP 看 server；命令、内置都不是。"""
+    kind = spec.get("type")
+    if kind == "http":
+        declared = spec["http"].get("external")
+        if declared is False and not in_main:
+            if problems is not None:
+                problems.append(f"{spec['name']} 的 external: false 已忽略：场景包只能把工具声明成外部，"
+                                f"要按内部处理请管理员在主配置里声明")
+            declared = None
+        if declared is not None:
+            return declared, f"管理员声明为{'外部' if declared else '内部'}"
+        connection = spec.get("connection")
+        if connection:
+            return connection["external"], f"连接 {connection['name']}：{connection['external_why']}"
+        return _judge_address(spec["http"]["url"], url=True)
+    if kind == "sql":
+        connection = spec.get("connection") or {}
+        return bool(connection.get("external")), f"连接 {connection.get('name', '')}：{connection.get('external_why', '')}"
+    if kind == "mcp":
+        server = servers.get(spec["mcp"]["server"]) or {}
+        return bool(server.get("external")), f"MCP server {spec['mcp']['server']}：{server.get('external_why', '')}"
+    return False, ""
+
+
+# ---- 可选依赖：数据库驱动 ------------------------------------------------------------
+# 不配数据库连接，就什么都不导入：工具服务照旧只用标准库 + PyYAML。用到哪种数据库才导入它的驱动，缺了只影响
+# 用这种连接的工具（不下发、页面写明原因和装法），不影响别的。驱动可以装在系统里，也可以装在本文件旁边的 vendor/：
+#     python3 -m pip install --target /opt/ops/vendor 'psycopg[binary]>=3.1,<4' 'PyMySQL>=1.1,<2'
+
+DRIVERS = {"postgres": ("psycopg", "psycopg[binary]>=3.1,<4", "PostgreSQL"),
+           "mysql": ("pymysql", "PyMySQL>=1.1,<2", "MySQL"),
+           "sqlite": ("sqlite3", "", "SQLite")}
+_vendor = {"path": "", "used": False, "problem": ""}
+_drivers = {}
+_drivers_lock = threading.Lock()
+
+
+def _vendor_dir():
+    return os.environ.get("OPS_VENDOR_DIR") or str(Path(__file__).resolve().parent / "vendor")
+
+
+def _use_vendor():
+    """vendor/ 里的代码会以工具服务的身份（通常是 root）导入，所以和白名单一样把关：是目录、不是符号链接、
+    属于工具服务的运行账号、组和其他用户不能写，才加进 sys.path（加在最后，不盖住系统已经装的包）。"""
+    path = _vendor_dir()
+    _vendor.update(path=path, used=False, problem="")
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return
+    problem = ""
+    if not stat.S_ISDIR(info.st_mode):
+        problem = "不是目录（也不能是符号链接）"
+    elif os.name == "posix" and info.st_mode & 0o022:
+        problem = f"组或其他用户可写（{oct(info.st_mode & 0o777)}），chmod go-w"
+    elif os.name == "posix" and info.st_uid != os.geteuid():
+        problem = "不属于工具服务的运行账号"
+    if problem:
+        _vendor["problem"] = f"{path} {problem}：没有用它，里面的驱动不会被导入"
+        return
+    if path not in sys.path:
+        sys.path.append(path)
+    _vendor["used"] = True
+
+
+_use_vendor()
+
+
+def _driver(kind):
+    """(驱动模块, 不可用的原因)。第一次用到时才导入；结果缓存，装好驱动后重启工具服务生效。"""
+    with _drivers_lock:
+        if kind in _drivers:
+            return _drivers[kind]
+        module, package, label = DRIVERS[kind]
+        try:
+            result = (importlib.import_module(module), "")
+        except Exception as exc:   # ImportError，或二进制包和这台机器不匹配（OSError）
+            hint = ""
+            if package:
+                hint = (f"；装法：python3 -m pip install --target {_vendor['path'] or _vendor_dir()} '{package}'"
+                        f"（或装进系统），装好后重启工具服务")
+                if _vendor["problem"]:
+                    hint += f"。另外 {_vendor['problem']}"
+            result = (None, f"工具服务这台机器没有 {label} 驱动 {module}（{exc.__class__.__name__}）{hint}")
+        _drivers[kind] = result
+        return result
 
 
 # ---- 主机清单（hosts）---------------------------------------------------------------
@@ -1058,15 +1564,20 @@ def _load_all(path):
     对外开放（export）也只认主文件：主文件里工具条目上的 `export: true`，或主文件顶层的 `export: [工具名…]`
     （场景包、批准过的 MCP 工具不在主文件里，用这个列表开放）。被包含的文件和 MCP 批准文件里写的 export 一律忽略并报出来：
     对外开放等于扩大了谁能触发这个工具，属于权限变更，归宿主机管理员。
+
+    凭据同理：不来自主文件的接口型工具，只能经主文件的连接、或发往宿主机环境决定的地址（${…} 开头）用到凭据，
+    见 _check_pack_credentials。主文件里写和场景包工具同名的工具，就是替换它的实现（参数要兼容，见 _incompatible）。
     """
     document = _read_yaml(path)
     entries = document.get("tools")
     if not isinstance(entries, list):
         raise ConfigError("配置里缺少 tools 列表")
+    main = str(path)
     patterns = _include_patterns(document)
-    files, problems = _expand_includes(patterns, os.path.dirname(os.path.abspath(str(path))))
+    files, problems = _expand_includes(patterns, os.path.dirname(os.path.abspath(main)))
     servers = _check_mcp_servers(document, problems)
-    connections = _check_connections(document, problems)
+    broken = {}
+    connections = _check_connections(document, problems, broken)
     exported = _check_export_list(document, problems)
     hosts = _check_hosts(document, problems)
 
@@ -1079,7 +1590,8 @@ def _load_all(path):
             sources.append((mcp_path, approved))
     except ConfigError as exc:
         problems.append(str(exc))
-    sources.append((str(path), entries))
+    first_include = len(sources) + 1
+    sources.append((main, entries))
     for included in files:
         try:
             sub = _read_yaml(included)
@@ -1102,43 +1614,87 @@ def _load_all(path):
             continue
         sources.append((included, sub_entries))
 
+    # 场景包（被包含的文件）里各工具的原始条目：主文件写同名工具就是替换它的实现，没写的说明、参数从这里继承
+    defaults = {}
+    for origin, items in sources[first_include:]:
+        for entry in items:
+            if isinstance(entry, dict):
+                defaults.setdefault(str(entry.get("name", "")).strip(), entry)
+
+    def where(origin):
+        return "" if origin == main else f"（{origin}）"
+
+    def admit(entry, origin):
+        """一个条目 → 校验、绑定都通过的 spec；不通过返回 None，原因记进 problems。"""
+        if origin == main and isinstance(entry, dict):
+            entry = _inherit(entry, defaults)
+        try:
+            spec = _check_tool(entry)
+            if origin != main:
+                _check_pack_credentials(spec)
+        except ConfigError as exc:
+            problems.append(f"{exc}{where(origin)}")
+            return None
+        if spec.get("type") == "script":
+            reason = _script_untrusted_reason(spec)
+            if reason:
+                problems.append(reason)
+                return None
+        if spec.get("type") == "mcp":
+            server = servers.get(spec["mcp"]["server"])
+            if server is None:
+                problems.append(f"{spec['name']} 引用了未声明的 MCP server {spec['mcp']['server']}{where(origin)}")
+                return None
+            if spec["group"] == spec["mcp"]["server"]:
+                spec["group"] = server["label"]
+        try:
+            _bind_connection(spec, connections, broken)
+        except ConfigError as exc:
+            problems.append(f"{exc}{where(origin)}")
+            return None
+        spec["origin"] = origin
+        spec["export"] = _entry_export(entry, spec["name"], origin == main, origin, problems)
+        spec["external"], spec["external_why"] = _tool_external(spec, servers, problems, origin == main)
+        return spec
+
     tools = {}
+
+    def replace(existing, entry, origin):
+        """主文件里的同名工具替换场景包的默认实现：只比参数，参数兼容就替换（场景包那份不再加载，它的连接也不用存在）；
+        不兼容就不替换，仍用场景包的实现，并报出原因。"""
+        name = existing["name"]
+        try:
+            default = _check_tool(entry)
+        except ConfigError as exc:
+            problems.append(f"{exc}{where(origin)}")
+            return
+        reason = _incompatible(existing, default)
+        if not reason:
+            existing["replaces"] = {"pack": _pack_label(origin), "origin": origin, "impl": default["type"]}
+            return
+        spec = admit(entry, origin)
+        problems.append(f"{name}：主配置里的同名工具和场景包 {_pack_label(origin)} 的参数不兼容（{reason}），没有替换"
+                        + (f"，仍用场景包的实现（{origin}）" if spec is not None else ""))
+        if spec is not None:
+            tools[name] = spec
+
     for origin, items in sources:
         for entry in items:
-            try:
-                spec = _check_tool(entry)
-            except ConfigError as exc:
-                problems.append(str(exc) if origin == str(path) else f"{exc}（{origin}）")
+            name = str(entry.get("name", "")).strip() if isinstance(entry, dict) else ""
+            existing = tools.get(name)
+            if existing is not None and existing["origin"] == main and origin not in (main, mcp_path):
+                replace(existing, entry, origin)
                 continue
-            if spec["name"] in tools:
-                if origin != mcp_path and tools[spec["name"]].get("origin") == mcp_path:
-                    problems.append(f"{spec['name']} 已被 {os.path.basename(mcp_path)} 里批准的条目覆盖"
-                                    + ("" if origin == str(path) else f"（{origin}）"))
-                else:
-                    problems.append(f"工具名重复：{spec['name']}"
-                                    + ("" if origin == str(path) else f"（{origin}，已忽略）"))
+            spec = admit(entry, origin)
+            if spec is None:
                 continue
-            if spec.get("type") == "script":
-                reason = _script_untrusted_reason(spec)
-                if reason:
-                    problems.append(reason)
-                    continue
-            if spec.get("type") == "mcp":
-                server = servers.get(spec["mcp"]["server"])
-                if server is None:
-                    problems.append(f"{spec['name']} 引用了未声明的 MCP server {spec['mcp']['server']}"
-                                    + ("" if origin == str(path) else f"（{origin}）"))
-                    continue
-                if spec["group"] == spec["mcp"]["server"]:
-                    spec["group"] = server["label"]
-            try:
-                _bind_connection(spec, connections)
-            except ConfigError as exc:
-                problems.append(str(exc) if origin == str(path) else f"{exc}（{origin}）")
-                continue
-            spec["origin"] = origin
-            spec["export"] = _entry_export(entry, spec["name"], origin == str(path), origin, problems)
-            tools[spec["name"]] = spec
+            existing = tools.get(spec["name"])
+            if existing is None:
+                tools[spec["name"]] = spec
+            elif existing["origin"] == mcp_path and origin != mcp_path:
+                problems.append(f"{spec['name']} 已被 {os.path.basename(mcp_path)} 里批准的条目覆盖{where(origin)}")
+            else:
+                problems.append(f"工具名重复：{spec['name']}" + ("" if origin == main else f"（{origin}，已忽略）"))
     for name in sorted(exported):
         if name in tools:
             tools[name]["export"] = True
@@ -1147,6 +1703,98 @@ def _load_all(path):
     if hosts is not None:
         _bind_hosts(hosts, tools, problems)
     return tools, problems, servers, connections, hosts
+
+
+# ---- 场景包的凭据只能发往管理员定的地址；主文件写同名工具替换场景包的实现 ---------------------------
+
+def _secret_family(env):
+    """OPS_SECRET_GATEWAY_URL → OPS_SECRET_GATEWAY：同一组凭据的前缀（去掉最后一段）。"""
+    rest = env[len(SECRET_PREFIX):]
+    parts = rest.split("_")
+    return SECRET_PREFIX + ("_".join(parts[:-1]) if len(parts) > 1 else rest)
+
+
+def _check_pack_credentials(spec):
+    """不来自主配置文件的接口型工具，凭据只能：
+
+    - 经主文件里管理员建的连接（conn:）——这时工具自己不能再引用任何凭据：连接里「哪个凭据发往哪个地址」是管理员配好的，
+      包再加一个别的凭据发过去，就把这层配对拆了；
+    - 或者发往地址本身来自 ${…} 的主机（主机由宿主机环境决定）——这时只能引用和地址同一组的凭据：地址是
+      ${GATEWAY_URL}，就只能引用 ${GATEWAY_…}，不能把 ${DB_PASSWORD} 发给模型网关；
+    - 「字面主机 + 凭据」一律不加载：包作者写一个自己的地址，就能把宿主机上的凭据带走。
+    """
+    if spec.get("type") != "http":
+        return
+    http, name = spec["http"], spec["name"]
+    texts = [http["url"], *http["query"].values(), *http["headers"].values()]
+    refs = [ref for text in texts for ref in SECRET_REF.findall(text)]
+    if http.get("conn"):
+        if refs:
+            raise ConfigError(f"{name} 用了连接 {http['conn']}，又自己引用了凭据 ${{{refs[0]}}}："
+                              f"场景包里的工具只能用连接里管理员配好的凭据")
+        return
+    base = ENV_BASE.match(http["url"])
+    if base is None:
+        if refs:
+            raise ConfigError(f"{name} 的地址是写死的主机，又引用了凭据 ${{{refs[0]}}}：场景包里的工具不能把凭据发往"
+                              f"自己写的地址，只能经主配置里的连接，或者地址本身来自 ${{…}}（由宿主机环境决定）")
+        return
+    home = _secret_env(base.group(1))
+    family = _secret_family(home)
+    for ref in refs:
+        env = _secret_env(ref)
+        if env != home and not env.startswith(family + "_"):
+            raise ConfigError(f"{name} 的地址来自 ${{{base.group(1)}}}，只能引用同一组的凭据（{family[len(SECRET_PREFIX):]}_…），"
+                              f"不能引用 ${{{ref}}}：哪个凭据发往哪个地址要由管理员决定；需要的话把这个工具写进主配置，"
+                              f"或者在主配置里建一个连接")
+
+
+INHERITED = ("params", "label", "desc", "group")
+
+
+def _inherit(entry, defaults):
+    """主文件里替换场景包工具的条目：没写的参数、说明、显示名、分组沿用场景包的（能力不变，只换实现）。"""
+    raw = defaults.get(str(entry.get("name", "")).strip())
+    if raw is None:
+        return entry
+    merged = dict(entry)
+    for key in INHERITED:
+        if key not in merged and key in raw:
+            merged[key] = raw[key]
+    return merged
+
+
+def _incompatible(new, old):
+    """替换实现的参数和场景包的是否兼容：名字、类型、必填一致，pattern、范围、枚举不能放宽。返回原因，兼容时是空串。
+
+    target 由系统处理（命令型工具在主机模式下自动多出来），两边都不比。SOP 引用的是工具名和参数，兼容就照常能跑。
+    """
+    mine = {k: v for k, v in (new.get("params") or {}).items() if k != TARGET}
+    theirs = {k: v for k, v in (old.get("params") or {}).items() if k != TARGET}
+    if sorted(mine) != sorted(theirs):
+        return (f"参数名不一致：场景包是 {'、'.join(sorted(theirs)) or '（无参数）'}，"
+                f"这里是 {'、'.join(sorted(mine)) or '（无参数）'}")
+    for key in sorted(theirs):
+        a, b = mine[key], theirs[key]
+        if a.get("type") != b.get("type"):
+            return f"参数 {key} 的类型不一致：场景包是 {b.get('type')}，这里是 {a.get('type')}"
+        if bool(a.get("required")) != bool(b.get("required")):
+            return (f"参数 {key} 的必填不一致：场景包{'必填' if b.get('required') else '可选'}，"
+                    f"这里{'必填' if a.get('required') else '可选'}")
+        if b.get("pattern") and a.get("pattern") not in PATTERN_WITHIN.get(b["pattern"], (b["pattern"],)):
+            return f"参数 {key} 的格式放宽了：场景包是 {b['pattern']}，这里是 {a.get('pattern') or '不限'}"
+        if a.get("type") == "int" and (a.get("min", 0) < b.get("min", 0) or a.get("max", 0) > b.get("max", 0)):
+            return (f"参数 {key} 的范围放宽了：场景包是 {b.get('min')}..{b.get('max')}，"
+                    f"这里是 {a.get('min')}..{a.get('max')}")
+        if b.get("enum") is not None and not {str(v) for v in a.get("enum") or []} <= {str(v) for v in b["enum"]}:
+            return f"参数 {key} 的可选值放宽了"
+    return ""
+
+
+def _pack_label(origin):
+    """被包含的文件 → 给人看的名字：packs/<id>/tools.yaml 是场景包 <id>，别的用文件名。"""
+    path = Path(origin)
+    return path.parent.name if path.name == "tools.yaml" and path.parent.name else path.name
 
 
 def _check_export_list(document, problems):
@@ -1323,6 +1971,8 @@ def _runnable(spec):
     """
     if spec.get("type") in ("http", "builtin"):
         return True
+    if spec.get("type") == "sql":
+        return _driver(spec["connection"]["type"])[0] is not None
     if spec.get("type") == "mcp":
         return _mcp_state(spec)[0]
     if _hosts() is not None:
@@ -1340,6 +1990,8 @@ def _unusable_reason(spec):
     """不能用的原因，给页面看。系统不符排在缺命令前面：linux 的工具在 Windows 上是不适用，不是缺 df。"""
     if spec.get("type") in ("http", "builtin"):
         return ""
+    if spec.get("type") == "sql":
+        return _driver(spec["connection"]["type"])[1]
     if spec.get("type") == "mcp":
         return _mcp_state(spec)[1]
     cfg = _hosts()
@@ -1380,6 +2032,8 @@ def _http_display(spec):
     if http["query"]:
         text += "?" + "&".join(f"{k}={v}" for k, v in http["query"].items())
     headers = list((connection or {}).get("headers") or {})
+    if (connection or {}).get("bearer") or (connection or {}).get("bearer_file"):
+        headers.append("Authorization")
     headers += [h for h in http["headers"] if h not in headers]
     if headers:
         text += f"  （请求头：{'、'.join(headers)}）"
@@ -1393,6 +2047,8 @@ def _display(spec):
         return "脚本：" + spec["binary"]
     if spec.get("type") == "http":
         return _http_display(spec)
+    if spec.get("type") == "sql":
+        return f"SQL [连接 {spec['sql']['conn']}] {spec['sql']['query']}"
     if spec.get("type") == "mcp":
         return f"MCP {spec['mcp']['server']} / {spec['mcp']['tool']}"
     if spec.get("type") == "builtin":
@@ -1494,14 +2150,18 @@ def _contract(name, spec, target=None, schema=None):
     if spec.get("type") == "mcp":
         live = _mcp_state(spec)[2] or {}
         open_world = (live.get("annotations") or {}).get("openWorldHint") is True
+    doc2sop = {"category": "data", "provider": "ops", "export": bool(spec.get("export")), "group": spec.get("group", "")}
+    if spec.get("external"):
+        doc2sop["external"] = True   # 只在外部工具上出现：内部工具的 /tools 一个字节都不变
     return {
         "title": spec.get("label") or name,
         "inputSchema": schema if schema is not None else _input_schema(spec, target),
-        # 这里下发的都是只读工具：命令有写动词黑名单，接口只许 GET，MCP 工具执行前要有只读依据
-        "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": open_world},
+        # 这里下发的都是只读工具：命令有写动词黑名单，接口只许 GET，sql 只读事务 + 只许 SELECT，MCP 工具执行前要有只读依据。
+        # 外部工具（实参会发到组织外面，见 _tool_external）标 openWorldHint，应用侧据此对字符串实参套用出网规则
+        "annotations": {"readOnlyHint": True, "destructiveHint": False,
+                        "openWorldHint": open_world or bool(spec.get("external"))},
         # export：能否出现在对外 MCP。只认主配置文件（见 _load_all），场景包和 MCP 批准文件里写了不算
-        "_meta": {"doc2sop": {"category": "data", "provider": "ops", "export": bool(spec.get("export")),
-                              "group": spec.get("group", "")}},
+        "_meta": {"doc2sop": doc2sop},
     }
 
 
@@ -1535,6 +2195,9 @@ def available_tools():
             entry["input_schema"] = _live_schema(spec)
             entry["params"] = _mcp_params(spec)
         entry.update(_contract(name, spec, target))
+        if spec.get("replaces"):
+            # 主配置里的同名工具替换了场景包的默认实现：能力（名字、参数）不变，SOP 照常能用
+            entry["replaces"] = spec["replaces"]["pack"]
         out[name] = entry
     if _list_targets_active():
         out[LIST_TARGETS] = _list_targets_entry()[1]
@@ -1590,6 +2253,14 @@ def describe_tools():
             item["builtin"] = spec["builtin"]
         if spec.get("type") == "http":
             item["conn"] = spec["http"].get("conn", "")
+        if spec.get("type") == "sql":
+            item.update(conn=spec["sql"]["conn"], max_rows=spec["sql"]["max_rows"],
+                        db=spec["connection"]["type"])
+        if spec.get("external"):
+            item["external"] = True
+            item["external_why"] = spec.get("external_why", "")
+        if spec.get("replaces"):
+            item["replaces"] = {"pack": spec["replaces"]["pack"], "impl": spec["replaces"]["impl"]}
         if spec.get("type") == "mcp":
             runnable, reason, live = _mcp_state(spec)
             item.update(mcp=spec["mcp"], reason=reason, readonly=_mcp_readonly(spec, live),
@@ -1605,15 +2276,33 @@ def describe_tools():
     return out
 
 
+def _conn_address(conn):
+    """连接的地址，给人看：字面量或 ${名字} 原样（不是取出来的值），不带账号和密码。"""
+    if conn["type"] == "http":
+        return conn["base"]
+    if conn["type"] == "sqlite":
+        return conn["path"]
+    return f"{conn['host']}:{conn['port']}/{conn['database']}"
+
+
 def describe_connections():
-    """页面上看得到的连接：名字、类型、地址前缀（字面量或 ${名字}）、请求头的名字、谁在用。永远没有凭据的值。"""
+    """页面上看得到的连接：名字、类型、地址（字面量或 ${名字}）、请求头的名字、谁在用。永远没有凭据的值。"""
     tools = all_tools()
     out = {}
     for name, conn in sorted(_state.get("connections", {}).items()):
-        out[name] = {"type": conn["type"], "label": conn["label"], "base": conn["base"],
-                     "headers": sorted(conn["headers"]),
-                     "used_by": sorted(n for n, spec in tools.items()
-                                       if (spec.get("connection") or {}).get("name") == name)}
+        item = {"type": conn["type"], "label": conn["label"], "base": _conn_address(conn),
+                "headers": sorted(conn.get("headers") or {}),
+                "external": bool(conn.get("external")), "external_why": conn.get("external_why", ""),
+                "used_by": sorted(n for n, spec in tools.items()
+                                  if (spec.get("connection") or {}).get("name") == name)}
+        if conn["type"] == "http":
+            if conn.get("bearer") or conn.get("bearer_file"):
+                item["headers"] = sorted(set(item["headers"]) | {"Authorization"})
+            item["ca"] = bool(conn.get("ca"))
+        else:
+            item["driver"] = _driver(conn["type"])[1]   # 空串表示驱动在；否则是缺什么、怎么装
+            item["timeout"] = conn["timeout"]
+        out[name] = item
     return out
 
 
@@ -1713,11 +2402,17 @@ def _form_wording(message, name):
          r"参数名 \1 不合法：只能用小写字母、数字、下划线"),
         (re.compile(rf"^{re.escape(name)}\.os 只能是 (.+?)（可以写成列表），不是 (.+)$"),
          r"适用系统只能是 \1，不是 \2"),
+        (re.compile(rf"^{re.escape(name)}\.impl\.query 用到了未声明的参数 (\S+)$"),
+         r"查询里用了参数 :\1，请在下方「参数」里把它的类型填好"),
+        (re.compile(rf"^{re.escape(name)}\.impl\.query 没有用到参数 (\S+?)：.*$"),
+         r"参数 \1 没有在查询里用到（写成 :\1）"),
     ]
     for pattern, repl in swaps:
         if pattern.match(message):
             return pattern.sub(repl, message)
-    return message.replace(f"{name}.argv", "命令").replace(f"{name}.params.", "参数 ")
+    return (message.replace(f"{name}.argv", "命令").replace(f"{name}.params.", "参数 ")
+            .replace(f"{name}.impl.query", "查询").replace(f"{name}.impl.max_rows", "最多行数")
+            .replace(f"{name}.impl.conn", "连接"))
 
 
 def _proposal_kind(raw):
@@ -1768,6 +2463,13 @@ def propose_tool(raw, author="web"):
             raise ConfigError("页面申请的接口工具不能附带 notes 说明；请让管理员在宿主机配置")
         if "${" in json.dumps(http, ensure_ascii=False):
             raise ConfigError("页面申请的接口工具不能引用宿主机环境变量或凭据；要带凭据请选一个已有连接")
+    if kind == "sql":
+        # 地址、账号、密码都在管理员建好的数据库连接里；申请只能选一个连接、写查询模板和参数
+        impl = raw.get("impl") if isinstance(raw.get("impl"), dict) else {}
+        if not str(impl.get("conn") or "").strip():
+            raise ConfigError("SQL 工具要选一个已有的数据库连接；连接只能由管理员在宿主机配置")
+        if "${" in json.dumps(impl, ensure_ascii=False):
+            raise ConfigError("页面申请的 SQL 工具不能引用凭据：地址和账号都在连接里")
 
     tools = all_tools()   # 顺带把连接刷新到最新
     try:
@@ -1961,13 +2663,27 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _OPENER = urllib.request.build_opener(_NoRedirect)
+_openers = {}
 
 
-def _http_get(url, headers):
+def _opener(context=None):
+    """不跟随跳转的 opener；连接配了自己的 CA 时，用只信那个 CA 的 TLS 上下文。"""
+    if context is None:
+        return _OPENER
+    cached = _openers.get(id(context))
+    if cached is None or cached[0] is not context:
+        if len(_openers) > 64:
+            _openers.clear()
+        cached = (context, urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=context)))
+        _openers[id(context)] = cached
+    return cached[1]
+
+
+def _http_get(url, headers, context=None):
     """One GET. Returns (status, body_bytes). Isolated so tests can replace it."""
     request = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        with _OPENER.open(request, timeout=HTTP_TIMEOUT) as response:
+        with _opener(context).open(request, timeout=HTTP_TIMEOUT) as response:
             return response.status, response.read(MAX_HTTP_BYTES + 1)
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read(MAX_HTTP_BYTES + 1) if exc.fp else b""
@@ -2040,16 +2756,73 @@ def build_request(spec, args):
     query = []
     for key, raw in http["query"].items():
         found = PLACEHOLDER.match(raw)
-        query.append((key, values[found.group(1)] if found
-                      else _fill_secrets(raw, secrets_used)))
+        if found:
+            value = values[found.group(1)]
+        elif "$" not in raw and URL_PARAM.search(raw):
+            # 嵌在查询值里的参数（只有 EMBED_SAFE 的预置正则和整数，加载时查过）：原样嵌进去，整个值再做 URL 编码
+            value = URL_PARAM.sub(lambda m: values[m.group(1)], raw)
+        else:
+            value = _fill_secrets(raw, secrets_used)
+        query.append((key, value))
     if query:
         full += "?" + urllib.parse.urlencode(query)
 
     headers = {"User-Agent": "ops-readonly/1", "Accept": "application/json, */*"}
-    # 连接的请求头在前，工具自己写的同名请求头覆盖它
-    for key, raw in list(((connection or {}).get("headers") or {}).items()) + list(http["headers"].items()):
+    # 连接的请求头（含 bearer 令牌）在前，工具自己写的同名请求头覆盖它
+    for key, raw in ((connection or {}).get("headers") or {}).items():
+        headers[key] = _fill_secrets(raw, secrets_used)
+    token = _bearer(connection, secrets_used) if connection else ""
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    for key, raw in http["headers"].items():
         headers[key] = _fill_secrets(raw, secrets_used)
     return full, headers, [s for s in secrets_used if s]
+
+
+def _bearer(connection, used):
+    """连接的 bearer 令牌：bearer 取凭据的值；bearer_file 每次现读文件（令牌轮换后不用重启）。没配返回空串。"""
+    if connection.get("bearer"):
+        token = _resolve(connection["bearer"], used)
+    elif connection.get("bearer_file"):
+        token = _read_token_file(connection, _resolve(connection["bearer_file"], used))
+        used.append(token)
+    else:
+        return ""
+    if not re.fullmatch(r"[\x21-\x7e]{1,8192}", token):
+        raise ValueError(f"连接 {connection['name']} 的令牌不合法：只能是可见的 ASCII 字符，不能有空白")
+    return token
+
+
+def _read_token_file(connection, path):
+    """令牌文件：普通文件（不能是符号链接）、只有工具服务账号能读写、不超过 16 KB。报错里不写路径。"""
+    shown = f"连接 {connection['name']} 的 bearer_file"
+    try:
+        info = os.lstat(path)
+    except OSError:
+        raise ValueError(f"{shown} 读不到") from None
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"{shown} 不是普通文件（不能是符号链接或目录）")
+    if os.name == "posix":
+        if info.st_mode & 0o077:
+            raise ValueError(f"{shown} 权限过宽（{oct(info.st_mode & 0o777)}），只能由工具服务账号读写：chmod 600")
+        if info.st_uid != os.geteuid():
+            raise ValueError(f"{shown} 不属于工具服务的运行账号")
+    with open(path, "rb") as handle:
+        data = handle.read(16385)
+    if len(data) > 16384:
+        raise ValueError(f"{shown} 太大，不像一个令牌")
+    return data.decode("ascii", "replace").strip()
+
+
+def _http_context(spec):
+    """连接配了 ca：只信那个 CA 的 TLS 上下文；没配返回 None（用系统的根证书）。"""
+    connection = spec.get("connection") or {}
+    if not connection.get("ca"):
+        return None
+    try:
+        return _ssl_context(_resolve(connection["ca"]))
+    except ConfigError as exc:
+        raise ValueError(f"连接 {connection['name']} 的 ca：{exc}") from None
 
 
 def _connection_base(connection, secrets_used):
@@ -2082,11 +2855,12 @@ def _scrub(text, secrets_used):
 def _run_http(spec, args):
     try:
         url, headers, secrets_used = build_request(spec, args)
+        context = _http_context(spec)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
     shown = _scrub(url, secrets_used)
     try:
-        status, body = _http_get(url, headers)
+        status, body = _http_get(url, headers, **({"context": context} if context is not None else {}))
     except Exception as exc:
         return {"ok": False, "error": _scrub(f"请求失败：{exc.__class__.__name__}: {exc}",
                                              secrets_used), "command": "GET " + shown}
@@ -2121,6 +2895,213 @@ def _run_http(spec, args):
             "output": text[:MAX_OUTPUT] + ("\n…（输出已截断）" if truncated else "")}
 
 
+# ---- sql 的执行 ------------------------------------------------------------------------
+
+class SqlError(RuntimeError):
+    """连不上数据库、查询失败、超时：给人和模型看的原因（还没脱敏）。"""
+
+
+def _sql_render(segments, style):
+    """模板片段 → 驱动要的 SQL 文本。参数一律是驱动的占位符：sqlite 用原生的 :名字，psycopg、PyMySQL 用
+    %(名字)s（这两家会把文本里的 % 当格式符，原文的 % 写成 %%）。参数值从来不进 SQL 文本。"""
+    out = []
+    for kind, value in segments:
+        if kind == "param":
+            out.append(f":{value}" if style == "named" else f"%({value})s")
+        else:
+            out.append(value if style == "named" else value.replace("%", "%%"))
+    return "".join(out)
+
+
+def _sql_cell(value):
+    if value is None:
+        return "NULL"
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return f"<二进制 {len(bytes(value))} 字节>"
+    text = value.isoformat() if isinstance(value, (datetime.datetime, datetime.date, datetime.time)) else str(value)
+    text = text.replace("\r\n", "\n").replace("\n", "⏎").replace("\t", " ").replace("|", "¦")
+    return text[:SQL_CELL] + ("…" if len(text) > SQL_CELL else "")
+
+
+def _sql_table(columns, rows, more, max_rows):
+    """查询结果 → 给模型看的表：表头一行，每行用 | 分隔；末尾说明行数，取不完时明说。"""
+    lines = [" | ".join(str(column) for column in columns)] if columns else []
+    lines += [" | ".join(_sql_cell(value) for value in row) for row in rows]
+    if not rows:
+        lines.append("（没有查到数据）")
+    elif more:
+        lines.append(f"（只取了前 {max_rows} 行，后面还有：缩小查询范围再查）")
+    else:
+        lines.append(f"（共 {len(rows)} 行）")
+    return "\n".join(lines)
+
+
+def _sql_first_line(exc):
+    text = str(exc).strip() or exc.__class__.__name__
+    return text.splitlines()[0][:300]
+
+
+def _sql_timeout(conn):
+    return SqlError(f"查询超时（{conn['timeout']} 秒）：缩小查询范围，或请管理员优化这条查询")
+
+
+def _sqlite_authorizer(module):
+    """sqlite 的第二层：授权回调只放行读（SELECT、读表、调函数、递归 CTE），副作用函数也拒绝。"""
+    allowed = {module.SQLITE_SELECT, module.SQLITE_READ, module.SQLITE_FUNCTION, getattr(module, "SQLITE_RECURSIVE", 33)}
+
+    def authorize(action, arg1, arg2, database, source):
+        if action == module.SQLITE_FUNCTION and str(arg2 or "").lower() in SQL_DENY_FUNCS:
+            return module.SQLITE_DENY
+        return module.SQLITE_OK if action in allowed else module.SQLITE_DENY
+    return authorize
+
+
+def _sqlite_query(conn, module, segments, params, max_rows, used):
+    path = _resolve(conn["path"], used)
+    if not os.path.isfile(path):
+        raise SqlError(f"连接 {conn['name']} 的数据库文件不存在")
+    deadline = time.monotonic() + conn["timeout"]
+    late = []
+
+    def progress():
+        if time.monotonic() > deadline:
+            late.append(True)
+            return 1
+        return 0
+
+    try:
+        # 只读打开（mode=ro）+ query_only + 授权回调：三重保证写不进去
+        db = module.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=conn["timeout"],
+                            check_same_thread=False)
+    except module.Error as exc:
+        raise SqlError(f"打不开数据库：{_sql_first_line(exc)}") from None
+    try:
+        db.execute("PRAGMA query_only = ON")
+        db.set_authorizer(_sqlite_authorizer(module))
+        db.set_progress_handler(progress, 1000)
+        cursor = db.execute(_sql_render(segments, "named"), params)
+        columns = [item[0] for item in cursor.description or []]
+        rows = cursor.fetchmany(max_rows + 1)
+    except module.Error as exc:
+        if late:
+            raise _sql_timeout(conn) from None
+        raise SqlError(f"查询失败：{_sql_first_line(exc)}") from None
+    finally:
+        db.close()
+    return columns, rows[:max_rows], len(rows) > max_rows
+
+
+def _postgres_query(conn, module, segments, params, max_rows, used):
+    millis = conn["timeout"] * 1000
+    kwargs = {"host": _resolve(conn["host"], used), "port": conn["port"],
+              "dbname": _resolve(conn["database"], used), "user": _resolve(conn["user"], used),
+              "connect_timeout": min(10, conn["timeout"] + 3), "application_name": "doc2sop-ops-readonly",
+              "sslmode": {"disable": "disable", "prefer": "prefer", "require": "require",
+                          "verify": "verify-full"}[conn["tls"]],
+              # 第二层：这条连接上的事务默认只读；语句超时由数据库自己掐
+              "options": f"-c default_transaction_read_only=on -c statement_timeout={millis} "
+                         f"-c idle_in_transaction_session_timeout={millis * 2}"}
+    if conn["password"]:
+        kwargs["password"] = _resolve(conn["password"], used)
+    if conn["ca"]:
+        kwargs["sslrootcert"] = _resolve(conn["ca"], used)
+    try:
+        db = module.connect(autocommit=False, **kwargs)
+    except Exception as exc:
+        raise SqlError(f"连不上数据库：{_sql_first_line(exc)}") from None
+    canceled = getattr(getattr(module, "errors", None), "QueryCanceled", ())
+    try:
+        db.read_only = True   # 再加一道：事务以 BEGIN READ ONLY 开始
+        # 服务端游标：只取要的那几行，结果集再大也不会整个搬进工具服务
+        cursor = db.cursor(name="doc2sop_ops_readonly")
+        cursor.execute(_sql_render(segments, "pyformat"), params)
+        columns = [getattr(item, "name", None) or item[0] for item in cursor.description or []]
+        rows = cursor.fetchmany(max_rows + 1)
+        db.rollback()
+    except Exception as exc:
+        if canceled and isinstance(exc, canceled):
+            raise _sql_timeout(conn) from None
+        raise SqlError(f"查询失败：{_sql_first_line(exc)}") from None
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+    return columns, rows[:max_rows], len(rows) > max_rows
+
+
+def _mysql_query(conn, module, segments, params, max_rows, used):
+    kwargs = {"host": _resolve(conn["host"], used), "port": conn["port"], "user": _resolve(conn["user"], used),
+              "password": _resolve(conn["password"], used) if conn["password"] else "",
+              "database": _resolve(conn["database"], used), "connect_timeout": min(10, conn["timeout"] + 3),
+              "read_timeout": conn["timeout"] + 5, "write_timeout": 10, "charset": "utf8mb4",
+              "autocommit": False, "local_infile": False,
+              # 不缓冲的游标：只取要的那几行，不把整个结果集读进工具服务
+              "cursorclass": module.cursors.SSCursor}
+    if conn["tls"] != "disable":
+        kwargs.update(ssl_verify_cert=conn["tls"] == "verify", ssl_verify_identity=conn["tls"] == "verify")
+        if conn["ca"]:
+            kwargs["ssl_ca"] = _resolve(conn["ca"], used)
+    try:
+        db = module.connect(**kwargs)
+    except Exception as exc:
+        raise SqlError(f"连不上数据库：{_sql_first_line(exc)}") from None
+    try:
+        cursor = db.cursor()
+        try:
+            cursor.execute(f"SET SESSION max_execution_time = {conn['timeout'] * 1000}")   # MySQL 5.7.8+
+        except module.Error:
+            try:
+                cursor.execute(f"SET SESSION max_statement_time = {conn['timeout']}")       # MariaDB 10.1+
+            except module.Error:
+                pass
+        cursor.execute("START TRANSACTION READ ONLY")   # 第二层：只读事务
+        cursor.execute(_sql_render(segments, "pyformat"), params)
+        columns = [item[0] for item in cursor.description or []]
+        rows = cursor.fetchmany(max_rows + 1)
+    except Exception as exc:
+        text = _sql_first_line(exc)
+        code = exc.args[0] if getattr(exc, "args", None) else None
+        if code in (3024, 1969) or "timed out" in text.lower():
+            raise _sql_timeout(conn) from None
+        raise SqlError(f"查询失败：{text}") from None
+    finally:
+        try:
+            db.close()   # 不读完剩下的行、不回滚：直接断开，服务器那边的只读事务随连接结束
+        except Exception:
+            pass
+    return columns, rows[:max_rows], len(rows) > max_rows
+
+
+SQL_RUNNERS = {"sqlite": _sqlite_query, "postgres": _postgres_query, "mysql": _mysql_query}
+
+
+def _run_sql(spec, args):
+    sql = spec["sql"]
+    connection = spec.get("connection")
+    if connection is None:
+        return {"ok": False, "error": f"连接 {sql['conn']} 不存在，该工具暂不可用"}
+    module, reason = _driver(connection["type"])
+    if module is None:
+        return {"ok": False, "error": reason}
+    try:
+        values = {key: _value(key, param, args or {}) for key, param in spec["params"].items()}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    params = {key: int(value) if spec["params"][key]["type"] == "int" else value for key, value in values.items()}
+    used = []
+    shown = _display(spec)
+    try:
+        columns, rows, more = SQL_RUNNERS[connection["type"]](connection, module, sql["segments"], params,
+                                                              sql["max_rows"], used)
+    except ValueError as exc:   # 凭据没配置
+        return {"ok": False, "error": str(exc), "command": shown}
+    except SqlError as exc:
+        return {"ok": False, "error": _scrub(str(exc), used), "command": shown}
+    output = _scrub(_sql_table(columns, rows, more, sql["max_rows"]), used)
+    return {"ok": True, "command": shown, "output": _cut(output), "rows": len(rows)}
+
+
 # ---- MCP 客户端 ------------------------------------------------------------
 
 class McpError(RuntimeError):
@@ -2130,14 +3111,16 @@ class McpError(RuntimeError):
 def _check_mcp_servers(document, problems):
     """主文件顶层 mcp_servers → {id: 配置}。坏条目跳过并记 problem，不拖垮其他 server。
 
+    两种：command（宿主机上的 stdio 子进程）或 url（远程 Streamable HTTP server），只能写一种。
     command 不受 INTERPRETERS 限制：MCP server 本来就是 python/node 跑的一段程序。这不是放宽，
     而是把「允许宿主机跑哪段代码」这个决定完整交给手写主文件的 root——和脚本型工具的 trust 同一个意思。
+    url 同理：「允许把实参发给哪个远程服务」也只能由 root 写在主文件里；请求头只能是固定值或凭据引用，只做静态鉴权。
     """
     raw = document.get("mcp_servers")
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        problems.append("mcp_servers 必须是映射：server id → {command, args, env, cwd}")
+        problems.append("mcp_servers 必须是映射：server id → {command, args, env, cwd} 或 {url, headers}")
         return {}
     servers = {}
     for ident, entry in raw.items():
@@ -2148,30 +3131,94 @@ def _check_mcp_servers(document, problems):
                                   f"它会成为工具名的前缀")
             if not isinstance(entry, dict):
                 raise ConfigError(f"mcp_servers.{ident} 必须是映射")
-            command = str(entry.get("command", "")).strip()
-            if not command:
-                raise ConfigError(f"mcp_servers.{ident} 缺少 command")
-            args = entry.get("args") or []
-            if not isinstance(args, list):
-                raise ConfigError(f"mcp_servers.{ident}.args 必须是列表")
-            env = entry.get("env") or {}
-            if not isinstance(env, dict):
-                raise ConfigError(f"mcp_servers.{ident}.env 必须是映射")
-            for key, value in env.items():
-                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", str(key)):
-                    raise ConfigError(f"mcp_servers.{ident}.env 的变量名不合法：{str(key)[:40]!r}")
-                if str(key) == "OPS_TOKEN" or str(key).startswith(SECRET_PREFIX):
-                    raise ConfigError(f"mcp_servers.{ident}.env 不能把 {key} 交给 server："
-                                      f"那是工具服务自己的凭据")
-                _check_secret_refs(f"mcp_servers.{ident}.env.{key}", str(value))
-            cwd = entry.get("cwd")
-            servers[ident] = {"label": str(entry.get("label", "")).strip()[:GROUP_MAX] or ident,
-                              "command": command, "args": [str(a) for a in args],
-                              "env": {str(k): str(v) for k, v in env.items()},
-                              "cwd": str(cwd).strip() if cwd else ""}
+            remote = entry.get("url") not in (None, "")
+            if remote == (entry.get("command") not in (None, "")):
+                raise ConfigError(f"mcp_servers.{ident} 要么写 command（宿主机上的 stdio 子进程），"
+                                  f"要么写 url（远程 Streamable HTTP server），只能写一种")
+            fields = MCP_HTTP_FIELDS if remote else MCP_STDIO_FIELDS
+            unknown = sorted(str(key) for key in entry if key not in fields)
+            if unknown:
+                raise ConfigError(f"mcp_servers.{ident} 里有不认识的字段 {'、'.join(unknown)}"
+                                  f"（{'远程' if remote else 'stdio'} server 只认 {'、'.join(fields)}）")
+            config = _check_mcp_http(ident, entry) if remote else _check_mcp_stdio(ident, entry)
+            config["label"] = str(entry.get("label", "")).strip()[:GROUP_MAX] or ident
+            declared = _check_external(f"mcp_servers.{ident}", entry.get("external"))
+            config["declared_external"] = declared
+            if declared is not None:
+                config["external"], config["external_why"] = declared, f"管理员声明为{'外部' if declared else '内部'}"
+            elif remote:
+                config["external"], config["external_why"] = _judge_address(config["url"], url=True)
+            else:
+                config["external"], config["external_why"] = (
+                    False, "本机的子进程（它自己会访问哪里，工具服务看不到；需要时管理员声明 external: true）")
+            servers[ident] = config
         except ConfigError as exc:
             problems.append(str(exc))
     return servers
+
+
+def _check_mcp_stdio(ident, entry):
+    command = str(entry.get("command", "")).strip()
+    args = entry.get("args") or []
+    if not isinstance(args, list):
+        raise ConfigError(f"mcp_servers.{ident}.args 必须是列表")
+    env = entry.get("env") or {}
+    if not isinstance(env, dict):
+        raise ConfigError(f"mcp_servers.{ident}.env 必须是映射")
+    for key, value in env.items():
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", str(key)):
+            raise ConfigError(f"mcp_servers.{ident}.env 的变量名不合法：{str(key)[:40]!r}")
+        if str(key) == "OPS_TOKEN" or str(key).startswith(SECRET_PREFIX):
+            raise ConfigError(f"mcp_servers.{ident}.env 不能把 {key} 交给 server：那是工具服务自己的凭据")
+        _check_secret_refs(f"mcp_servers.{ident}.env.{key}", str(value))
+    cwd = entry.get("cwd")
+    return {"transport": "stdio", "command": command, "args": [str(a) for a in args],
+            "env": {str(k): str(v) for k, v in env.items()}, "cwd": str(cwd).strip() if cwd else ""}
+
+
+# 远程 server 的请求头里这些由协议和传输层管，管理员不能写
+MCP_RESERVED_HEADERS = ("content-type", "content-length", "accept", "host", "mcp-session-id", "mcp-protocol-version",
+                        "mcp-method", "mcp-name", "last-event-id")
+
+
+def _check_mcp_http(ident, entry):
+    owner = f"mcp_servers.{ident}"
+    url = str(entry.get("url", "")).strip()
+    env = ENV_BASE.match(url)
+    if env:
+        _check_secret_refs(owner, url)
+        rest = env.group(2)
+    else:
+        literal = re.match(r"^https?://([^/?#]+)(.*)$", url)
+        if not literal:
+            raise ConfigError(f"{owner}.url 必须以 http:// 或 https:// 开头，或者以 ${{名字}} 开头")
+        if re.search(r"[{}$@]", literal.group(1)):
+            raise ConfigError(f"{owner}.url 的主机名部分不能有参数、变量或用户名密码（凭据写在 headers 里）")
+        rest = literal.group(2)
+    if rest and not rest.startswith("/"):
+        raise ConfigError(f"{owner}.url 主机名后面必须直接是路径（以 / 开头）")
+    if re.search(r"[{}$?#]", rest):
+        raise ConfigError(f"{owner}.url 不能带查询串或变量：凭据请写在 headers 里")
+    headers = entry.get("headers") or {}
+    if not isinstance(headers, dict):
+        raise ConfigError(f"{owner}.headers 必须是映射")
+    clean = {}
+    for key, value in headers.items():
+        key, value = str(key), str(value)
+        if not HEADER_NAME.match(key):
+            raise ConfigError(f"{owner}.headers 的名字不合法：{key[:40]!r}")
+        if key.lower() in MCP_RESERVED_HEADERS or key.lower().startswith("mcp-param-"):
+            raise ConfigError(f"{owner}.headers 不能写 {key}：它由 MCP 协议和传输层管")
+        if URL_PARAM.search(SECRET_REF.sub("", value)):
+            raise ConfigError(f"{owner}.headers.{key} 只能写固定值或凭据引用 ${{名字}}")
+        _check_secret_refs(f"{owner}.headers.{key}", value)
+        clean[key] = value
+    protocol = str(entry.get("protocol") or "auto").strip()
+    if protocol not in MCP_HTTP_PROTOCOLS:
+        raise ConfigError(f"{owner}.protocol 只能是 {'、'.join(MCP_HTTP_PROTOCOLS)}")
+    return {"transport": "http", "url": url, "headers": clean, "protocol": protocol,
+            "timeout": _bounded_int(owner, entry, "timeout", (TIMEOUT, 1, 120)),
+            "ca": _check_ca(owner, entry.get("ca"))}
 
 
 def _mcp_child_env(config, secrets_used):
@@ -2441,7 +3488,458 @@ class McpServer:
                 "reason": "" if self.online else self.reason,
                 "discovered": len(self.tools), "approved": approved,
                 "notes": list(self.notes),
-                "server": self.server_info, "protocol": self.protocol}
+                "server": self.server_info, "protocol": self.protocol, "transport": "stdio",
+                "external": bool(self.config.get("external"))}
+
+
+class _McpRefused(McpError):
+    """server 连上了，但拒绝了这个请求（HTTP 4xx/5xx 或 JSON-RPC 错误）。auto 协商据此退回 initialize。"""
+
+    def __init__(self, message, code=None, data=None):
+        super().__init__(message)
+        self.code, self.data = code, data
+
+
+class _McpSessionGone(McpError):
+    """带着会话 id 的请求收到 404：会话过期了，重新 initialize 再发一次。"""
+
+
+MCP_CLIENT_INFO = {"name": "doc2sop-ops-readonly", "version": "1"}
+_HEADER_SAFE = re.compile(r"^[\x20-\x7E]*$")
+_HEADER_TOKEN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+
+
+def _mcp_header_value(text):
+    """请求头的值：可见 ASCII 原样；中文、首尾空白、控制字符等包成 =?base64?…?=（和官方 SDK 一致）。"""
+    if _HEADER_SAFE.fullmatch(text) and text == text.strip() and not re.fullmatch(r"=\?base64\?.*\?=", text):
+        return text
+    return "=?base64?" + base64.b64encode(text.encode("utf-8")).decode("ascii") + "?="
+
+
+def _mcp_param_paths(schema):
+    """2026-07-28：inputSchema 里标了 x-mcp-header 的参数（沿 properties 一路走下去）→ {路径: 请求头名}。
+
+    tools/call 要把这些参数的值同时放进 Mcp-Param-<名> 请求头（给中间的网关路由用），server 会核对两边一致。
+    """
+    out = {}
+
+    def walk(node, path):
+        properties = node.get("properties") if isinstance(node, dict) else None
+        for key, sub in (properties or {}).items():
+            if not isinstance(sub, dict):
+                continue
+            token = sub.get("x-mcp-header")
+            if isinstance(token, str) and _HEADER_TOKEN.fullmatch(token):
+                out[path + (str(key),)] = token
+            walk(sub, path + (str(key),))
+
+    walk(schema, ())
+    return out
+
+
+class McpHttpServer:
+    """远程 MCP server（Streamable HTTP）。对外的接口和 McpServer 一样：发现、待审、批准、只读确认、schema 指纹走同一套。
+
+    两个协议时代（见 MCP_MODERN 上面的说明）：
+      2025-11-25 及以前  initialize → notifications/initialized；server 可能给 Mcp-Session-Id，之后的请求都带它和
+                         MCP-Protocol-Version。带着会话 id 收到 404 是会话过期：重新 initialize，把请求再发一次。
+      2026-07-28         没有握手和会话：server/discover 问能力；每个请求的 params._meta 带协议版本、客户端信息和能力，
+                         请求头带 MCP-Protocol-Version、Mcp-Method（tools/call 还有 Mcp-Name 和 Mcp-Param-*）。
+    每个请求一次 POST，回应是 JSON 或 SSE 流（中途可能夹着通知、server 发来的请求，一直读到我们这条的回应）。
+    不跟随任何跳转；回应超过 MCP_HTTP_MAX 字节、超过时限都断开报错；请求头里的凭据、来自凭据的地址在输出里脱敏。
+    """
+
+    def __init__(self, ident, config):
+        self.id = ident
+        self.config = config
+        self.label = config.get("label") or ident
+        self.online = False
+        self.reason = "尚未连接"
+        self.tools = {}
+        self.failures = 0
+        self.next_retry = 0.0
+        self.list_changed = False
+        self.last_discovery = 0.0
+        self.secrets = []
+        self.server_info = {}
+        self.protocol = ""
+        self.notes = []
+        self.mode = ""              # legacy（initialize 握手）| modern（2026-07-28）
+        self.session = None         # Mcp-Session-Id（legacy，server 给了才有）
+        self.param_paths = {}       # 工具原名 -> x-mcp-header 的 {路径: 请求头名}（modern）
+        self._life_lock = threading.RLock()
+        self._id_lock = threading.Lock()
+        self._next_id = 0
+
+    def alive(self):
+        return self.online   # 没有子进程：握手（或 discover）成功就算活着
+
+    # --- 一次 POST ------------------------------------------------------------------
+
+    def _endpoint(self):
+        """(地址, 管理员配的请求头, TLS 上下文)。凭据现取，取出来的值记进 self.secrets（输出脱敏）。"""
+        used = []
+        try:
+            url = self.config["url"]
+            env = ENV_BASE.match(url)
+            if env:
+                base = _secret(env.group(1)).rstrip("/")
+                used.append(base)
+                if not re.match(r"^https?://[^/?#@]+(/[^?#]*)?$", base):
+                    raise ValueError(f"{env.group(1)} 不是合法的 http(s) 地址")
+                url = base + env.group(2)
+            headers = {key: _fill_secrets(value, used) for key, value in self.config["headers"].items()}
+            context = _ssl_context(_resolve(self.config["ca"])) if self.config["ca"] else None
+        except (ValueError, ConfigError) as exc:
+            raise McpError(str(exc)) from None
+        self.secrets = [s for s in used if s]
+        return url, headers, context
+
+    def _post(self, message, extra, timeout, capture_session=False):
+        """发一条 JSON-RPC 消息。请求返回回应（dict），通知、回应返回 None（server 应答 202）。"""
+        url, headers, context = self._endpoint()
+        headers.update({"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+                        "User-Agent": "doc2sop-ops-readonly/1"})
+        headers.update(extra)
+        body = json.dumps(message, ensure_ascii=False).encode("utf-8")
+        deadline = time.monotonic() + timeout
+        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            response = _opener(context).open(request, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            self._refused(exc, url)
+        except Exception as exc:
+            raise McpError(_scrub(f"请求失败：{exc.__class__.__name__}: {exc}", self.secrets)) from None
+        with response:
+            if capture_session:
+                self.session = response.headers.get("Mcp-Session-Id") or None
+            if response.status == 202 or "id" not in message or "method" not in message:
+                return None
+            kind = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if kind == "application/json":
+                data = response.read(MCP_HTTP_MAX + 1)
+                if len(data) > MCP_HTTP_MAX:
+                    raise McpError(f"回应超过 {MCP_HTTP_MAX // 1024 // 1024} MB，已断开")
+                try:
+                    reply = json.loads(data.decode("utf-8"))
+                except ValueError:
+                    raise McpError("回应不是合法的 JSON") from None
+                found = self._pick(reply, message["id"])
+                if found is None:
+                    raise McpError("回应里没有这个请求的结果")
+                return found
+            if kind == "text/event-stream":
+                return self._read_sse(response, message["id"], deadline)
+            raise McpError(f"不认识的回应类型 {kind or '（没有 Content-Type）'}")
+
+    def _refused(self, exc, url):
+        """HTTP 错误 → 抛出合适的 McpError。跳转一律不跟随，只说明它想跳到哪（同一主机时给路径）。"""
+        status = exc.code
+        if 300 <= status < 400:
+            target = exc.headers.get("Location", "") if exc.headers else ""
+            same = urllib.parse.urlsplit(urllib.parse.urljoin(url, target))
+            here = urllib.parse.urlsplit(url)
+            where = f"（同一主机的 {same.path}，请把配置里的 url 改成它）" \
+                if (same.scheme, same.netloc) == (here.scheme, here.netloc) else "（别的地址）"
+            raise _McpRefused(f"server 返回 {status} 跳转{where}，已拒绝跟随：只访问配置里写明的地址")
+        if status == 404 and self.session:
+            raise _McpSessionGone("会话已过期")
+        data = b""
+        try:
+            data = exc.read(64 * 1024) if exc.fp else b""
+        except Exception:
+            pass
+        try:
+            reply = json.loads(data.decode("utf-8"))
+        except ValueError:
+            reply = None
+        error = reply.get("error") if isinstance(reply, dict) else None
+        if isinstance(error, dict):
+            raise _McpRefused(_scrub(f"server 返回错误 {error.get('code', '')}：{error.get('message', '')}",
+                                     self.secrets), error.get("code"), error.get("data"))
+        raise _McpRefused(f"server 返回 HTTP {status}", status)
+
+    def _pick(self, reply, request_id):
+        """回应体（一条或一批）里找这个请求的结果；顺手处理夹在里面的通知和 server 发来的请求。"""
+        for item in reply if isinstance(reply, list) else [reply]:
+            if not isinstance(item, dict):
+                continue
+            if "method" in item:
+                self._incoming(item)
+            elif item.get("id") == request_id and ("result" in item or "error" in item):
+                return item
+        return None
+
+    def _incoming(self, message):
+        """server 发来的通知只认 tools/list_changed；发来的请求（sampling、elicitation……）一律回「不支持」。"""
+        if message.get("id") is None:
+            if message.get("method") == "notifications/tools/list_changed":
+                self.list_changed = True
+            return
+        if self.mode != "legacy":
+            return   # 2026-07-28 的 HTTP 上没有客户端发给 server 的回应通道；server 拿不到回应自然超时
+        try:
+            self._post({"jsonrpc": "2.0", "id": message["id"],
+                        "error": {"code": -32601, "message": "doc2sop 工具服务不支持该方法"}},
+                       self._headers(None), 5)
+        except McpError:
+            pass
+
+    def _read_sse(self, response, request_id, deadline):
+        """读 SSE 流，直到这个请求的回应出现。注释行（:）是保活；event 不是 message 的忽略。
+
+        流在回应之前断了：server 给过事件 id，就按 Last-Event-ID 用 GET 重连接着读（2025-11-25 起的 SSE 轮询），最多 3 次。
+        """
+        total, lines, event, last_id, attempts, resumed = 0, [], "message", None, 0, None
+        try:
+            while True:
+                if time.monotonic() > deadline:
+                    raise McpError(f"等回应超时（{self.config['timeout']}s）")
+                try:
+                    raw = response.readline(MCP_HTTP_MAX + 1)
+                except Exception as exc:
+                    raise McpError(f"读回应失败：{exc.__class__.__name__}") from None
+                if not raw:
+                    if last_id is None or attempts >= 3:
+                        raise McpError("server 在给出结果之前关闭了连接")
+                    attempts += 1
+                    if resumed is not None:
+                        resumed.close()
+                    response = resumed = self._resume(last_id, deadline)
+                    lines, event = [], "message"
+                    continue
+                total += len(raw)
+                if total > MCP_HTTP_MAX:
+                    raise McpError(f"回应超过 {MCP_HTTP_MAX // 1024 // 1024} MB，已断开")
+                line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                if line:
+                    if line.startswith(":"):
+                        continue
+                    field, _, value = line.partition(":")
+                    value = value[1:] if value.startswith(" ") else value
+                    if field == "data":
+                        lines.append(value)
+                    elif field == "event":
+                        event = value or "message"
+                    elif field == "id" and value and "\x00" not in value:
+                        last_id = value
+                    continue
+                if lines and event == "message":
+                    try:
+                        reply = json.loads("\n".join(lines))
+                    except ValueError:
+                        reply = None
+                    found = self._pick(reply, request_id) if reply is not None else None
+                    if found is not None:
+                        return found
+                lines, event = [], "message"
+        finally:
+            if resumed is not None:
+                resumed.close()
+
+    def _resume(self, last_id, deadline):
+        url, headers, context = self._endpoint()
+        headers.update({"Accept": "text/event-stream", "Last-Event-ID": last_id,
+                        "User-Agent": "doc2sop-ops-readonly/1"})
+        headers.update(self._headers(None))
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            return _opener(context).open(request, timeout=max(1.0, deadline - time.monotonic()))
+        except urllib.error.HTTPError as exc:
+            self._refused(exc, url)
+        except Exception as exc:
+            raise McpError(_scrub(f"重连失败：{exc.__class__.__name__}: {exc}", self.secrets)) from None
+
+    # --- JSON-RPC ---------------------------------------------------------------------
+
+    def _headers(self, method, params=None):
+        """这个请求要带的协议请求头。"""
+        if self.mode == "modern":
+            headers = {"MCP-Protocol-Version": MCP_MODERN}
+            if method:
+                headers["Mcp-Method"] = method
+            if method == "tools/call" and isinstance((params or {}).get("name"), str):
+                headers["Mcp-Name"] = _mcp_header_value(params["name"])
+                arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+                for path, token in self.param_paths.get(params["name"], {}).items():
+                    value = arguments
+                    for key in path:
+                        value = value.get(key) if isinstance(value, dict) else None
+                    if isinstance(value, bool):
+                        headers["Mcp-Param-" + token] = "true" if value else "false"
+                    elif isinstance(value, (str, int, float)):
+                        headers["Mcp-Param-" + token] = _mcp_header_value(str(value))
+            return headers
+        headers = {}
+        if self.protocol:
+            headers["MCP-Protocol-Version"] = self.protocol
+        if self.session:
+            headers["Mcp-Session-Id"] = self.session
+        return headers
+
+    def request(self, method, params=None, timeout=None, _again=True):
+        timeout = timeout or self.config["timeout"]
+        with self._id_lock:
+            self._next_id += 1
+            ident = self._next_id
+        body = dict(params or {})
+        if self.mode == "modern":
+            body["_meta"] = {**(body.get("_meta") or {}), MCP_META + "protocolVersion": MCP_MODERN,
+                             MCP_META + "clientInfo": MCP_CLIENT_INFO, MCP_META + "clientCapabilities": {}}
+        message = {"jsonrpc": "2.0", "id": ident, "method": method}
+        if body or self.mode == "modern":
+            message["params"] = body
+        try:
+            reply = self._post(message, self._headers(method, body), timeout, capture_session=method == "initialize")
+        except _McpSessionGone:
+            if not _again:
+                raise McpError("会话过期，重新连接后仍然失败") from None
+            with self._life_lock:
+                self._initialize()
+            return self.request(method, params, timeout, _again=False)
+        if reply is None:
+            raise McpError(f"server 对 {method} 回了 202，没有给出结果")
+        error = reply.get("error")
+        if isinstance(error, dict):
+            raise _McpRefused(_scrub(f"server 返回错误 {error.get('code', '')}：{error.get('message', '')}",
+                                     self.secrets).strip(), error.get("code"), error.get("data"))
+        result = reply.get("result")
+        if isinstance(result, dict) and result.get("resultType") not in (None, "complete"):
+            raise McpError(f"server 要求客户端交互（resultType={str(result.get('resultType'))[:30]}），工具服务不支持")
+        return result
+
+    def notify(self, method, params=None):
+        message = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            message["params"] = params
+        self._post(message, self._headers(method), self.config["timeout"])
+
+    # --- 连接：协商协议版本 ---------------------------------------------------------------
+
+    def _discover(self):
+        """2026-07-28：server/discover。server 不认（任何 HTTP 或 JSON-RPC 错误）抛 _McpRefused，auto 时退回 initialize。"""
+        self.mode, self.session, self.protocol = "modern", None, ""
+        result = self.request("server/discover", {}, timeout=min(MCP_INIT_TIMEOUT, self.config["timeout"]))
+        if not isinstance(result, dict):
+            raise _McpRefused("server/discover 的结果不是对象")
+        versions = result.get("supportedVersions") if isinstance(result.get("supportedVersions"), list) else []
+        if MCP_MODERN not in versions:
+            raise _McpRefused(f"server 只支持 {', '.join(map(str, versions[:6])) or '（没说）'}")
+        self.protocol = MCP_MODERN
+        info = (result.get("_meta") or {}).get(MCP_META + "serverInfo") if isinstance(result.get("_meta"), dict) else None
+        self.server_info = info if isinstance(info, dict) else {}
+
+    def _initialize(self):
+        """2025-11-25 及以前：initialize → notifications/initialized。server 给了会话 id 就记下，之后每个请求都带。"""
+        self.mode, self.session, self.protocol = "legacy", None, ""
+        offer = MCP_HANDSHAKE if self.config["protocol"] in ("auto", MCP_HANDSHAKE) else self.config["protocol"]
+        result = self.request("initialize", {"protocolVersion": offer, "capabilities": {},
+                                             "clientInfo": MCP_CLIENT_INFO},
+                              timeout=min(MCP_INIT_TIMEOUT, self.config["timeout"]), _again=False) or {}
+        version = str(result.get("protocolVersion", ""))
+        if version not in MCP_HANDSHAKE_VERSIONS:
+            raise McpError(f"server 回的协议版本 {version[:30] or '（空）'} 不认识")
+        self.protocol = version
+        self.server_info = result.get("serverInfo") if isinstance(result.get("serverInfo"), dict) else {}
+        self.notify("notifications/initialized")
+
+    def _connect(self):
+        wanted = self.config["protocol"]
+        if wanted in ("auto", MCP_MODERN):
+            try:
+                self._discover()
+                return
+            except _McpRefused as exc:
+                if wanted == MCP_MODERN:
+                    raise McpError(f"server 不支持 {MCP_MODERN}：{exc}") from None
+        self._initialize()
+
+    # --- 生命周期（和 McpServer 一样）--------------------------------------------------------
+
+    def start(self):
+        with self._life_lock:
+            if self.online:
+                return
+            if time.monotonic() < self.next_retry:
+                raise McpError(self.reason)
+            try:
+                self._connect()
+                self.online = True
+                self.reason = ""
+                self.list_tools()
+            except McpError as exc:
+                self.failures += 1
+                delay = MCP_BACKOFF[min(self.failures, len(MCP_BACKOFF)) - 1]
+                self.next_retry = time.monotonic() + delay
+                self.online = False
+                self.reason = f"连接失败（第 {self.failures} 次）：{exc}；{delay}s 后重试"
+                raise McpError(self.reason) from None
+            self.failures = 0
+            self.next_retry = 0.0
+        print(f"[mcp:{self.id}] 已连接 {self.server_info.get('name', '')} {self.server_info.get('version', '')}"
+              f"（Streamable HTTP，协议 {self.protocol}{'，有会话' if self.session else ''}），"
+              f"发现 {len(self.tools)} 个工具", flush=True)
+
+    def ensure(self):
+        with self._life_lock:
+            if not self.online:
+                self.start()
+
+    def list_tools(self):
+        found, cursor = {}, None
+        for _ in range(100):
+            result = self.request("tools/list", {"cursor": cursor} if cursor else None) or {}
+            for tool in result.get("tools") or []:
+                if isinstance(tool, dict) and str(tool.get("name", "")).strip():
+                    found[str(tool["name"])] = tool
+            cursor = result.get("nextCursor")
+            if not cursor:
+                break
+        self.tools = found
+        self.param_paths = {name: _mcp_param_paths(tool.get("inputSchema")) for name, tool in found.items()}
+        self.list_changed = False
+        self.last_discovery = time.monotonic()
+        return found
+
+    def call(self, tool, arguments, timeout=None):
+        self.ensure()
+        try:
+            return self.request("tools/call", {"name": tool, "arguments": arguments or {}}, timeout=timeout) or {}
+        except McpError as exc:
+            if not isinstance(exc, _McpRefused):
+                self.online = False   # 连不上、超时：下一次调用重新握手
+                self.reason = str(exc)
+            raise
+
+    def stop(self, reason="已停止"):
+        with self._life_lock:
+            session, self.session = self.session, None
+            if session and self.mode == "legacy":
+                # 有会话就告诉 server 可以收了（DELETE）；失败无所谓，server 自己会过期
+                try:
+                    url, headers, context = self._endpoint()
+                    headers.update({"Mcp-Session-Id": session, "MCP-Protocol-Version": self.protocol})
+                    with _opener(context).open(urllib.request.Request(url, headers=headers, method="DELETE"),
+                                               timeout=3):
+                        pass
+                except Exception:
+                    pass
+            self.online = False
+            self.reason = reason
+
+    def status(self, approved=0):
+        url = self.config["url"]
+        return {"label": self.label, "online": bool(self.online), "reason": "" if self.online else self.reason,
+                "discovered": len(self.tools), "approved": approved, "notes": list(self.notes),
+                "server": self.server_info, "protocol": self.protocol, "transport": "http",
+                "url": url if ENV_BASE.match(url) else _url_prefix(url),
+                "external": bool(self.config.get("external"))}
+
+
+def _url_prefix(url):
+    """给人看的地址：协议、主机、端口和路径，不带查询串。"""
+    parts = urllib.parse.urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}{parts.path}"
 
 
 class McpRegistry:
@@ -2463,7 +3961,8 @@ class McpRegistry:
                     self.servers.pop(ident).stop("配置已变更")
             for ident, config in configs.items():
                 if ident not in self.servers:
-                    self.servers[ident] = McpServer(ident, config)
+                    kind = McpHttpServer if config.get("transport") == "http" else McpServer
+                    self.servers[ident] = kind(ident, config)
         self._wake.set()
 
     def get(self, ident):
@@ -3483,6 +4982,8 @@ def run_tool(name, args):
 
     if spec.get("type") == "http":
         return _run_http(spec, args)
+    if spec.get("type") == "sql":
+        return _run_sql(spec, args)
     if spec.get("type") == "mcp":
         return _run_mcp(spec, args)
     if spec.get("type") == "builtin":
@@ -3611,7 +5112,7 @@ def _legacy_view(tool):
         view.update(argv=body.get("argv") or [], os=body.get("os"), groups=body.get("groups"))
     elif kind == "script":
         view.update(script=body.get("script"), os=body.get("os"))
-    elif kind in ("http", "mcp"):
+    elif kind in ("http", "mcp", "sql"):
         view[kind] = body
     return view
 
@@ -3645,6 +5146,10 @@ def _print_pending():
             query = "&".join(f"{k}={v}" for k, v in (http.get("query") or {}).items())
             conn = f"[连接 {http['conn']}] " if http.get("conn") else ""
             print(f"      接口：GET {conn}{http.get('url', '')}{'?' + query if query else ''}")
+        elif isinstance(tool.get("sql"), dict):
+            sql = tool["sql"]
+            print(f"      SQL：[连接 {sql.get('conn', '')}] {sql.get('query', '')}"
+                  f"（最多 {sql.get('max_rows', SQL_ROWS[0])} 行）")
         else:
             print(f"      命令：{' '.join(str(p) for p in tool.get('argv') or [])}")
         if tool.get("os"):
@@ -4088,6 +5593,12 @@ def main():
         print(f"主机清单 {len(_hosts()['hosts'])} 台：{', '.join(_hosts()['hosts'])}；不填 target 时用 "
               f"{_hosts()['default'] or '（没有默认，单台可选时用那台，否则必填）'}"
               + (f"；远程 {len(remote)} 台，后台检查中" if remote else ""))
+    connections = _state.get("connections") or {}
+    if connections:
+        print(f"连接 {len(connections)} 个：" + "，".join(
+            f"{name}（{conn['type']}{'，外部' if conn.get('external') else ''}）" for name, conn in connections.items()))
+    if _vendor["problem"]:
+        print(f"（{_vendor['problem']}）")
     # 没声明 server 也要起这个线程：配置热加载后新加的 mcp_servers 靠它连接和发现
     _mcp.start_background()
     # 主机同理：热加载后新加的 hosts 靠它检查（没配主机时它什么都不连）

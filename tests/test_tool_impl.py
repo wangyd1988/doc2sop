@@ -111,7 +111,7 @@ class ImplFormatTests(_Configured):
         self.check_error({"name": "disk", "impl": {"type": "command", "argv": ["df", "-h"], "via": "ssh"}}, "via")
         self.check_error({"name": "q", "impl": {"type": "http", "url": "https://a.example/x", "target": "db1"}},
                          "target")
-        self.check_error({"name": "d", "impl": {"type": "sql", "query": "SELECT 1"}}, "只能是")
+        self.check_error({"name": "d", "impl": {"type": "ldap", "query": "(cn=x)"}}, "只能是")
         self.check_error({"name": "d", "impl": "builtin"}, "必须是映射")
 
     def test_the_two_spellings_cannot_be_mixed(self):
@@ -419,7 +419,8 @@ class ConnectionTests(_Configured):
         # 页面看到的是名字和模板：连接的请求头只有名字
         self.assertEqual(page["connections"]["prom"],
                          {"type": "http", "label": "监控", "base": "https://prom.example.internal:9090",
-                          "headers": ["Authorization", "X-Legacy"], "used_by": ["prom_series", "prom_up"]})
+                          "headers": ["Authorization", "X-Legacy"], "used_by": ["prom_series", "prom_up"],
+                          "external": False, "external_why": "内网主机名 prom.example.internal", "ca": False})
         self.assertEqual(page["connections"]["prom_env"]["base"], "${prom_url}/prefix")
         self.assertIn("Authorization", page["tools"]["prom_up"]["command"])
         self.assertIn("连接 prom", page["tools"]["prom_up"]["command"])
@@ -593,7 +594,7 @@ class ProposalTests(_Configured):
         for raw, needle in [({"impl": {"type": "builtin", "func": "date_info"}}, "内置函数"),
                             ({"impl": {"type": "mcp", "server": "s", "tool": "t"}}, "MCP"),
                             ({"mcp": {"server": "s", "tool": "t"}}, "MCP"),
-                            ({"impl": {"type": "sql", "query": "SELECT 1"}}, "只能是")]:
+                            ({"impl": {"type": "sql", "query": "SELECT 1"}}, "数据库连接")]:
             with self.subTest(raw=raw), self.assertRaises(ops.ConfigError) as caught:
                 ops.propose_tool({"name": "nope", "desc": "x", **raw})
             self.assertIn(needle, str(caught.exception))

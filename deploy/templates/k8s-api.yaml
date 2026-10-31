@@ -1,0 +1,64 @@
+# K8s API 版的只读工具：不依赖工具服务所在机器装了 kubectl。格式和 deploy/ops_tools.yaml 一样，用法：
+#
+#   # /opt/ops/ops_tools.yaml（主配置）
+#   connections:
+#     - name: k8s
+#       type: http
+#       base: https://127.0.0.1:16443                   # apiserver 地址，写到端口为止
+#       ca: /etc/ops-readonly/k8s-ca.pem                # 集群的 CA：只信它，不信系统自带的根证书
+#       bearer_file: /etc/ops-readonly/k8s-token        # 只读 ServiceAccount 的令牌，每次调用现读，轮换后不用重启
+#   include: [/opt/doc2sop/deploy/templates/k8s-api.yaml]
+#
+# 令牌只用只读的 ServiceAccount（内置 view 角色 + 少量集群级只读资源，读不了 Secret），做法见 docs/正式部署.md
+# 「K8s 只读账号」。工具名、参数和 kubectl 版的 kube_list / kube_events / kube_logs 一样，SOP 不用改：
+# 主配置里还写着 kubectl 版的同名工具时，按「替换实现」的规则主配置的优先，要改走 API 就把 kubectl 版删掉。
+#
+# 和 kubectl 版的差别：kube_list 的 resource 只能写核心 API 组里资源的复数全称（pods、services、endpoints、events、
+# configmaps、persistentvolumeclaims……），pod、svc 这类简写和 Deployment、Ingress 这类别的 API 组里的资源查不了。
+# 列表用 Table 格式（Accept: …;as=Table），apiserver 按 kubectl get 的列给出结果。
+tools:
+  - name: kube_list
+    label: K8s 资源列表
+    group: K8s
+    desc: >-
+      列出命名空间里某一类核心资源（经 K8s API）。resource 要写复数全称，如 pods、services、endpoints、events、
+      configmaps、persistentvolumeclaims；不支持 pod、svc 这类简写，也查不了 Deployment、Ingress 这类不在核心 API 组的资源。
+    params:
+      resource: {type: str, pattern: resource, required: true, desc: 资源类型的复数全称，例如 pods、services}
+      namespace: {type: str, pattern: k8s_name, default: default, desc: 命名空间，默认 default}
+    impl:
+      type: http
+      conn: k8s
+      url: /api/v1/namespaces/{namespace}/{resource}
+      headers: {Accept: "application/json;as=Table;v=v1;g=meta.k8s.io, application/json"}
+      pick: ["columnDefinitions[].name", "rows[].cells"]
+      notes:
+        "404": 资源类型不存在：resource 要写核心 API 组里资源的复数全称，如 pods、services、events。
+
+  - name: kube_events
+    label: 命名空间事件
+    group: K8s
+    desc: 查看命名空间下的事件（经 K8s API），用于发现调度失败、探针失败、镜像拉取失败。
+    params:
+      namespace: {type: str, pattern: k8s_name, default: default, desc: 命名空间，默认 default}
+    impl:
+      type: http
+      conn: k8s
+      url: /api/v1/namespaces/{namespace}/events
+      headers: {Accept: "application/json;as=Table;v=v1;g=meta.k8s.io, application/json"}
+      pick: ["columnDefinitions[].name", "rows[].cells"]
+
+  - name: kube_logs
+    label: Pod 日志
+    group: K8s
+    desc: 查看 Pod 最近的日志（经 K8s API），用于定位报错原因。Pod 里有多个容器时返回错误，请改用 kubectl 版。
+    params:
+      name: {type: str, pattern: k8s_name, required: true, desc: Pod 名}
+      namespace: {type: str, pattern: k8s_name, default: default, desc: 命名空间，默认 default}
+      lines: {type: int, default: 100, max: 500, desc: 查看最近多少行}
+    impl:
+      type: http
+      conn: k8s
+      url: /api/v1/namespaces/{namespace}/pods/{name}/log
+      query: {tailLines: "{lines}"}
+      headers: {Accept: "text/plain, */*"}
