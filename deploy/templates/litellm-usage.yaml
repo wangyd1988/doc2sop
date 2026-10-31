@@ -1,0 +1,61 @@
+# LiteLLM 网关的用量（只读）：按模型、按 key 别名的每日汇总，最近失败的调用。查的是 LiteLLM 自己的 Postgres 里
+# litellm-usage.sql 建的三个函数（只返回汇总：不含 key、请求和回答的正文、报错正文）。格式和 deploy/ops_tools.yaml 一样，用法：
+#
+#   # /opt/ops/ops_tools.yaml（主配置）
+#   connections:
+#     - name: litellm_db
+#       type: postgres
+#       label: LiteLLM 用量库
+#       host: 127.0.0.1                      # 库在网关机的容器里、端口没发布：经专用 SSH 隧道转到容器的 5432
+#       port: 15432                          # 隧道在本机监听的端口
+#       database: <LiteLLM 在用的库名>       # 看 LiteLLM 的 DATABASE_URL；升级换了库就改这里
+#       user: doc2sop_ro
+#       password: ${litellm_db_password}     # 值在 OPS_SECRET_LITELLM_DB_PASSWORD
+#       tls: disable                         # 隧道已经加密；容器里的 Postgres 一般没开 TLS
+#       external: false                      # 自己的网关：隧道地址 127.0.0.1 本来就判为内部，写明白
+#   include: [/opt/doc2sop/deploy/templates/litellm-usage.yaml]
+#
+# 需要驱动 psycopg（装进 /opt/ops/vendor）。建账号、函数、隧道和撤销见 docs/正式部署.md「例：LiteLLM 网关的用量」。
+# 日汇总的日期是 UTC 日期（北京时间早上 8 点换日）；明细（最近失败）只保留 LiteLLM 配置的天数，更早的查不到。
+tools:
+  - name: gateway_usage_by_model
+    label: 模型用量（按天）
+    group: 模型网关
+    desc: >-
+      模型网关最近 N 天每个模型每天的请求数、失败数、输入和输出 token、花费（美元）和平均耗时（毫秒），日期是 UTC 日期。
+      问「哪个模型用得最多」「用量趋势」「花了多少钱」时用它；按天的行要自己加总。
+    params:
+      days: {type: int, default: 7, min: 1, max: 90, desc: 最近几天（含今天）}
+    impl:
+      type: sql
+      conn: litellm_db
+      query: "SELECT * FROM doc2sop.usage_by_model(:days)"
+      max_rows: 300
+
+  - name: gateway_usage_by_key
+    label: 各 key 用量（按天）
+    group: 模型网关
+    desc: >-
+      模型网关最近 N 天每个调用方 key 每天的请求数、失败数、token 总数和花费（美元），日期是 UTC 日期。只给 key 的别名，
+      没有别名或已删除的 key 合成一行。问「谁在用网关」「哪个应用用得最多」时用它。
+    params:
+      days: {type: int, default: 7, min: 1, max: 90, desc: 最近几天（含今天）}
+    impl:
+      type: sql
+      conn: litellm_db
+      query: "SELECT * FROM doc2sop.usage_by_key(:days)"
+      max_rows: 300
+
+  - name: gateway_recent_failures
+    label: 最近失败的调用
+    group: 模型网关
+    desc: >-
+      模型网关最近 N 小时失败的调用，按模型、状态码、错误类型汇总：次数、第一次和最后一次出现的时间（北京时间）。
+      不含报错正文。排查「模型调不通」「报 429、500」时先看它。
+    params:
+      hours: {type: int, default: 24, min: 1, max: 168, desc: 最近几小时}
+    impl:
+      type: sql
+      conn: litellm_db
+      query: "SELECT * FROM doc2sop.recent_failures(:hours)"
+      max_rows: 100

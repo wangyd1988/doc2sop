@@ -249,7 +249,8 @@ deploy/
 │                      也是受控模式装在远程主机上的执行器（强制命令 --stdio，按 root 所有的 allowlist.json 执行）。
 │                      只用标准库、兼容 Python 3.6
 ├── ops_tools.yaml     工具定义的唯一真相源，改完即时生效；顶层 mcp_servers 声明 MCP server，connections 声明连接，hosts 声明主机
-├── templates/         可直接 include 的工具模板：k8s-api.yaml（经 K8s API 的 kube_*）、prometheus.yaml（常用 PromQL）
+├── templates/         可直接 include 的工具模板：k8s-api.yaml（经 K8s API 的 kube_*）、prometheus.yaml（常用 PromQL）、
+│                      litellm-usage.yaml（LiteLLM 网关的用量，SQL 工具）+ litellm-usage.sql（在 LiteLLM 的库里建只读函数）
 ├── k8s-readonly.yaml  工具服务查 K8s 用的只读 ServiceAccount（view + 少量集群级只读资源）
 ├── mcp/               玩具 MCP server holiday_mcp.py（测试 + 演示）与把拼假工具换成 MCP 来源的 holiday_tools.yaml
 ├── demo/              一键演示：工具 sidecar（Dockerfile.ops + entrypoint.py，按 DEMO_PACKS 生成 include 和场景包的演示库连接、按 DEMO_HOST 生成 hosts）

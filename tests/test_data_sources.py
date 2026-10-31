@@ -1,8 +1,8 @@
 """工具层统一 M6：更多数据源（解耦方案 P3），工具服务这一侧。
 
 覆盖：场景包的凭据只能发往管理员定的地址、主配置写同名工具替换场景包的实现（参数兼容校验）、sql 类型
-（模板校验、参数绑定、只读事务、超时、最多行数、驱动缺失、输出脱敏、页面申请）、http 连接的 CA 和 bearer 令牌、
-预置正则参数嵌进查询值、K8s API 和 Prometheus 模板（假的 HTTPS 服务）、按地址判断「外部」。
+（模板校验、参数绑定、只读事务、超时、最多行数、驱动缺失、输出脱敏、页面申请）、LiteLLM 用量模板（SQL 工具 + 建只读函数的 SQL）、
+http 连接的 CA 和 bearer 令牌、预置正则参数嵌进查询值、K8s API 和 Prometheus 模板（假的 HTTPS 服务）、按地址判断「外部」。
 远程 MCP（Streamable HTTP）在 tests/test_remote_mcp.py。
 """
 import contextlib
@@ -11,12 +11,14 @@ import importlib.util
 import io
 import json
 import os
+import re
 import socket
 import sqlite3
 import ssl
 import sys
 import tempfile
 import threading
+import types
 import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -510,6 +512,119 @@ class SqlRunTests(_Configured):
         self.assertProblem("用的连接 c 写错了，没有加载")
 
 
+# --- 2. sql：现成的模板（LiteLLM 网关的用量）---------------------------------------------------------
+
+class LitellmUsageTemplateTests(_Configured):
+    """deploy/templates/litellm-usage.yaml + .sql：工具只调 SQL 里建的函数；SQL 只建函数、只返回汇总，不带部署的具体值。"""
+    YAML = REPO / "deploy" / "templates" / "litellm-usage.yaml"
+    SQL = REPO / "deploy" / "templates" / "litellm-usage.sql"
+    NAMES = ["gateway_recent_failures", "gateway_usage_by_key", "gateway_usage_by_model"]
+
+    def load(self):
+        """按 yaml 文件头的写法建连接、include 模板。"""
+        os.environ["OPS_SECRET_LITELLM_DB_PASSWORD"] = "pw-0123456789"
+        return self.write(
+            "connections:\n"
+            "  - {name: litellm_db, type: postgres, label: LiteLLM 用量库, host: 127.0.0.1, port: 15432, "
+            "database: litellm, user: doc2sop_ro, password: '${litellm_db_password}', tls: disable, external: false}\n"
+            f"include: ['{self.YAML.as_posix()}']\ntools: []\n")
+
+    def test_the_tools_load_on_the_documented_connection_and_bind_integers(self):
+        tools, problems = self.load()
+        self.assertEqual((sorted(tools), problems), (self.NAMES, []))
+        seen = []
+
+        class Cursor:
+            description = [("day",), ("model",), ("requests",)]
+
+            def execute(self, query, params):
+                seen.append((query, params))
+
+            def fetchmany(self, size):
+                return [("2026-10-31", "glm-5.3", 120)]
+
+        class Db:
+            read_only = False
+
+            def cursor(self, name=None):
+                return Cursor()
+
+            def rollback(self):
+                pass
+
+            def close(self):
+                pass
+
+        def connect(**kwargs):
+            seen.append(kwargs)
+            return Db()
+
+        with patch.dict(ops._drivers, {"postgres": (types.SimpleNamespace(connect=connect), "")}):
+            advertised = ops.available_tools()
+            for name in self.NAMES:
+                meta = advertised[name]["_meta"]["doc2sop"]
+                self.assertEqual((meta["group"], "external" in meta), ("模型网关", False))
+                self.assertFalse(advertised[name]["annotations"]["openWorldHint"])
+            result = ops.run_tool("gateway_usage_by_model", {})
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["output"], "day | model | requests\n2026-10-31 | glm-5.3 | 120\n（共 1 行）")
+            kwargs, (query, params) = seen
+            self.assertEqual((kwargs["host"], kwargs["port"], kwargs["dbname"], kwargs["user"], kwargs["sslmode"]),
+                             ("127.0.0.1", 15432, "litellm", "doc2sop_ro", "disable"))
+            self.assertIn("default_transaction_read_only=on", kwargs["options"])
+            self.assertEqual((query, params), ("SELECT * FROM doc2sop.usage_by_model(%(days)s)", {"days": 7}))
+            self.assertTrue(ops.run_tool("gateway_recent_failures", {"hours": 168})["ok"])
+            self.assertEqual(seen[-1], ("SELECT * FROM doc2sop.recent_failures(%(hours)s)", {"hours": 168}))
+            for name, args, bound in (("gateway_usage_by_key", {"days": 91}, {"days": 90}),
+                                      ("gateway_recent_failures", {"hours": 0}, {"hours": 1}),
+                                      ("gateway_usage_by_model", {"days": "7) ; DROP SCHEMA doc2sop"}, {"days": 7})):
+                with self.subTest(name=name, args=args):
+                    self.assertTrue(ops.run_tool(name, args)["ok"])
+                    self.assertEqual(seen[-1][1], bound)    # 越界的夹到范围里，不是整数的退回默认值：绑定的总是整数
+        self.assertNotIn("pw-0123456789", json.dumps(result, ensure_ascii=False))
+
+    def test_the_sql_only_creates_the_functions_the_tools_call_and_they_return_summaries(self):
+        """函数而不是视图（不挡 LiteLLM 以后的迁移）；只读账号只能执行它们；返回的列里没有 key、正文、报错原文。"""
+        tools, _ = self.load()
+        called = sorted(re.search(r"doc2sop\.(\w+)\(:\w+\)$", spec["sql"]["query"]).group(1)
+                        for spec in tools.values())
+        text = self.SQL.read_text(encoding="utf-8")
+        self.assertEqual(text.splitlines()[:2], ["\\encoding UTF8", "\\set ON_ERROR_STOP on"])   # 在任何中文之前
+        code = " ".join(" ".join(line for line in text.splitlines() if not line.lstrip().startswith("--")).split())
+        self.assertEqual(sorted(re.findall(r"CREATE OR REPLACE FUNCTION doc2sop\.(\w+)\(p_\w+ integer\)", code)), called)
+        self.assertEqual(code.count("LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$"), 3)
+        for word in ("BEGIN ATOMIC", "CREATE VIEW", "OR REPLACE VIEW", "LANGUAGE plpgsql", "GRANT SELECT ON",
+                     "error_message", "traceback", "proxy_server_request", "key_name"):
+            self.assertNotIn(word.lower(), code.lower(), word)
+        for column in ("messages", "response"):
+            self.assertNotRegex(code, rf"\b{column}\b")
+        self.assertEqual(re.findall(r"GRANT (\w+) ON (.+?) TO doc2sop_ro;", code),
+                         [("USAGE", "SCHEMA doc2sop"), ("EXECUTE", "FUNCTION doc2sop.usage_by_model(integer), "
+                                                                   "doc2sop.usage_by_key(integer), doc2sop.recent_failures(integer)")])
+        self.assertIn("doc2sop.recent_failures(integer) FROM PUBLIC;", code)
+        returned = [column.split()[0] for found in re.findall(r"RETURNS TABLE \(([^)]*)\)", code)
+                    for column in found.split(",")]
+        self.assertEqual(returned, ["day", "model", "requests", "failed", "prompt_tokens", "completion_tokens",
+                                    "spend_usd", "avg_ms", "day", "key_alias", "requests", "failed", "total_tokens",
+                                    "spend_usd", "model", "status_code", "error_type", "failures", "first_seen",
+                                    "last_seen"])
+        # 报错只放行三位状态码和类名样式的错误类型，别的一律「其他」
+        self.assertIn("WHEN f.code ~ '^[0-9]{3}$' THEN f.code ELSE '其他'", code)
+        self.assertIn("WHEN f.cls ~ '^[A-Za-z][A-Za-z0-9_.]{0,79}$' THEN f.cls ELSE '其他'", code)
+        for setting in ("default_transaction_read_only = on", "statement_timeout = '5s'",
+                        "idle_in_transaction_session_timeout = '30s'"):
+            self.assertIn(f"ALTER ROLE doc2sop_ro SET {setting};", code)
+        self.assertIn("CONNECTION LIMIT 3;", code)
+        self.assertIn("BEGIN; SET LOCAL lock_timeout = '5s'; SET LOCAL statement_timeout = '60s';", code)
+        self.assertTrue(code.endswith("COMMIT;"))
+        # 库名只从 -v dbname 来，连错库就什么都不做；部署的具体值（地址、库名）不进模板
+        self.assertIn("current_database() <> current_setting('doc2sop.expected_db')", code)
+        self.assertNotRegex(code, r"\\c(onnect)?\s")
+        for path in (self.SQL, self.YAML):
+            addresses = set(re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", path.read_text(encoding="utf-8")))
+            self.assertLessEqual(addresses, {"127.0.0.1"}, path.name)
+
+
 # --- 5. http 连接：CA、bearer 令牌；参数嵌进查询值；K8s API 和 Prometheus 模板 ---------------------------------
 
 def make_tls(folder):
@@ -680,7 +795,8 @@ class HttpConnectionTests(_Configured):
             f"  - {{name: k8s, type: http, base: '{base}', ca: '{paths['ca'].as_posix()}', "
             f"bearer_file: '{token.as_posix()}'}}\n"
             f"  - {{name: prom, type: http, base: '{base}', ca: '{paths['ca'].as_posix()}', bearer: '${{prom_token}}'}}\n"
-            f"include: ['{(REPO / 'deploy' / 'templates').as_posix()}/*.yaml']\ntools: []\n")
+            f"include: ['{(REPO / 'deploy' / 'templates').as_posix()}/k8s-api.yaml', "
+            f"'{(REPO / 'deploy' / 'templates').as_posix()}/prometheus.yaml']\ntools: []\n")
         os.environ["OPS_SECRET_PROM_TOKEN"] = FakeCluster.token
         self.assertEqual(problems, [])
         self.assertEqual(sorted(tools), ["kube_events", "kube_list", "kube_logs", "node_cpu_usage", "node_disk_usage",

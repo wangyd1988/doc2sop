@@ -74,7 +74,7 @@
 # 每项是路径或 glob，相对路径相对本文件所在目录。被包含的文件同样只能由宿主机 root 维护；它们自己不能再 include，
 # 也不能声明连接、主机清单、MCP server 和 export，里面的接口型工具只能把凭据发往管理员定的地址（经连接，或地址来自 ${…}）。
 # 本文件里写一个和被包含文件同名的工具，就是替换它的实现（参数要兼容，见 docs/工具.md「替换场景包的实现」）。
-# 改动被包含的文件同样即时生效。deploy/templates/ 里有 K8s API、Prometheus 的现成模板。
+# 改动被包含的文件同样即时生效。deploy/templates/ 里有 K8s API、Prometheus、LiteLLM 用量的现成模板。
 #
 # include:
 #   - ../packs/leave-planning/tools.yaml
