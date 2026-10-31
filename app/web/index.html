@@ -25,22 +25,42 @@ body { font: 15px/1.6 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei"
 button { font: inherit; cursor: pointer; border: 0; background: none; color: inherit; }
 button:disabled { opacity: .5; cursor: default; }
 
-/* Sidebar */
-aside { width: 300px; flex-shrink: 0; background: var(--panel); border-right: 1px solid var(--border);
-        display: flex; flex-direction: column; transition: transform .25s; z-index: 20; }
-.brand { display: flex; align-items: center; gap: 10px; padding: 18px 18px 12px; }
-.brand[data-home] { cursor: pointer; border-radius: 12px; }
-.brand[data-home]:hover h1 { color: var(--accent); }
+/* ---------- 外壳：左侧常驻导航 + 右侧页面 ---------- */
+#side { width: 216px; flex-shrink: 0; background: var(--panel); border-right: 1px solid var(--border);
+        display: flex; flex-direction: column; transition: transform .25s; z-index: 50; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 16px 16px 12px; cursor: pointer; border-radius: 12px; }
+.brand:hover h1 { color: var(--accent); }
 .logo { width: 34px; height: 34px; border-radius: 10px; background: var(--user-bg); display: grid;
-        place-items: center; color: #fff; font-size: 18px; box-shadow: var(--shadow); }
-.brand h1 { font-size: 17px; margin: 0; }
-.brand small { display: block; color: var(--muted); font-size: 12px; }
-.drop { margin: 6px 14px 10px; border: 1.5px dashed var(--border); border-radius: 12px; padding: 16px 12px;
+        place-items: center; color: #fff; font-size: 18px; box-shadow: var(--shadow); flex-shrink: 0; }
+.brand h1 { font-size: 16px; margin: 0; }
+.brand small { display: block; color: var(--muted); font-size: 11.5px; }
+.nav { flex: 1; overflow-y: auto; padding: 6px 10px 12px; display: flex; flex-direction: column; gap: 2px; }
+.nav a { display: flex; align-items: center; gap: 11px; padding: 9px 12px; border-radius: 10px; font-size: 14px;
+         color: var(--text); text-decoration: none; position: relative; }
+.nav a svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round;
+             stroke-linejoin: round; flex-shrink: 0; color: var(--muted); }
+.nav a:hover { background: var(--panel-2); }
+.nav a.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.nav a.on svg { color: var(--accent); }
+.nav a.on::before { content: ''; position: absolute; left: -10px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0;
+                    background: var(--accent); }
+.nav .sec { font-size: 11px; color: var(--muted); letter-spacing: .08em; padding: 14px 12px 4px; }
+.nb { margin-left: auto; min-width: 20px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600;
+      line-height: 16px; text-align: center; background: var(--panel-2); color: var(--muted); font-variant-numeric: tabular-nums; }
+.nb:empty { display: none; }
+.nb.alert { background: #f59e0b; color: #fff; }
+.nb.purple { background: #7c3aed; color: #fff; }
+.nb.on { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+.side-foot { border-top: 1px solid var(--border); padding: 10px 16px 12px; font-size: 11.5px; color: var(--muted); line-height: 1.7; }
+.side-foot .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; }
+.side-foot .dot.bad { background: var(--danger); }
+.drop { border: 1.5px dashed var(--border); border-radius: 12px; padding: 14px 12px;
         text-align: center; color: var(--muted); font-size: 13px; cursor: pointer; transition: .2s; }
 .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .drop b { display: block; color: var(--text); font-size: 14px; margin-bottom: 2px; }
 .drop.over b { color: var(--accent); }
-.queue { padding: 0 14px; }
+.queue { padding: 0; }
+.queue:not(:empty) { padding: 8px 16px 0; background: var(--panel); }
 .job { font-size: 12.5px; background: var(--panel-2); border-radius: 8px; padding: 7px 10px; margin-bottom: 6px;
        display: flex; gap: 8px; align-items: flex-start; }
 .job .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -51,42 +71,29 @@ aside { width: 300px; flex-shrink: 0; background: var(--panel); border-right: 1p
 .spin { width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent);
         border-radius: 50%; animation: spin .8s linear infinite; flex-shrink: 0; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.docs-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 18px 6px;
-             font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
-.search { margin: 0 14px 8px; }
-.search input { width: 100%; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border);
-                background: var(--panel-2); color: var(--text); font: inherit; font-size: 13px; outline: none; }
-.search input:focus { border-color: var(--accent); }
-.docs { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
-/* 侧栏文档列表与管理页同一套：分类折叠分组 + 紧凑行 + 悬停操作 */
-.docs .grp > summary { padding: 7px 8px; font-size: 12.5px; }
-.docs .grp > .body { padding: 0 0 4px; }
-.doc { display: grid; grid-template-columns: 1fr auto; column-gap: 8px; padding: 7px 10px; border-radius: 8px; position: relative; }
-.doc:hover { background: var(--panel-2); }
-.doc .title { grid-column: 1; grid-row: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.doc .sub { grid-column: 1; grid-row: 2; font-size: 11.5px; color: var(--muted); }
-.doc .ico { grid-column: 2; grid-row: 1 / 3; align-self: center; font-size: 10.5px; font-weight: 700; padding: 1px 6px;
-            border-radius: 6px; color: #fff; }
-.doc .acts { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; gap: 2px; opacity: 0;
-             background: var(--panel-2); padding: 2px; border-radius: 7px; }
-.doc:hover .acts, .doc:focus-within .acts { opacity: 1; }
-.doc:hover .ico { opacity: 0; }
-.doc .acts button { font-size: 12px; padding: 3px 7px; border-radius: 5px; color: var(--accent); }
-.doc .acts button:hover { background: var(--accent-soft); }
-.doc .acts .del { color: var(--muted); }
-.doc .acts .del:hover { color: var(--danger); background: var(--panel); }
-@media (hover: none) { .doc .acts { opacity: 1; position: static; transform: none; grid-column: 1 / 3; } .doc .ico { display: none; } }
-.docs .more { margin: 4px 8px 6px; width: auto; padding: 6px; font-size: 12px; }
 .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 24px 10px; }
-.foot { border-top: 1px solid var(--border); padding: 10px 18px; font-size: 12px; color: var(--muted); }
 
 /* Main */
 main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-header { display: flex; align-items: center; gap: 6px; padding: 10px 18px; border-bottom: 1px solid var(--border);
-         background: color-mix(in srgb, var(--panel) 88%, transparent); backdrop-filter: blur(8px);
-         position: relative; z-index: 30; }
-.head-title { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; }
-.head-title .t { font-weight: 650; font-size: 15px; letter-spacing: .2px; white-space: nowrap; }
+#top { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 8px 20px; border-bottom: 1px solid var(--border);
+       background: var(--panel); position: relative; z-index: 30; flex-shrink: 0; }
+#top svg, .page-x svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9;
+                        stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+.top-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.top-title .t { font-weight: 650; font-size: 16px; white-space: nowrap; }
+.top-title .sub { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.top-tabs { display: flex; gap: 4px; margin-left: 8px; }
+.top-tabs:empty { display: none; }
+.top-tabs button { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 8px;
+                   font-size: 13px; color: var(--muted); white-space: nowrap; }
+.top-tabs button:hover { background: var(--panel-2); color: var(--text); }
+.top-tabs button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.top-tabs .nb { margin-left: 0; }
+.top-acts { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.top-acts [data-for] { display: none !important; }
+body[data-page="chat"] .top-acts [data-for~="chat"]:not([hidden]) { display: inline-flex !important; }
+.page { flex: 1; min-height: 0; display: none; flex-direction: column; }
+.page.on { display: flex; }
 .model-chip { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12px; color: var(--muted);
               background: var(--panel-2); border: 1px solid var(--border); padding: 3px 26px 3px 22px; border-radius: 999px;
               max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
@@ -103,8 +110,6 @@ header { display: flex; align-items: center; gap: 6px; padding: 10px 18px; borde
 .model-chip[hidden], .web-toggle[hidden] { display: none; }
 .tools .via { margin-left: auto; font-size: 11.5px; color: var(--muted); align-self: center; padding-right: 4px;
               max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9;
-             stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
 .nav-btn { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 11px; border-radius: 10px;
            color: var(--text); font-size: 13px; transition: background .15s, color .15s; }
 .nav-btn:hover { background: var(--panel-2); }
@@ -122,7 +127,7 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .nav-btn.open .badge { background: var(--panel); }
 .pb-head .t small { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 6px; }
 @media (max-width: 1000px) { .model-chip { display: none; } }
-@media (max-width: 700px) { .nav-btn .lbl, .new-btn .lbl, .nav-sep { display: none; } }
+@media (max-width: 700px) { .nav-btn .lbl, .new-btn .lbl { display: none; } }
 .icon-btn { padding: 6px 10px; border-radius: 8px; color: var(--muted); font-size: 13px; }
 .icon-btn:hover { background: var(--panel-2); color: var(--text); }
 .hist-wrap { position: static; }
@@ -139,7 +144,6 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .conv .del { opacity: 0; color: var(--muted); padding: 4px 6px; border-radius: 6px; }
 .conv:hover .del { opacity: 1; }
 .conv .del:hover { color: var(--danger); background: var(--panel); }
-#menuBtn { display: none; }
 #chat { flex: 1; overflow-y: auto; padding: 24px 20px 12px; scroll-behavior: smooth; }
 .wrap { max-width: 820px; margin: 0 auto; }
 
@@ -458,29 +462,9 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .plan .it.in_progress { color: var(--accent); font-weight: 600; }
 .hint { max-width: 820px; margin: 6px auto 0; font-size: 12px; color: var(--muted); text-align: center; }
 
-/* ---------- 独立管理页（/manage）：导航 → 分组 → 列表 → 详情 四栏 ---------- */
-a.nav-btn { text-decoration: none; }
-#manage { display: none; }
-body.manage > aside, body.manage #chat, body.manage .composer, body.manage #newBtn, body.manage .nav-sep,
-body.manage header .tl-wrap, body.manage header .pb-wrap, body.manage .hist-wrap, body.manage #menuBtn, body.manage .model-chip,
-body.manage #manageBtn { display: none !important; }
-#backBtn { display: none; }
-body.manage #backBtn { display: inline-flex; }
-body.manage #manage { display: flex; flex: 1; min-height: 0; }
-#mnav { width: 200px; flex-shrink: 0; border-right: 1px solid var(--border); padding: 0 8px 12px; display: flex;
-        flex-direction: column; gap: 3px; background: var(--panel); }
-#mnav .brand { padding: 16px 10px 14px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
-#mnav .brand h1 { font-size: 15px; }
-#mnav svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round;
-            stroke-linejoin: round; flex-shrink: 0; color: var(--muted); }
-#mnav button.on svg { color: var(--accent); }
-#mnav button { display: flex; align-items: center; gap: 10px; text-align: left; padding: 9px 12px; border-radius: 9px;
-               font-size: 13.5px; color: var(--text); position: relative; }
-#mnav button:hover { background: var(--panel-2); }
-#mnav button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-#mnav button.on::before { content: ''; position: absolute; left: -8px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
-#mnav button .badge { margin-left: auto; }
-.mnav-note { margin-top: auto; font-size: 11.5px; color: var(--muted); line-height: 1.6; padding: 12px 10px 0; border-top: 1px solid var(--border); }
+/* ---------- 工具 / SOP / 文档：分组 → 列表 → 详情；设置、对外接入、主机与数据源：单栏 ---------- */
+#manage { display: flex; flex: 1; min-height: 0; }
+body.nogroups #mgroups, body.nogroups .msplit[data-split="mgroups"] { display: none; }
 #mgroups { width: 230px; flex-shrink: 0; border-right: 1px solid var(--border); overflow-y: auto; padding: 10px 8px; background: var(--panel); }
 .mg-head { font-size: 11.5px; color: var(--muted); font-weight: 600; letter-spacing: .04em; padding: 6px 10px 6px; }
 .mg { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--text); }
@@ -492,12 +476,16 @@ body.manage #manage { display: flex; flex: 1; min-height: 0; }
 .mg.on .c, .mg.on .c b { color: var(--accent); }
 .mg.special { color: #b45309; }
 #mlist { flex: 1; min-width: 360px; display: flex; flex-direction: column; background: var(--bg); }
-.mtool { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.mtool { display: flex; flex-wrap: wrap; row-gap: 8px; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
 .mtool .ttl { font-weight: 650; font-size: 15px; white-space: nowrap; }
 .mtool .ttl small { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 8px; }
 .mtool input[type=search] { flex: 1; min-width: 120px; font: inherit; font-size: 13px; padding: 7px 11px; border-radius: 8px;
                             border: 1px solid var(--border); background: var(--panel-2); color: var(--text); outline: none; }
 .mtool input[type=search]:focus { border-color: var(--accent); }
+.mtool input.cat { width: 200px; font: inherit; font-size: 13px; padding: 7px 11px; border-radius: 8px; border: 1px solid var(--border);
+                   background: var(--panel-2); color: var(--text); outline: none; }
+.mtool .passline { margin-left: auto; }
+.attest.flash { box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 25%, transparent); }
 .mtool .act { white-space: nowrap; font-size: 13px; padding: 7px 13px; border-radius: 8px; background: var(--user-bg); color: #fff; }
 .mtool .act.ghost { background: var(--panel-2); color: var(--text); }
 .mtool .act:hover { filter: brightness(1.05); }
@@ -532,11 +520,8 @@ body.resizing .msplit { pointer-events: auto; }
 #mgroups, #mdetail { border: 0; }
 #mgroups { box-shadow: inset -1px 0 0 var(--border); }
 #mdetail { box-shadow: inset 1px 0 0 var(--border); }
-#asideSplit { margin-left: -3px; }
-body.manage #asideSplit { display: none; }
-@media (max-width: 820px) { #asideSplit { display: none; } }
-/* 模型设置页：单栏表单 */
-body.manage.settings #mgroups, body.manage.settings #mlist, body.manage.settings #mdetail, body.manage.settings .msplit { display: none; }
+/* 单栏页（设置、对外接入、主机与数据源）：不要分组栏、列表栏和详情栏 */
+body.settings #mgroups, body.settings #mlist, body.settings #mdetail, body.settings .msplit { display: none; }
 #msettings { flex: 1; overflow-y: auto; padding: 24px 32px 48px; background: var(--bg); }
 #msettings[hidden] { display: none; }
 .sf { max-width: 760px; margin: 0 auto; }
@@ -597,9 +582,22 @@ body.manage.settings #mgroups, body.manage.settings #mlist, body.manage.settings
                display: flex; justify-content: space-between; gap: 8px; }
 .md-doc .sop .m { color: var(--muted); font-size: 12px; }
 @media (max-width: 1100px) { #mdetail { width: 360px; } #mgroups { width: 190px; } }
-@media (max-width: 820px) { #mnav { width: 56px; padding: 0 6px 10px; } #mnav button { justify-content: center; padding: 9px 0; }
-  #mnav .brand div:last-child, #mnav button .badge, .mnav-note { display: none; } #mnav .brand { padding: 12px 4px; justify-content: center; }
-  #mnav button { font-size: 0; } #mgroups, #mdetail, .msplit { display: none; } }
+/* 窄屏：分组栏收成一行可横向滑动的标签；详情点开后盖住整页，左上角返回 */
+.md-back { display: none; }
+@media (max-width: 820px) {
+  #manage { flex-direction: column; }
+  #mgroups { width: auto !important; display: flex; gap: 6px; overflow-x: auto; padding: 8px 12px; flex-shrink: 0;
+             box-shadow: inset 0 -1px 0 var(--border); }
+  #mgroups .mg-head, #mgroups .tl-servers, #mgroups .empty { display: none; }
+  #mgroups .mg { flex-shrink: 0; padding: 4px 11px; border: 1px solid var(--border); border-radius: 999px; }
+  #mlist { min-width: 0; flex: 1; min-height: 0; }
+  .mtool { flex-wrap: wrap; padding: 10px 12px; }
+  .mtool .ttl { width: 100%; }
+  .msplit, #mdetail { display: none; }
+  body.detail #mdetail { display: block; position: fixed; inset: 0; z-index: 80; width: auto !important; padding: 0 16px 24px; }
+  .md-back { display: flex; align-items: center; gap: 6px; position: sticky; top: 0; background: var(--panel); margin: 0 -16px 12px;
+             width: calc(100% + 32px); padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 14px; font-weight: 600; z-index: 3; color: var(--accent); }
+}
 
 /* 页内提示：替代 alert，不打断操作 */
 #toasts { position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%); z-index: 100;
@@ -610,11 +608,8 @@ body.manage.settings #mgroups, body.manage.settings #mlist, body.manage.settings
 .toast.err { background: #b91c1c; }
 .toast.ok { background: #047857; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-/* 右侧抽屉开着时，toast 改在剩下的可见区域里居中，不压在抽屉左缘上 */
-@media (min-width: 900px) {
-  body:not(.manage):has(#pbPanel:not([hidden])) #toasts,
-  body:not(.manage):has(#tlPanel:not([hidden])) #toasts { left: calc((100% - 520px) / 2); }
-}
+/* toast 在右侧页面区域里居中，不压在导航上 */
+@media (min-width: 821px) { #toasts { left: calc(50% + 108px); } }
 
 /* 首屏引导：知识库空、或还没有生效的 SOP 时显示 */
 .onboard { max-width: 620px; margin: 0 auto 18px; text-align: left; display: grid; gap: 8px;
@@ -659,108 +654,301 @@ body.manage.settings #mgroups, body.manage.settings #mlist, body.manage.settings
 .pb-step .ev.bad { color: var(--danger); }
 .pb-top button.run { color: #047857; }
 
+/* ---------- 工作台 ---------- */
+#pg-home { overflow-y: auto; }
+.home { max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 28px 40px; display: flex; flex-direction: column; gap: 14px; }
+.hero { display: flex; align-items: center; gap: 14px; }
+.hero .logo { width: 44px; height: 44px; font-size: 22px; border-radius: 13px; }
+.hero h2 { margin: 0; font-size: 20px; }
+.hero p { margin: 2px 0 0; color: var(--muted); font-size: 13.5px; }
+.ask-box { display: flex; align-items: flex-end; gap: 8px; background: var(--panel); border: 1px solid var(--border);
+           border-radius: 16px; padding: 8px; box-shadow: var(--shadow); }
+.ask-box:focus-within { border-color: var(--accent); }
+.ask-box textarea { flex: 1; border: 0; outline: none; resize: none; background: transparent; color: var(--text); font: inherit;
+                    padding: 7px 6px; max-height: 120px; }
+.ask-box > button { width: 38px; height: 38px; border-radius: 12px; background: var(--user-bg); color: #fff; font-size: 17px; flex-shrink: 0; }
+.ex { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.ex .k { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 9px 8px 6px;
+         display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ex .k h4 { margin: 0 0 3px; font-size: 12px; font-weight: 600; color: var(--muted); display: flex; align-items: center; gap: 6px; padding: 0 6px; }
+.ex .k h4 i { font-style: normal; font-size: 14px; }
+.ex .k button { text-align: left; font-size: 13px; line-height: 1.45; padding: 5px 6px; border-radius: 8px; color: var(--text); }
+.ex .k button:hover { background: var(--accent-soft); color: var(--accent); }
+.ex .k .none { font-size: 12px; color: var(--muted); padding: 5px 6px; line-height: 1.5; }
+.cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.sc { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 13px 15px; box-shadow: var(--shadow);
+      display: flex; flex-direction: column; gap: 7px; cursor: pointer; transition: border-color .15s, transform .15s; min-width: 0;
+      text-align: left; }
+.sc:hover { border-color: var(--accent); transform: translateY(-1px); }
+.sc .hd { display: flex; align-items: center; gap: 9px; font-weight: 650; font-size: 14px; }
+.sc .ic { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; font-size: 15px; flex-shrink: 0; }
+.ic.kb { background: rgba(16,185,129,.13); } .ic.tl { background: var(--accent-soft); }
+.ic.sop { background: rgba(139,92,246,.13); } .ic.ax { background: rgba(14,165,233,.13); }
+.sc .hd .go { margin-left: auto; font-size: 12px; font-weight: 400; color: var(--muted); }
+.sc .big { font-size: 13px; color: var(--muted); display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.sc .big b { font-size: 22px; color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+.sc .line { font-size: 12.5px; color: var(--muted); line-height: 1.6; }
+.chipset { display: flex; flex-wrap: wrap; gap: 4px; }
+.pill { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; line-height: 18px; padding: 0 8px; border-radius: 999px;
+        background: var(--panel-2); color: var(--muted); white-space: nowrap; border: 1px solid transparent; font-weight: 500; }
+.pill.ok { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
+.pill.off { background: transparent; border-color: var(--border); }
+.pill.warn { background: rgba(245,158,11,.15); color: #b45309; }
+.pill.bad { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+.pill.purple { background: rgba(139,92,246,.13); color: #6d28d9; }
+.pill.acc { background: var(--accent-soft); color: var(--accent); }
+.duo { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 12px; align-items: start; }
+.wb { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 12px 16px 4px; }
+.wb > h3 { margin: 2px 0 8px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+.wb > h3 small { font-weight: 400; color: var(--muted); font-size: 12px; }
+.wb > h3 .nb { margin-left: 0; }
+.td { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 9px 0;
+      border-top: 1px solid var(--border); }
+.td .i { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-size: 16px; background: var(--panel-2); }
+.td .i.tl { background: rgba(245,158,11,.15); } .td .i.sop { background: rgba(139,92,246,.13); }
+.td .i.sc { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.td .t { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.td .t code { font-weight: 400; font-size: 12px; color: var(--muted); margin-left: 4px; }
+.td .s { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.td .s .pill { margin-right: 4px; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 13px; padding: 7px 14px;
+       border-radius: 9px; background: var(--panel-2); color: var(--text); white-space: nowrap; }
+.btn:hover:not(:disabled) { filter: brightness(.96); }
+.btn.pri { background: var(--user-bg); color: #fff; }
+.btn.warn { background: #f59e0b; color: #fff; }
+.btn.purple { background: #7c3aed; color: #fff; }
+.btn.danger { color: var(--danger); }
+.btn.sm { font-size: 12.5px; padding: 5px 11px; }
+.all-done { padding: 16px 0 14px; text-align: center; color: var(--ok); font-size: 13px; border-top: 1px solid var(--border); }
+.rc-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 8px; padding: 9px 0; border-top: 1px solid var(--border);
+           cursor: pointer; }
+.rc-item:hover .t { color: var(--accent); }
+.rc-item .t { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-item .w { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.rc-item .chipset { grid-column: 1 / 3; }
+.setup { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 14px; padding: 12px 16px; font-size: 13px; line-height: 1.6; }
+.setup b { display: block; font-size: 14px; margin-bottom: 2px; }
+@media (max-width: 1200px) { .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ex { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* ---------- 对话：每条回答顶上一行「这次做了什么」 ---------- */
+.runline { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.runline:empty { display: none; }
+.rl { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; line-height: 20px; padding: 1px 10px; border-radius: 999px;
+      border: 1px solid var(--border); background: var(--panel); color: var(--muted); max-width: 100%; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; }
+.rl.sop { border-color: #c4b5fd; color: #6d28d9; background: rgba(139,92,246,.08); font-weight: 600; cursor: pointer; }
+.rl.data { border-color: color-mix(in srgb, var(--accent) 40%, transparent); color: var(--accent); background: var(--accent-soft); }
+.rl.kb { border-color: rgba(16,185,129,.45); color: #047857; background: rgba(16,185,129,.08); }
+.rl.web { border-color: rgba(14,165,233,.45); color: #0284c7; background: rgba(14,165,233,.08); }
+.rl.calc { border-color: #c4b5fd; color: #7c3aed; }
+.welcome .ex { max-width: 760px; margin: 0 auto; text-align: left; }
+.welcome .lead2 { color: var(--muted); font-size: 13px; margin: -12px 0 18px; }
+
+/* ---------- 审批：申请的完整内容、风险提示、口令 ---------- */
+.ap { display: flex; flex-direction: column; gap: 16px; font-size: 13px; }
+.ap-hd .nm { font-size: 16px; font-weight: 650; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ap-hd .nm code { font-size: 12.5px; font-weight: 400; color: var(--muted); }
+.ap-hd .meta { font-size: 12px; color: var(--muted); margin-top: 5px; display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.ap-hd .desc { margin-top: 8px; line-height: 1.6; }
+.kd { font-size: 11px; font-weight: 600; line-height: 18px; padding: 0 8px; border-radius: 6px; background: var(--panel-2); color: var(--muted); white-space: nowrap; }
+.kd.command { background: rgba(71,85,105,.12); color: #475569; } .kd.script { background: rgba(245,158,11,.16); color: #b45309; }
+.kd.sql { background: rgba(14,116,144,.13); color: #0e7490; } .kd.mcp { background: rgba(124,58,237,.13); color: #6d28d9; }
+.kd.http { background: rgba(2,132,199,.13); color: #0369a1; }
+@media (prefers-color-scheme: dark) { .kd.command { color: #cbd5e1; } }
+.ap-sec > h4 { margin: 0 0 7px; font-size: 12px; font-weight: 600; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.ap-sec > h4 small { font-weight: 400; }
+.argv { display: flex; flex-wrap: wrap; gap: 5px; font: 12.5px ui-monospace, Consolas, monospace; background: var(--panel-2);
+        border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+.argv span { padding: 1px 7px; border-radius: 6px; background: var(--panel); border: 1px solid var(--border); }
+.argv span.ph { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); background: var(--accent-soft); }
+.argv span.path { color: #b45309; border-color: #f59e0b; background: rgba(245,158,11,.1); }
+.ap pre.code { margin: 0; font: 12px/1.55 ui-monospace, Consolas, monospace; background: var(--panel-2); border: 1px solid var(--border);
+               border-radius: 10px; padding: 10px 12px; max-height: 240px; overflow: auto; white-space: pre; }
+.ap .note { font-size: 12px; color: var(--muted); line-height: 1.6; margin-top: 6px; }
+.ap .note code { font-size: 11.5px; }
+table.pt { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.pt th, table.pt td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.pt th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+table.pt .rx { display: block; font-size: 11px; color: var(--muted); font-family: ui-monospace, Consolas, monospace; word-break: break-all; }
+.where { display: grid; grid-template-columns: 70px 1fr; gap: 7px 10px; font-size: 12.5px; margin: 0; }
+.where dt { color: var(--muted); } .where dd { margin: 0; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.risks { display: flex; flex-direction: column; gap: 6px; }
+.risk { display: grid; grid-template-columns: 18px 1fr; gap: 6px; padding: 8px 10px; border-radius: 9px; font-size: 12.5px; line-height: 1.55;
+        border: 1px solid var(--border); background: var(--panel-2); }
+.risk b { display: block; font-weight: 600; }
+.risk.high { background: color-mix(in srgb, var(--danger) 7%, transparent); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+.risk.high b { color: var(--danger); }
+.risk.warn { background: rgba(245,158,11,.08); border-color: rgba(245,158,11,.45); }
+.risk.warn b { color: #b45309; }
+.cli { display: flex; align-items: center; gap: 8px; font: 12px ui-monospace, Consolas, monospace; background: var(--panel-2);
+       border-radius: 8px; padding: 7px 10px; color: var(--muted); overflow-x: auto; white-space: nowrap; }
+.ap-bar { position: sticky; bottom: -16px; margin: 0 -16px -16px; padding: 12px 16px 16px; background: var(--panel);
+          border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; z-index: 2; }
+.ap-bar .row { display: flex; gap: 8px; align-items: center; }
+.ap-bar .row .grow { flex: 1; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.attest { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; line-height: 1.5; padding: 8px 10px; border-radius: 9px;
+          border: 1px dashed color-mix(in srgb, var(--danger) 55%, transparent); background: color-mix(in srgb, var(--danger) 5%, transparent);
+          cursor: pointer; }
+.attest input { margin-top: 3px; }
+.nopass { border: 1px solid rgba(245,158,11,.6); background: rgba(245,158,11,.08); border-radius: 10px; padding: 10px 12px;
+          font-size: 12.5px; line-height: 1.65; }
+.nopass b { display: block; margin-bottom: 2px; }
+.nopass code { font-size: 11.5px; background: var(--panel); padding: 1px 5px; border-radius: 5px; word-break: break-all; }
+.ap-done { border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent); background: color-mix(in srgb, var(--ok) 8%, transparent);
+           border-radius: 12px; padding: 14px; font-size: 13px; line-height: 1.75; }
+.ap-done b { color: var(--ok); font-size: 14px; }
+.ap-done code { font-size: 12px; word-break: break-all; }
+.mrow .st.high { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+.mrow .st.warn { background: rgba(245,158,11,.15); color: #b45309; }
+.mrow .s .kd { margin-right: 6px; }
+.mrows .sec { font-size: 11.5px; color: var(--muted); font-weight: 600; padding: 14px 16px 6px; letter-spacing: .04em; }
+.passline { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.passline.bad { color: #b45309; }
+
+/* 审批口令对话框 */
+.dlg-scrim { position: fixed; inset: 0; z-index: 200; background: rgba(15,17,23,.45); display: grid; place-items: center; padding: 16px;
+             animation: fade .15s; }
+.dlg { width: min(520px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; background: var(--panel); color: var(--text);
+       border-radius: 16px; box-shadow: 0 24px 64px rgba(0,0,0,.28); padding: 20px 22px 18px; display: flex; flex-direction: column;
+       gap: 12px; animation: pop .18s ease-out; }
+.dlg h3 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+.dlg .sum { font-size: 12.5px; color: var(--muted); line-height: 1.6; }
+.dlg .sum .argv, .dlg .sum pre { margin-top: 6px; }
+.dlg .sum pre { font: 12px/1.5 ui-monospace, Consolas, monospace; background: var(--panel-2); border-radius: 8px; padding: 8px 10px;
+                white-space: pre-wrap; word-break: break-all; color: var(--text); max-height: 120px; overflow: auto; }
+.dlg label.pw { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600; }
+.dlg input[type=password] { font: inherit; font-size: 15px; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--border);
+                            background: var(--panel-2); color: var(--text); outline: none; }
+.dlg input[type=password]:focus { border-color: var(--accent); background: var(--panel); }
+.dlg .hint { font-size: 12px; color: var(--muted); line-height: 1.6; font-weight: 400; max-width: none; margin: 0; text-align: left; }
+.dlg .plain { font-size: 12px; line-height: 1.6; color: #92400e; background: rgba(245,158,11,.1); border: 1px solid rgba(245,158,11,.4);
+              border-radius: 9px; padding: 8px 10px; }
+@media (prefers-color-scheme: dark) { .dlg .plain { color: #fbbf24; } }
+.dlg .err { font-size: 12.5px; color: var(--danger); }
+.dlg .err:empty { display: none; }
+.dlg .row { display: flex; justify-content: flex-end; gap: 8px; }
+@keyframes pop { from { transform: translateY(8px) scale(.98); opacity: 0; } }
+@keyframes fade { from { opacity: 0; } }
+
+/* 单栏页里的「在宿主机上怎么做」 */
+.sf .howto { font-size: 12px; color: var(--muted); background: var(--panel-2); border-radius: 9px; padding: 9px 12px; margin-top: 12px; line-height: 1.75; }
+.sf .howto b { color: var(--text); }
+.sf .howto code { font-size: 11.5px; background: var(--panel); padding: 1px 5px; border-radius: 5px; }
+.sf .ro { font-size: 11.5px; color: var(--muted); font-weight: 400; margin-left: auto; }
+.sf .off-steps { margin: 6px 0 0; padding-left: 20px; font-size: 13px; line-height: 1.9; }
+.sf .off-steps code { font-size: 12px; background: var(--panel-2); padding: 1px 6px; border-radius: 5px; }
+.sf .ghost { opacity: .55; pointer-events: none; user-select: none; }
+.sf table.ax button.pk { color: var(--accent); white-space: nowrap; }
+
 .scrim { display: none; }
+#menuBtn { display: none; }
 @media (max-width: 820px) {
-  aside { position: fixed; inset: 0 auto 0 0; transform: translateX(-100%); box-shadow: var(--shadow); }
-  body.menu aside { transform: none; }
-  body.menu .scrim { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 10; }
+  #side { position: fixed; inset: 0 auto 0 0; width: 264px; transform: translateX(-100%); }
+  body.menu #side { transform: none; box-shadow: var(--shadow); }
+  body.menu .scrim { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 45; }
   #menuBtn { display: inline-flex; }
+  #top { padding: 6px 10px; gap: 4px; min-height: 52px; flex-wrap: wrap; }
+  .top-title .sub { display: none; }
+  .top-tabs { order: 5; width: 100%; margin: 0 0 2px; overflow-x: auto; }
   #chat { padding: 16px 12px 8px; } .composer { padding: 8px 12px 12px; }
   .bubble-user { max-width: 88%; } .avatar { display: none; }
+  .home { padding: 14px 12px 28px; gap: 12px; }
+  .hero .logo { display: none; } .hero h2 { font-size: 18px; }
+  .duo { display: contents; }
+  .home > .hero { order: 0; } .home > .setup { order: 1; } .home > .ask-box { order: 2; } .home .todo { order: 3; }
+  .home > .cards { order: 4; } .home > .ex { order: 5; } .home .recent { order: 6; }
+  .ex { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: 2px; }
+  .ex .k { min-width: 80%; scroll-snap-align: start; }
+  .cards { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .sc { padding: 11px 12px; gap: 5px; } .sc .big b { font-size: 19px; } .sc .hd .go { display: none; }
+  .sc .line.extra { display: none; }
+  .ap-bar { position: sticky; bottom: -24px; margin: 0 -16px -24px; padding-bottom: 20px; }
+  .dlg-scrim { place-items: end stretch; padding: 0; }
+  .dlg { width: 100%; border-radius: 18px 18px 0 0; padding-bottom: 26px; }
+  #msettings { padding: 16px 12px 40px; }
+  .sf label { grid-template-columns: 1fr; gap: 4px; }
+  .sf dl, .where { grid-template-columns: 76px 1fr; }
+  .sf table.ax { display: block; overflow-x: auto; }
 }
 </style>
 </head>
-<body>
-<aside>
-  <div class="brand" data-home title="回到主页"><div class="logo">📚</div><div><h1 data-brand>doc2sop</h1><small id="summary">加载中…</small></div></div>
-  <div class="drop" id="drop"><b>＋ 上传文档</b>点击或拖拽文件到这里<br>PDF · Word · PPT · TXT · MD · 图片</div>
-  <input type="file" id="files" multiple hidden accept=".md,.markdown,.txt,.pdf,.docx,.pptx,.png,.jpg,.jpeg,.webp,.bmp,.gif">
-  <div class="search"><input id="newCat" list="catList" placeholder="分类（留空则自动识别）" maxlength="12"></div>
-  <datalist id="catList"></datalist>
-  <div class="queue" id="queue"></div>
-  <div class="docs-head"><span>文档</span><span id="docCount"></span></div>
-  <div class="search"><input id="filter" placeholder="按文件名或分类筛选…"></div>
-  <div class="docs" id="docs"></div>
-  <div class="foot">单个 ≤ 50MB · 同名覆盖 · 图片自动识别<br>鼠标移到文档上可改分类、下载或删除</div>
-</aside>
+<body data-page="home">
+<nav id="side">
+  <div class="brand" data-go="home" title="回到工作台"><div class="logo">📚</div><div><h1 data-brand>doc2sop</h1><small>文档 · SOP · 工具</small></div></div>
+  <div class="nav">
+    <a href="/" data-page="home">
+      <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="9" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="5" rx="1.6"/><rect x="13.5" y="11" width="7.5" height="10" rx="1.6"/><rect x="3" y="15" width="7.5" height="6" rx="1.6"/></svg>
+      工作台<span class="nb" id="nbHome"></span></a>
+    <a href="/chat" data-page="chat">
+      <svg viewBox="0 0 24 24"><path d="M21 12a8.5 8.5 0 0 1-12.4 7.6L3.5 21l1.4-4.8A8.5 8.5 0 1 1 21 12z"/><path d="M8.5 10.5h7M8.5 14h4.5"/></svg>
+      对话</a>
+    <a href="/tools" data-page="tools" title="工具：模型能查询的真实数据，全部只读；新工具在这里审批">
+      <svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/></svg>
+      工具<span class="nb" id="nbTools"></span></a>
+    <a href="/sop" data-page="sop" title="SOP（标准作业流程）：从文档整理出的操作步骤，按顺序调用已有工具">
+      <svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3h6v1M9 10h6M9 14h6M9 18h3"/></svg>
+      SOP<span class="nb" id="nbSop"></span></a>
+    <a href="/docs" data-page="docs" title="知识库里的文档">
+      <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>
+      文档<span class="nb" id="nbDocs"></span></a>
+    <a href="/access" data-page="access" title="外部智能体（Claude Code、Copilot、Cursor…）经 MCP 接入">
+      <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+      对外接入<span class="nb" id="nbAccess"></span></a>
+    <a href="/settings" data-page="settings" style="margin-top:auto">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      设置</a>
+  </div>
+  <div class="side-foot" id="sideFoot">加载中…</div>
+</nav>
 <div class="scrim" id="scrim"></div>
-<div class="msplit" id="asideSplit" data-split="aside" title="拖动调整宽度，双击恢复"></div>
-<!-- 抽屉放在 body 层级：header 的 backdrop-filter 会把 fixed 元素剪在自己里面 -->
+<input type="file" id="files" multiple hidden accept=".md,.markdown,.txt,.pdf,.docx,.pptx,.png,.jpg,.jpeg,.webp,.bmp,.gif">
+<datalist id="catList"></datalist>
 <div class="pb-panel tl-wrap" id="tlPanel" hidden></div>
 <div class="pb-panel pb-wrap" id="pbPanel" hidden></div>
 <div id="toasts"></div>
 
 <main>
-  <header>
-    <button class="nav-btn icon-only" id="menuBtn" title="文档" aria-label="文档">
+  <header id="top">
+    <button class="nav-btn icon-only" id="menuBtn" title="菜单" aria-label="菜单">
       <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-    <div class="head-title">
-      <span class="t" data-brand>doc2sop</span>
-      <select class="model-chip" id="modelPick" title="选择回答用的模型" hidden></select>
+    <div class="top-title"><span class="t" id="topTitle">工作台</span><span class="sub" id="topSub"></span></div>
+    <div class="top-tabs" id="topTabs"></div>
+    <div class="top-acts">
+      <select class="model-chip" id="modelPick" data-for="chat" title="选择回答用的模型" hidden></select>
+      <button class="new-btn" id="newBtn" data-for="chat" title="开始新对话">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="lbl">新对话</span></button>
+      <div class="hist-wrap" data-for="chat">
+        <button class="nav-btn" id="histBtn" title="历史对话">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          <span class="lbl">历史</span></button>
+        <div class="hist" id="histPanel" hidden></div>
+      </div>
     </div>
-    <button class="new-btn" id="newBtn" title="开始新对话">
-      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="lbl">新对话</span></button>
-    <span class="nav-sep"></span>
-    <div class="tl-wrap">
-      <button class="nav-btn" id="tlBtn" title="工具：Agent 能查询的真实数据，全部只读">
-        <svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/></svg>
-        <span class="lbl">工具</span><span class="badge" id="tlBadge"></span></button>
-    </div>
-    <div class="pb-wrap">
-      <button class="nav-btn" id="pbBtn" title="SOP（标准作业流程）：从文档整理出的操作步骤，按顺序调用已有工具">
-        <svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3h6v1M9 10h6M9 14h6M9 18h3"/></svg>
-        <span class="lbl">SOP</span><span class="badge" id="pbBadge"></span></button>
-    </div>
-    <div class="hist-wrap">
-      <button class="nav-btn" id="histBtn" title="历史对话">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
-        <span class="lbl">历史</span></button>
-      <div class="hist" id="histPanel" hidden></div>
-    </div>
-    <a class="nav-btn" id="manageBtn" href="/manage" title="管理页：工具、SOP、文档">
-      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
-      <span class="lbl">管理</span></a>
-    <a class="nav-btn" id="backBtn" href="/" title="返回对话" hidden>
-      <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg><span class="lbl">返回对话</span></a>
   </header>
-  <div id="manage" hidden>
-    <nav id="mnav">
-      <div class="brand" data-home title="回到对话主页"><div class="logo">📚</div><div><h1 data-brand>doc2sop</h1><small>管理后台</small></div></div>
-      <button data-tab="tools">
-        <svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/></svg>
-        工具<span class="badge" id="mTlBadge"></span></button>
-      <button data-tab="sop">
-        <svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3h6v1M9 10h6M9 14h6M9 18h3"/></svg>
-        SOP<span class="badge" id="mPbBadge"></span></button>
-      <button data-tab="docs">
-        <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>
-        文档<span class="badge" id="mDocBadge"></span></button>
-      <button data-tab="settings">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>
-        模型设置</button>
-      <button data-tab="access" id="mAccessBtn" hidden title="外部智能体（Claude Code、Copilot、Cursor…）经 MCP 接入">
-        <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
-        对外接入</button>
-      <div class="mnav-note">文档写了怎么做 → SOP 定好顺序 → 工具去执行。<br>工具只能在宿主机批准；SOP 只能引用已有工具。</div>
-    </nav>
-    <div id="mgroups"></div>
-    <div class="msplit" data-split="mgroups" title="拖动调整宽度，双击恢复"></div>
-    <div id="mlist"><div class="mtool" id="mtool"></div><div class="mrows" id="mrows"></div></div>
-    <div class="msplit" data-split="mdetail" title="拖动调整宽度，双击恢复"></div>
-    <div id="mdetail"></div>
-    <div id="msettings" hidden></div>
-  </div>
-  <div id="chat"><div class="wrap" id="thread"></div></div>
-  <div class="composer">
-    <div class="box">
-      <button id="webBtn" class="web-toggle" title="知识库答不了时，自动上网搜索公开资料" hidden>
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
-        <span class="lbl">联网</span><span class="state">关</span></button>
-      <textarea id="question" rows="1" placeholder="问点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
-      <button id="askBtn" title="发送">➤</button>
+  <section class="page" id="pg-home"><div class="home" id="home"></div></section>
+  <section class="page" id="pg-chat">
+    <div id="chat"><div class="wrap" id="thread"></div></div>
+    <div class="composer">
+      <div class="box">
+        <button id="webBtn" class="web-toggle" title="知识库答不了时，自动上网搜索公开资料" hidden>
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+          <span class="lbl">联网</span><span class="state">关</span></button>
+        <textarea id="question" rows="1" placeholder="问点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+        <button id="askBtn" title="发送">➤</button>
+      </div>
+      <div class="hint">支持多轮追问 · 点击 <span class="cite">1</span> 查看知识库出处，<span class="cite">W1</span> 为网络来源</div>
     </div>
-    <div class="hint">支持多轮追问 · 点击 <span class="cite">1</span> 查看知识库出处，<span class="cite">W1</span> 为网络来源</div>
-  </div>
+  </section>
+  <section class="page" id="pg-manage">
+    <div id="manage">
+      <div id="mgroups"></div>
+      <div class="msplit" data-split="mgroups" title="拖动调整宽度，双击恢复"></div>
+      <div id="mlist"><div class="queue" id="queue"></div><div class="mtool" id="mtool"></div><div class="mrows" id="mrows"></div></div>
+      <div class="msplit" data-split="mdetail" title="拖动调整宽度，双击恢复"></div>
+      <div id="mdetail"></div>
+      <div id="msettings" hidden></div>
+    </div>
+  </section>
 </main>
 
 <script>
@@ -770,11 +958,17 @@ const TYPE = {pdf:['PDF','#e5484d'], docx:['DOC','#3b82f6'], pptx:['PPT','#f9731
   md:['MD','#0ea5e9'], markdown:['MD','#0ea5e9'], png:['IMG','#10b981'], jpg:['IMG','#10b981'], jpeg:['IMG','#10b981'],
   webp:['IMG','#10b981'], bmp:['IMG','#10b981'], gif:['IMG','#10b981']};
 let allDocs = [], seq = 0;
-// 管理页模式：同一份页面，路径 /manage 时切成全屏的 工具 / SOP / 文档 后台布局
-const MANAGE = location.pathname.replace(/\/+$/, '') === '/manage';
-if (MANAGE) document.body.classList.add('manage');
-let mTab = 'tools', mGroup = null, mItem = null, mSearch = '', mReady = false;
+/* 左侧导航的每一项是一页，对应一个路径（/、/chat、/tools…）：同一份 HTML 按路径切换，刷新、书签都回到原处。
+   工具、SOP、文档是「分组 → 列表 → 详情」三栏；设置、对外接入、主机与数据源是单栏。 */
+const PAGES = {home: ['/', '工作台'], chat: ['/chat', '对话'], tools: ['/tools', '工具'], sop: ['/sop', 'SOP'],
+               docs: ['/docs', '文档'], access: ['/access', '对外接入'], settings: ['/settings', '设置']};
+let page = 'home';
+let mTab = 'tools', mGroup = null, mItem = null, mSearch = '';
+// 工具页的页签：全部工具 / 待审批 / 主机与数据源；SOP 页：全部 SOP / 待确认提议
+let tlTab = 'all', pbTab = 'all', pbOrigins = null;
 const mCache = {};  // 列表里出现过的条目：id -> 数据，点开详情直接用
+// 工作台的汇总（/api/overview）：导航徽标、示例问题、工具的中文名都从这里取
+let overview = null;
 // 首屏引导要用的三个数字：文档数、可用工具数、生效 SOP 数
 let onboard = {docs: 0, tools: 0, sops: 0, configured: true, loaded: false, examples: [], packs: null};
 let packPoll = null;
@@ -847,39 +1041,6 @@ function md(src) {
 }
 
 /* ---------- Documents ---------- */
-function renderDocs() {
-  const f = $('filter').value.trim().toLowerCase();
-  const list = allDocs.filter(d => d.source.toLowerCase().includes(f)
-                                || (d.category || '').toLowerCase().includes(f));
-  if (!list.length) {
-    $('docs').innerHTML = `<div class="empty">${allDocs.length ? '没有匹配的文档' : '还没有文档，先上传一些吧'}</div>`;
-    return;
-  }
-  const groups = new Map();
-  for (const d of list) {
-    const key = d.category || '未分类';
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(d);
-  }
-  const row = d => {
-    const ext = d.source.split('.').pop().toLowerCase(); const [label, color] = TYPE[ext] || ['FILE', '#64748b'];
-    return `<div class="doc"><div class="title" title="${esc(d.source)}">${esc(d.source)}</div><div class="sub">${d.chunks} 个片段</div>
-      <span class="ico" style="background:${color}">${label}</span>
-      <div class="acts"><button class="tag" data-cat="${esc(d.source)}" data-now="${esc(d.category || '未分类')}" title="修改分类">分类</button>
-        <button class="download" data-name="${esc(d.source)}" title="下载原文件">下载</button>
-        <button class="del" data-name="${esc(d.source)}" title="删除">✕</button></div></div>`;
-  };
-  // 和管理页同一套分组：默认折叠、展开状态记住；有筛选词时命中的组全部展开
-  $('docs').innerHTML = [...groups.entries()].sort((a, b) => b[1].length - a[1].length).map(([cat, docs]) => {
-    const key = 'doc:' + cat, open = f || opened.has(key);
-    const shown = docs.slice(0, PAGE).map(row).join('')
-      + (docs.length > PAGE ? `<button class="more" data-docmore2="${esc(cat)}" data-from="${PAGE}">加载更多（还有 ${docs.length - PAGE} 条）</button>` : '');
-    return `<details class="grp" data-panel="doc" data-grp="${esc(key)}" data-name="${esc(cat)}" ${open ? 'open' : ''}>
-      <summary><span class="chev">▶</span><span class="gl">${esc(cat)}</span><span class="gc">${docs.length}</span></summary>
-      <div class="body" data-loaded="1">${shown}</div></details>`;
-  }).join('');
-  $('docs')._groups = groups;
-}
 async function loadDocs() {
   const d = await (await fetch('/api/documents')).json();
   allDocs = d.documents;
@@ -891,40 +1052,21 @@ async function loadDocs() {
   if (d.bot_name && d.bot_name !== botName) botName = d.bot_name;
   applyBrand();
   if ($('thread').querySelector('.welcome') && (before !== JSON.stringify(onboard) || d.bot_name !== botName)) welcome();
-  // 演示场景包还在后台导：隔几秒刷一次，导完引导卡自己变样、示例问题换成包里的
+  // 演示场景包还在后台导：隔几秒刷一次，导完工作台的引导自己变样、示例问题换成包里的
   clearTimeout(packPoll);
   if (onboard.configured && (onboard.packs.importing || onboard.packs.pending.length)) packPoll = setTimeout(loadDocs, 3000);
   $('catList').innerHTML = (d.categories || []).map(c => `<option value="${esc(c)}">`).join('');
-  const tools = d.tools || [];
   loadModels(d.chat_model);
   refreshBadges();
   $('webBtn').hidden = !d.web_search;
   sopGrowth = !!d.sop_growth;
   paintWeb();
-  if (d.web_search && !MANAGE) webNotice();
-  const chunks = allDocs.reduce((a, x) => a + x.chunks, 0);
-  $('summary').textContent = `${allDocs.length} 个文档 · ${chunks} 个片段`;
-  $('docCount').textContent = allDocs.length;
-  $('mDocBadge').textContent = allDocs.length || '';
-  if (MANAGE && mTab === 'docs' && mReady) renderManage();
-  renderDocs();
+  if (d.web_search && page === 'chat') webNotice();
+  if (page === 'docs') renderManage();
+  if (page === 'home') renderHome();
 }
-$('filter').oninput = renderDocs;
-/* 文档的 改分类 / 下载 / 删除：侧栏列表和管理页详情共用同一个处理器 */
+/* 文档的 改分类 / 下载 / 删除：文档页详情里的按钮 */
 async function docActions(e) {
-  const more = e.target.closest('[data-docmore2]');
-  if (more) {
-    const docs = $('docs')._groups?.get(more.dataset.docmore2) || [], from = +more.dataset.from;
-    const ext = d => { const x = d.source.split('.').pop().toLowerCase(); return TYPE[x] || ['FILE', '#64748b']; };
-    more.insertAdjacentHTML('beforebegin', docs.slice(from, from + PAGE).map(d =>
-      `<div class="doc"><div class="title" title="${esc(d.source)}">${esc(d.source)}</div><div class="sub">${d.chunks} 个片段</div>
-       <span class="ico" style="background:${ext(d)[1]}">${ext(d)[0]}</span>
-       <div class="acts"><button class="tag" data-cat="${esc(d.source)}" data-now="${esc(d.category || '未分类')}">分类</button>
-         <button class="download" data-name="${esc(d.source)}">下载</button><button class="del" data-name="${esc(d.source)}">✕</button></div></div>`).join(''));
-    const left = docs.length - from - PAGE;
-    more.outerHTML = left > 0 ? `<button class="more" data-docmore2="${esc(more.dataset.docmore2)}" data-from="${from + PAGE}">加载更多（还有 ${left} 条）</button>` : '';
-    return;
-  }
   const tag = e.target.closest('.tag');
   if (tag) {
     const next = prompt(`「${tag.dataset.cat}」的分类：`, tag.dataset.now);
@@ -970,15 +1112,15 @@ async function docActions(e) {
   const name = e.target.closest('.del')?.dataset.name;
   if (!name || !confirm(`确定删除「${name}」？`)) return;
   await fetch('/api/documents/' + encodeURIComponent(name), {method: 'DELETE'});
-  if (MANAGE && mItem === name) mItem = null;
+  if (mItem === name) mItem = null;
   loadDocs();
 }
-$('docs').onclick = docActions;
 
 /* ---------- Upload ---------- */
 let uploading = Promise.resolve();
 function enqueue(files) {
-  const category = $('newCat').value.trim();
+  if (!files.length) return;
+  const category = ($('newCat')?.value || '').trim();
   for (const f of files) {
     const job = document.createElement('div'); job.className = 'job';
     if (category) job.dataset.category = category;
@@ -986,6 +1128,8 @@ function enqueue(files) {
     $('queue').appendChild(job);
     upload(f, job);  // 服务端后台排队，这里不用串行等待
   }
+  // 进度条在「文档」页的列表上方；在别的页拖进来的，提示一句去哪看
+  if (page !== 'docs') toast(`开始上传 ${files.length} 个文件，进度在「文档」页`, 'ok', 5000);
 }
 async function upload(f, job) {
   const state = job.lastElementChild;
@@ -1034,14 +1178,10 @@ async function upload(f, job) {
 $('queue').addEventListener('click', e => {
   if (e.target.closest('.close')) e.target.closest('.job').remove();
 });
-const drop = $('drop');
-drop.onclick = () => $('files').click();
 $('files').onchange = () => { enqueue([...$('files').files]); $('files').value = ''; };
-['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
-['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
-drop.addEventListener('drop', e => enqueue([...e.dataTransfer.files]));
+// 文件拖到页面任何地方都上传（和原来拖到侧栏一样）
 document.addEventListener('dragover', e => e.preventDefault());
-document.addEventListener('drop', e => { e.preventDefault(); if (e.target.closest('#drop')) return; enqueue([...e.dataTransfer.files]); });
+document.addEventListener('drop', e => { e.preventDefault(); enqueue([...(e.dataTransfer?.files || [])]); });
 
 /* ---------- Chat ---------- */
 // 没导入过场景包时的兜底示例；导入过就换成包里 pack.yaml 写的 examples
@@ -1049,14 +1189,10 @@ const DEFAULT_EXAMPLES = ['总结一下知识库里有哪些主要内容', '按�
                           'biz 命名空间的 order.biz.example.com 通过 Ingress 访问超时，帮我查一下',
                           '我 9 月 29 日提交了住院理赔材料，大概什么时候能到账？'];
 let convId = null, botName = 'doc2sop';
-// 品牌跟着服务端的 BOT_NAME 走：标签页标题、侧栏与管理页的名字、对话页顶栏。
-// 管理页顶栏由 renderManage 写成「工具管理」这类页名，这里不碰。
+// 品牌跟着服务端的 BOT_NAME 走：标签页标题、导航上的名字、问候语
 function applyBrand() {
-  document.title = MANAGE ? `${botName} · 管理` : botName;
-  document.querySelectorAll('[data-brand]').forEach(el => {
-    if (MANAGE && el.matches('.head-title .t')) return;
-    el.textContent = botName;
-  });
+  document.title = (page === 'home' ? '' : PAGES[page][1] + ' · ') + botName;
+  document.querySelectorAll('[data-brand]').forEach(el => { el.textContent = botName; });
 }
 // 「您好，我是doc2sop」中西文挤在一起不好看；名字以西文开头时补一个空格
 const brandGreeting = () => `您好，我是${/^[\x21-\x7e]/.test(botName) ? ' ' : ''}${esc(botName)}`;
@@ -1073,31 +1209,25 @@ function packNote(pk) {
   if (failed.length) return `<div class="packnote bad">⚠ 演示场景包导入失败：${failed.map(p => esc(p) + (pk.failed[p] ? `（${esc(pk.failed[p])}）` : '')).join('；')}。修好后可用 <code>POST /api/packs/&lt;id&gt;/import</code> 重试。</div>`;
   return '';
 }
+/* 示例问题按用途分四类：查知识、查数据、按 SOP 排查、计算。演示站的来自场景包；没有场景包时用兜底的几句 */
+const EX_KINDS = [['knowledge', '📚', '查知识'], ['data', '🔧', '查数据'], ['sop', '📋', '按 SOP 排查'], ['compute', '🧮', '计算']];
+function examplesHtml(limit) {
+  const list = (overview?.examples || []).length ? overview.examples
+    : (onboard.examples.length ? onboard.examples : DEFAULT_EXAMPLES).map(text => ({text, kind: 'data'}));
+  const none = {knowledge: '先在「文档」页上传文档', data: '还没有可用的工具', sop: '还没有生效的 SOP',
+                compute: overview?.tools?.sources?.sandbox ? '暂无示例' : '没有开计算沙箱（python_exec）'};
+  return `<div class="ex">${EX_KINDS.map(([kind, icon, label]) => {
+    const items = list.filter(x => x.kind === kind).slice(0, limit);
+    return `<div class="k"><h4><i>${icon}</i>${label}</h4>${items.length
+      ? items.map(x => `<button data-q="${esc(x.text)}">${esc(x.text)}</button>`).join('')
+      : `<div class="none">${none[kind]}</div>`}</div>`;
+  }).join('')}</div>`;
+}
 function welcome() {
-  const o = onboard;
-  const examples = o.examples && o.examples.length ? o.examples : DEFAULT_EXAMPLES;
-  const askHint = o.examples && o.examples.length ? o.examples.slice(0, 2).map(q => `「${esc(q)}」`).join('')
-                                                 : '「按运维指南巡检一下网关」「理赔材料什么时候到账」';
-  // 数据没回来前不画引导卡，否则会先按「0 文档 0 工具」画一版再闪成另一版
-  const guide = !o.loaded ? '' : !o.configured ? `<div class="onboard" style="grid-template-columns:1fr">
-    <div class="st"><div class="k"><i>!</i>先配置模型</div>
-      <p>还没有填对话模型和向量模型的地址与 key。可以用一个网关（LiteLLM / OneAPI），也可以直接填厂商的 OpenAI 兼容地址——不需要网关。${o.packs && o.packs.pending.length ? '配好后会自动导入演示场景包，几十秒后就能提问。' : ''}</p>
-      <a href="/manage#settings"><button>去「管理 → 模型设置」</button></a></div></div>`
-  : `${packNote(o.packs)}<div class="onboard">
-    <div class="st ${o.docs ? 'done' : ''}"><div class="k"><i>${o.docs ? '✓' : '1'}</i>上传文档</div>
-      <p>${o.docs ? `已有 ${o.docs} 个文档，继续往左侧拖就行。` : '把制度、手册、巡检规范拖到左侧。没有现成的？仓库 <code>sample_kb/</code> 里有三篇示例。'}</p>
-      ${o.docs ? '' : '<button data-go="upload">选择文件</button>'}</div>
-    <div class="st ${o.sops ? 'done' : ''}"><div class="k"><i>${o.sops ? '✓' : '2'}</i>抽取 SOP</div>
-      <p>${o.sops ? `已有 ${o.sops} 个 SOP 生效，${o.tools} 个工具可用。` : o.tools
-          ? '顶栏「📋 SOP → 从文档抽取」，让它把文档里按步骤查看、核对的做法整理成流程，确认后启用。'
-          : '当前没有可用工具，SOP 无法生效；先在宿主机配置 OPS_URL 和工具定义。'}</p>
-      ${(o.docs && !o.sops && o.tools) ? '<button data-go="sop">去抽取</button>' : ''}</div>
-    <div class="st"><div class="k"><i>3</i>问一句</div>
-      <p>${askHint}——它会按 SOP 调工具、对照文档给结论。只问规则时不调工具。</p></div>
-  </div>`;
   $('thread').innerHTML = `<div class="welcome"><div class="logo">📚</div><h2>${brandGreeting()}</h2>
-    <p>📄 读您上传的文档 · 📋 照文档里的做法 · 🔧 用批准过的工具查真实数据</p>${guide}
-    <div class="chips">${examples.map(q => `<button class="chip">${esc(q)}</button>`).join('')}</div></div>`;
+    <p>📄 读您上传的文档 · 📋 照 SOP 一步步排查 · 🔧 用批准过的工具查真实数据</p>
+    <div class="lead2">回答顶上会标出这次用了哪些工具、按哪个 SOP、引用了几段文档</div>
+    ${examplesHtml(2)}</div>`;
 }
 /* PDF 抽出的文本常常一词一行，直接显示像被撕碎。只在「短行占多数」时合并单换行，
    空行分段、列表、表格、代码缩进保留；只影响显示，不动入库内容。 */
@@ -1172,8 +1302,10 @@ function stepHtml(t, running) {
     : Object.entries(args).map(([k, v]) => `${k}=${v}`).join(' ');
   const kv = isCalc ? '' : Object.entries(args).map(([k, v]) => `<b>${esc(k)}</b> = ${esc(JSON.stringify(v))}`).join('<br>');
   const n = running ? '执行中…' : (t.lines != null ? `${t.lines} 行` : '');
-  return `<details class="step ${running ? 'running' : ''} ${isWeb ? 'web' : ''} ${isKb ? 'kb' : ''} ${isCalc ? 'compute' : ''}" data-cat="${esc(cat)}"><summary><span class="ico">${isWeb ? '🌐' : isKb ? '📚' : isCalc ? '🧮' : '🔧'}</span>
-     <span class="cmd">${isWeb ? esc(WEB_STEP[t.tool] || t.tool) : isKb ? esc(KB_STEP[t.tool] || t.tool) : isCalc ? 'Python 计算' : esc(t.tool)}</span>
+  // 数据类工具显示中文名（工具页里的「显示名」），英文工具名放在悬停提示里
+  const name = isWeb ? WEB_STEP[t.tool] || t.tool : isKb ? KB_STEP[t.tool] || t.tool : isCalc ? 'Python 计算' : toolLabel(t.tool);
+  return `<details class="step ${running ? 'running' : ''} ${isWeb ? 'web' : ''} ${isKb ? 'kb' : ''} ${isCalc ? 'compute' : ''}" data-cat="${esc(cat)}" data-label="${esc(name)}"><summary><span class="ico">${isWeb ? '🌐' : isKb ? '📚' : isCalc ? '🧮' : '🔧'}</span>
+     <span class="cmd" title="${esc(t.tool)}">${esc(name)}</span>
      <span class="arg">${esc(brief)}</span>
      <span class="n">${n}</span></summary>
    <div class="out">${isCalc ? codeHtml(code) : kv ? `<div class="kv">参数<br>${kv}</div>` : ''}<pre class="ret">${esc(t.preview || '')}</pre>${
@@ -1198,8 +1330,39 @@ function addBot(inner) {
   const id = ++seq;
   $('thread').insertAdjacentHTML('beforeend',
     `<div class="msg"><div class="avatar">📚</div><div class="bot" id="bot${id}">
-       <div class="steps"></div><div class="card">${inner}</div><div class="sources"></div></div></div>`);
+       <div class="runline"></div><div class="steps"></div><div class="card">${inner}</div><div class="sources"></div></div></div>`);
   return $('bot' + id);
+}
+const toolLabel = name => (overview?.tool_labels || {})[name] || name;
+// 回答里按哪个 SOP 执行：取一次 SOP 的步骤（缓存），算出本轮做到了第几步
+const sopSteps = {};
+function sopProgress(bot, data) {
+  const id = bot.dataset.playbookId; if (!id) return '';
+  if (!(id in sopSteps)) {
+    sopSteps[id] = null;
+    pbGet(id).then(p => { sopSteps[id] = p ? p.steps.map(s => s.tool) : []; document.querySelectorAll(`.bot[data-playbook-id="${CSS.escape(id)}"]`).forEach(paintRun); });
+    return '';
+  }
+  const steps = sopSteps[id]; if (!steps || !steps.length) return '';
+  const used = new Set(data.map(s => s.querySelector('.cmd')?.title));
+  return ` · ${steps.filter(t => used.has(t)).length}/${steps.length} 步`;
+}
+/* 回答顶上一行「这次做了什么」：按哪个 SOP 执行、查了哪些数据、引用了几段文档、联网和计算各几次。
+   边答边更新（每来一个工具调用就重画），回放时按存下来的调用和来源画。 */
+function paintRun(bot) {
+  const steps = [...bot.querySelectorAll('.steps .step')];
+  const of = cat => steps.filter(s => s.dataset.cat === cat);
+  const data = of('data'), labels = [...new Set(data.map(s => s.dataset.label))];
+  const cited = new Set([...(bot.dataset.raw || '').matchAll(/\[(W?\d{1,2})\]/g)].map(m => m[1]));
+  const kb = [...bot.querySelectorAll('.sources .src:not(.web)')].filter(s => cited.has(s.dataset.n)).length;
+  const web = of('web').length, calc = of('compute').length;
+  const parts = [];
+  if (bot.dataset.playbook) parts.push(`<span class="rl sop" data-sop="${esc(bot.dataset.playbookId || '')}" title="在 SOP 页查看这个 SOP">📋 按 SOP《${esc(bot.dataset.playbook)}》执行${sopProgress(bot, data)}</span>`);
+  if (data.length) parts.push(`<span class="rl data" title="${esc(labels.join('、'))}">🔧 查了 ${data.length} 次数据：${esc(labels.slice(0, 3).join(' · '))}${labels.length > 3 ? ' …' : ''}</span>`);
+  if (kb) parts.push(`<span class="rl kb">📚 引用 ${kb} 段文档</span>`);
+  if (web) parts.push(`<span class="rl web">🌐 联网 ${web} 次</span>`);
+  if (calc) parts.push(`<span class="rl calc">🧮 计算 ${calc} 次</span>`);
+  bot.querySelector('.runline').innerHTML = parts.join('');
 }
 /* 检索在模型判断之前就完成了，候选片段不等于答案依据。
    回答结束后按正文里实际引用的编号整理：被引用的正常展示，其余收进一个折叠项。 */
@@ -1291,7 +1454,7 @@ function proposalHtml(p) {
     ? `这次用 ${s.tools || '?'} 个工具得出结论，和 SOP《${esc(p.target?.name || '')}》很像——把多出来的 ${p.steps.length} 步补充进去？`
     : `这次用 ${s.tools || '?'} 个工具、${p.steps.length} 步得出结论，沉淀为 SOP《${esc(p.name)}》？`;
   const kv = a => Object.entries(a || {}).map(([k, v]) => `${esc(k)}=${esc(v === '' ? '（使用时填）' : v)}`).join(' ');
-  const steps = p.steps.map(st => `<li><b>${esc(st.tool)}</b><span class="a">${kv(st.args)}</span>
+  const steps = p.steps.map(st => `<li><b title="${esc(st.tool)}">${esc(toolLabel(st.tool))}</b><span class="a">${kv(st.args)}</span>
       <div class="cp">${esc(st.checkpoint || '')}</div>${st.evidence ? `<div class="ev ${st.evidence.startsWith('⚠') ? 'bad' : ''}">依据：${esc(st.evidence)}</div>` : ''}</li>`).join('');
   const ev = (p.evidence || []).map(e => `<details class="step ${e.ok ? '' : 'running'}"><summary><span class="ico">🔧</span>
       <span class="cmd">第 ${e.n} 次 ${esc(e.tool)}</span><span class="arg">${kv(e.args)}</span></summary>
@@ -1359,7 +1522,7 @@ async function decideProposal(el, approve) {
   }
   hideNudge();
   refreshBadges();
-  if (!$('pbPanel').hidden || MANAGE) loadPlaybooks();
+  if (page === 'sop') renderManage();
 }
 document.addEventListener('click', e => {
   const ap = e.target.closest('[data-papprove]'), rj = e.target.closest('[data-preject]');
@@ -1371,14 +1534,9 @@ async function pendingHtml() {
 }
 
 $('thread').addEventListener('click', e => {
-  const go = e.target.closest('[data-go]');
-  if (go) {
-    if (go.dataset.go === 'upload') $('files').click();
-    if (go.dataset.go === 'sop') setTimeout(() => {  // 等外层「点击空白处收起面板」的处理跑完再打开
-      $('pbPanel').hidden = false; pbEditing = null; pbDocFilter = ''; pbPicking = true; loadPlaybooks(); }, 0);
-    return;
-  }
-  const chip = e.target.closest('.chip'); if (chip) { $('question').value = chip.textContent; ask(); return; }
+  const q = e.target.closest('[data-q]'); if (q) { $('question').value = q.dataset.q; ask(); return; }
+  const sop = e.target.closest('.rl.sop');
+  if (sop) { pbTab = 'all'; mItem = sop.dataset.sop || null; mGroup = null; go('sop'); return; }
   const cite = e.target.closest('.cite');
   if (cite) {
     const src = cite.closest('.bot')?.querySelector(`.src[data-n="${cite.dataset.n}"]`); if (!src) return;
@@ -1420,6 +1578,7 @@ async function openConv(id) {
     const bot = addBot(`<div class="answer">${md(m.content)}</div>`);
     if (m.model) bot.dataset.model = m.model;
     if (m.execution_id) bot.dataset.exec = m.execution_id;
+    if (m.playbook) { bot.dataset.playbook = m.playbook.name || m.playbook.id; bot.dataset.playbookId = m.playbook.id; }
     bot.querySelector('.steps').innerHTML = (m.tools || []).map(t => stepHtml(t, false)).join('');
     // 待办清单不单独落库：取这条回答里最后一次 plan 调用的参数（整张清单）
     const plans = (m.tools || []).filter(t => stepCategory(t) === 'internal' && t.args && Array.isArray(t.args.items));
@@ -1427,18 +1586,15 @@ async function openConv(id) {
     bot.querySelector('.sources').innerHTML = sourcesHtml(m.sources);
     arrangeSources(bot, m.content, true);
     addTools(bot, m.content, lastQuestion, m.sources);
+    paintRun(bot);
     if (m.proposal) showProposal(bot, m.proposal);
   }
   if (!d.messages.length) welcome();
   toBottom();
 }
 function newConv() { convId = null; hideNudge(); welcome(); $('question').focus(); }
-// 品牌区当主页按钮：对话页回到首屏，管理页跳回对话页
-document.querySelectorAll('.brand[data-home]').forEach(b => b.addEventListener('click', () => {
-  if (MANAGE) { location.href = '/'; return; }
-  newConv(); $('tlPanel').hidden = true; $('pbPanel').hidden = true; $('histPanel').hidden = true;
-  document.querySelector('main')?.scrollTo?.(0, 0);
-}));
+// 品牌区当主页按钮：回到工作台
+document.querySelector('#side .brand').addEventListener('click', () => go('home'));
 $('histPanel').addEventListener('click', async e => {
   const del = e.target.closest('[data-del]');
   if (del) {
@@ -1579,7 +1735,7 @@ function pbCard(p) {
     const args = Object.entries(s.args || {}).filter(([, v]) => v).map(([k, v]) => `${k}=${v}`).join(' ');
     const ev = s.evidence ? `<span class="ev ${s.evidence.startsWith('⚠') ? 'bad' : ''}" title="文档原句">“${esc(s.evidence)}”</span>` : '';
     return `<div class="pb-step"><span class="i">${i + 1}</span>
-      <span class="tl">${esc(s.tool)}</span>
+      <span class="tl" title="${esc(s.tool)}">${esc(toolLabel(s.tool))}</span>
       <span class="ck">${esc(args ? args + ' · ' : '')}${esc(s.checkpoint)}</span>${ev}</div>`;
   }).join('');
   const live = p.enabled && !bad;
@@ -1660,48 +1816,30 @@ async function pbGet(id) {
   return r.ok ? r.json() : null;
 }
 
+/* SOP 页里的改动（保存、启停、删除、抽取）都回到 SOP 页重画；别的页只刷新导航徽标 */
 async function loadPlaybooks() {
-  if (MANAGE) return renderManage();
-  const d = await (await fetch('/api/playbooks')).json();
-  pbTools = d.tools || {};
-  const sc = {live: d.live || 0, total: d.count || 0};
-  const o = d.origins || {};
-  setBadge('pbBadge', sc, '生效');
-  $('pbPanel').innerHTML =
-    `<div class="pb-head"><span class="t">SOP · 标准作业流程<small>${sc.live} 个生效 · 共 ${sc.total} 个${sc.total ? `<br>来源：文档 ${o.doc || 0} / 实践 ${o.practice || 0}${o.manual ? ` / 手工 ${o.manual}` : ''}` : ''}</small></span>
-       <button class="icon-btn" id="pbNew">＋ 新建</button>
-       <button class="icon-btn" id="pbFromDoc">从文档抽取</button>
-       <button class="x" data-close title="关闭">✕</button></div>
-     <div class="tl-note">📄 文档写了怎么做 → 📋 SOP 定好按什么顺序做 → 🔧 工具去执行。<br>
-       适用于故障排查、日常巡检、上线前检查、上线后验收。SOP 只能调用已有工具，不能新增执行能力。</div>` +
-    (d.pending ? `<details class="pb-pending" open><summary>💡 待确认提议 ${d.pending}</summary><div class="plist"><div class="empty">加载中…</div></div></details>` : '') +
-    (sc.total > 3 ? searchBox('pbSearch', pbSearch, '搜索 SOP：名称、来源文档、触发条件、工具、检查点、原句…') : '') +
-    (pbPicking ? pbPicker() : '') +
-    (pbEditing !== null ? pbEditor(pbEditing) : '') +
-    (sc.total ? groupsHtml('pb', d.groups || [])
-              : '<div class="empty">还没有 SOP。点「从文档抽取」，让 Agent 从你的排查手册、巡检规范里整理出操作步骤。</div>');
-  if (d.pending) pendingHtml().then(html => { const box = $('pbPanel').querySelector('.pb-pending .plist'); if (box) box.innerHTML = html; });
-  restorePanel('pb', pbSearch);
-  if (pbPicking) {
-    const input = $('pbDocFilter');
-    input.focus();
-    input.setSelectionRange(input.value.length, input.value.length);
-  }
+  if (page === 'sop') return renderManage();
+  refreshBadges();
 }
 
-$('pbBtn').onclick = () => {
-  $('pbPanel').hidden = !$('pbPanel').hidden;
-  if (!$('pbPanel').hidden) { pbEditing = null; pbPicking = false; pbDocFilter = ''; pbSearch = ''; loadPlaybooks(); }
-};
-$('pbPanel').addEventListener('input', e => {
-  if (e.target.id === 'pbSearch') { pbSearch = e.target.value; onSearchInput('pb', pbSearch); }
-});
-document.addEventListener('click', e => {
-  if (MANAGE) return;  // 管理页里面板是常驻的，不随点击收起
-  if (e.target.closest('[data-close]')) { e.target.closest('.pb-panel').hidden = true; return; }
-  if (!e.target.closest('.pb-wrap')) $('pbPanel').hidden = true;
-});
-
+/* ▶ 执行：把「按 SOP 执行」的问题填进对话框并发送。本质还是一次提问，Agent 照 SOP 调工具；
+   发送时带上 SOP 的 id，图谱里这一轮才记得清是按哪个 SOP 跑的。有要填的参数时停在输入框里让人补上。 */
+function runPlaybook(p) {
+  const blanks = [...new Set(p.steps.flatMap(s => Object.entries(s.args || {}).filter(([, v]) => !v).map(([k]) => k)))];
+  const prefix = `执行 SOP《${p.name}》`;
+  go('chat');
+  if (convId) newConv();
+  $('question').value = prefix + (blanks.length ? `（${blanks.join('、')}：）` : '');
+  pendingPlaybook = {id: p.id, name: p.name, prefix};
+  autosize();
+  if (blanks.length) {
+    $('question').focus();
+    $('question').setSelectionRange($('question').value.length - 1, $('question').value.length - 1);
+    toast(`这个 SOP 需要您提供：${blanks.join('、')}。补在括号里再发送。`, '', 6000);
+    return;
+  }
+  ask();
+}
 $('pbPanel').addEventListener('click', async e => {
   const id = t => e.target.closest(`[data-${t}]`)?.dataset[t];
 
@@ -1783,39 +1921,16 @@ $('pbPanel').addEventListener('click', async e => {
   if (delId) {
     if (!confirm('确定删除这个 SOP？')) return;
     await fetch('/api/playbooks/' + delId, {method: 'DELETE'});
-    if (MANAGE && mItem === delId) mItem = null;
+    if (mItem === delId) mItem = null;
     return loadPlaybooks().then(loadDocs);
   }
 
-  // ▶ 执行：把「按 SOP 执行」的问题填进输入框并发送。本质还是一次提问，Agent 照 SOP 调工具；
-  // 发送时带上 SOP 的 id，图谱里这一轮才记得清是按哪个 SOP 跑的。
   const runId = id('run');
   if (runId) {
     const p = await pbGet(runId);
-    if (!p) return;
-    const blanks = [...new Set(p.steps.flatMap(s => Object.entries(s.args || {}).filter(([, v]) => !v).map(([k]) => k)))];
-    const prefix = `执行 SOP《${p.name}》`;
-    const text = prefix + (blanks.length ? `（${blanks.join('、')}：）` : '');
-    if (MANAGE) {
-      // 管理页没有对话框：带着问题跳回对话页，没有待填参数就直接发送
-      location.href = '/?q=' + encodeURIComponent(text) + '&pb=' + encodeURIComponent(p.id) + (blanks.length ? '' : '&send=1');
-      return;
-    }
-    $('pbPanel').hidden = true;
-    $('question').value = text;
-    pendingPlaybook = {id: p.id, prefix};
-    autosize();
-    if (blanks.length) {
-      // 有要填的参数时不直接发送，让用户补上冒号后面的值
-      $('question').focus();
-      $('question').setSelectionRange($('question').value.length - 1, $('question').value.length - 1);
-      toast(`这个 SOP 需要您提供：${blanks.join('、')}。补在括号里再发送。`, '', 6000);
-      return;
-    }
-    ask();
+    if (p) runPlaybook(p);
     return;
   }
-
   const toggleId = id('toggle');
   if (toggleId) {
     const p = await pbGet(toggleId);
@@ -2117,37 +2232,17 @@ function tlProposeForm() {
       dbConns.length || tlProposeKind === 'sql' ? tab('sql', 'SQL') : ''}</div>
     ${common}
     ${body}
-    <div class="tl-note">${note}<br>提交后<b>不会生效</b>，要在宿主机上批准——页面定义不了宿主机执行什么。<br>
-      <b>MCP 工具和内置函数不在这里申请</b>：管理员在宿主机配置里声明 MCP server 后，它上面的工具会自动出现在「待审申请」里，批准后才可用；
+    <div class="tl-note">${note}<br>提交后<b>还不能用</b>：要在「待审批」里看过完整内容再批准，批准时要输<b>审批口令</b>（不是网页登录密码）。
+      自己申请、自己审批时，点「提交并立即批准」一步做完。<br>
+      <b>MCP 工具和内置函数不在这里申请</b>：管理员在宿主机配置里声明 MCP server 后，它上面的工具会自动出现在「待审批」里，批准后才可用；
       内置函数随工具服务的代码发布，管理员在配置里按名字引用即可。</div>
     <div class="pb-edit"><div class="row">
       <button class="ok" id="tlDoPropose">提交申请</button>
+      <button class="ok" id="tlDoProposeApprove" style="background:#f59e0b" ${approvalInfo().configured ? ''
+        : 'disabled title="还没有设置审批口令：在宿主机上执行 set-approval-passphrase 后才能在页面上批准"'}>提交并立即批准…</button>
       <button class="cancel" id="tlCancelPropose">取消</button>
     </div></div>
     <div class="pb-err" id="tlProposeErr" hidden></div>
-  </div>`;
-}
-
-function tlWaiting(items) {
-  if (!items.length) return '';
-  const RO = {declared: ['ok', '只读（server 声明）'], undeclared: ['warn', '未声明只读']};
-  return `<div class="tl-wait">⏳ ${items.length} 条申请待批准，在宿主机上执行：
-    <div class="cmd">python3 /opt/ops/ops_readonly.py pending</div>
-    ${items.map(i => {
-      const t = i.tool || {}, rv = i.review || {};
-      if (t.mcp) {
-        // MCP 候选：谁发现的、只读依据、名字像不像写操作、为什么进来（新发现 / schema 变了）
-        const ro = RO[rv.readonly] || RO.undeclared;
-        const tags = `<span class="tag">MCP ${esc(t.mcp.server || '')}</span><span class="tag ${ro[0]}">${ro[1]}</span>`
-                   + (rv.suspicious_name ? '<span class="tag warn">名称疑似写操作</span>' : '')
-                   + (rv.reason && rv.reason !== '新发现' ? `<span class="tag warn">${esc(rv.reason)}</span>` : '');
-        const flag = rv.readonly === 'declared' ? '' : ' --attest-readonly';
-        return `<div class="cmd">[${esc(i.id)}] ${esc(t.name || '')}　${esc(t.mcp.tool || '')}${tags}
-          <div class="cmd" style="margin:2px 0 0 14px">批准：ops_readonly.py approve ${esc(i.id)}${flag}</div></div>`;
-      }
-      const what = tlPendingWhat(t);
-      return `<div class="cmd">[${esc(i.id)}] ${esc(t.name || '')}　${esc(what)}</div>`;
-    }).join('')}
   </div>`;
 }
 
@@ -2164,46 +2259,14 @@ function mcpServersHtml(servers) {
   ).join('；')}</div>`;
 }
 
+/* 工具页里的改动（启停、改名、申请）都回到工具页重画；别的页只刷新导航徽标。
+   改了工具会影响 SOP 是否生效，所以徽标一起刷。 */
 async function loadTools() {
-  if (MANAGE) return renderManage();
-  const d = await (await fetch('/api/tools')).json();
-  const tc = {live: d.live || 0, total: d.count || 0};
-  tlHost = d.host || {}; tlConns = d.connections || {}; tlHosts = d.hosts || {configured: false};
-  setBadge('tlBadge', tc, '可用');
-  // 工具停用/启用会改变 SOP 是否生效，顺带刷新 SOP 徽标。
-  fetch('/api/playbooks').then(r => r.json()).then(p => setBadge('pbBadge', {live: p.live || 0, total: p.count || 0}, '生效')).catch(() => {});
-  const waiting = tlProposing ? [] : await (await fetch('/api/tools/pending')).json()
-    .then(r => r.pending || []).catch(() => []);
-  if (tlProposing && tlProposeKind === 'script') {
-    const s = await (await fetch('/api/tools/scripts')).json().catch(() => ({}));
-    tlScripts = s.scripts || [];
-    tlScriptDir = s.directory || '';
-  }
-  $('tlPanel').innerHTML =
-    `<div class="pb-head"><span class="t">工具<small>${tc.live} 个可用 · 共 ${tc.total} 个</small></span>
-       <button class="icon-btn" id="tlNew">＋ 申请新工具</button>
-       <button class="x" data-close title="关闭">✕</button></div>` +
-    (d.error ? `<div class="pb-warn">工具接口不可用：${esc(d.error)}</div>` : '') +
-    mcpServersHtml(d.mcp_servers) + hostsHtml(tlHosts) + connectionsHtml(tlConns) +
-    (tlProposing ? tlProposeForm() : tlWaiting(waiting)) +
-    (tc.total > 3 ? searchBox('tlSearch', tlSearch, '搜索工具：名称、显示名、说明、命令、分组、参数…') : '') +
-    (tc.total ? groupsHtml('tl', d.groups || [])
-              : '<div class="empty">还没有可用工具。配置 OPS_URL 后，Agent 就能查询真实数据。</div>') +
-    `    <div class="tl-note">停用、改名和改说明立刻生效，不重启服务；新增工具需要宿主机批准。</div>`;
-  restorePanel('tl', tlSearch);
-  if (tlProposing) $('tlNewName').focus();
-  if (tlEditing) {
-    const box = $('tlLabel') || $('tlDesc');
-    if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
-  }
+  if (page === 'tools') return renderManage();
+  refreshBadges();
 }
 
-$('tlBtn').onclick = () => {
-  $('tlPanel').hidden = !$('tlPanel').hidden;
-  if (!$('tlPanel').hidden) { tlEditing = null; tlProposing = false; tlSearch = ''; loadTools(); }
-};
 $('tlPanel').addEventListener('input', e => {
-  if (e.target.id === 'tlSearch') { tlSearch = e.target.value; onSearchInput('tl', tlSearch); }
   // 命令 / 地址 / SQL 一变，参数行跟着增减；只重画参数区，不打断正在输入的框
   if (e.target.id === 'tlNewCmd' || e.target.id === 'tlNewUrl' || e.target.id === 'tlNewSql') {
     const box = $('tlParams'); if (box) box.innerHTML = tlParamRows(e.target.value, e.target.id === 'tlNewSql');
@@ -2211,14 +2274,12 @@ $('tlPanel').addEventListener('input', e => {
   const pf = e.target.dataset.pf, row = e.target.closest('[data-tlparam]');
   if (pf && row && pf !== 'required') (tlParamState[row.dataset.tlparam] ||= {type: 'name', required: true, def: '', desc: ''})[pf] = e.target.value;
 });
-document.addEventListener('click', e => {
-  if (MANAGE) return;
-  if (!e.target.closest('.tl-wrap')) $('tlPanel').hidden = true;
-});
 
 document.addEventListener('keydown', e => {
-  if (MANAGE) return;
-  if (e.key === 'Escape') { $('tlPanel').hidden = true; $('pbPanel').hidden = true; $('histPanel').hidden = true; }
+  if (e.key !== 'Escape') return;
+  if (document.querySelector('.dlg-scrim')) return closeDialog();
+  $('histPanel').hidden = true;
+  document.body.classList.remove('menu', 'detail');
 });
 async function tlSend(path, body) {
   const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -2250,8 +2311,7 @@ $('tlPanel').addEventListener('click', async e => {
     const label = t?.label || use;
     const req = Object.entries(t?.params || {}).filter(([, p]) => p.required).map(([k, p]) => `${p.desc || k}：`);
     const text = `用「${label}」查一下` + (req.length ? `（${req.join('；')}）` : '');
-    if (MANAGE) { location.href = '/?q=' + encodeURIComponent(text); return; }
-    $('tlPanel').hidden = true;
+    go('chat');
     $('question').value = text; autosize(); $('question').focus();
     const v = $('question').value; $('question').setSelectionRange(req.length ? v.length - 1 : v.length, req.length ? v.length - 1 : v.length);
     if (req.length) toast(`这个工具需要：${req.join(' ')}。补在括号里再发送。`, '', 5000);
@@ -2285,58 +2345,77 @@ $('tlPanel').addEventListener('click', async e => {
     return loadTools();
   }
 
-  if (e.target.id === 'tlDoPropose') {
+  if (e.target.id === 'tlDoPropose' || e.target.id === 'tlDoProposeApprove') {
     const err = $('tlProposeErr');
     const fail = msg => { err.hidden = false; err.textContent = msg; };
-    const base = {name: $('tlNewName').value.trim(), label: $('tlNewLabel').value.trim(),
-                  desc: $('tlNewDesc').value.trim(), params: {}};
+    err.hidden = true;
     let payload;
-    // 按实现类型分栏填写，发出去的是老写法（新老工具服务都认）；新字段只有 os 和 http.conn
-    if (tlProposeKind === 'script') {
-      const script = $('tlNewScript') ? $('tlNewScript').value : '';
-      if (!script) return fail('请先选择一个脚本');
-      payload = {...base, script};
-    } else if (tlProposeKind === 'http') {
-      const conn = $('tlNewConn') ? $('tlNewConn').value : '';
-      const raw = $('tlNewUrl').value.trim();
-      if (conn && !raw.startsWith('/')) return fail('选了连接时，地址只填路径，以 / 开头（主机名和凭据都在连接里）');
-      if (!conn && !/^https?:\/\//.test(raw)) return fail('接口地址要以 http:// 或 https:// 开头');
-      const {url, query} = tlSplitUrl(raw);
-      payload = {...base, http: {url, ...(Object.keys(query).length ? {query} : {}), ...(conn ? {conn} : {})},
-                 params: tlParamsPayload(raw)};
-    } else if (tlProposeKind === 'sql') {
-      // SQL 只有新写法：impl = {type: sql, conn, query, max_rows}
-      const conn = $('tlNewConn') ? $('tlNewConn').value : '';
-      const query = $('tlNewSql').value.trim();
-      if (!conn) return fail('请先选一个数据库连接');
-      if (!/^(select|with)\b/i.test(query)) return fail('查询只能是一条 SELECT 或 WITH');
-      const rows = Math.min(1000, Math.max(1, parseInt($('tlNewRows').value, 10) || 100));
-      payload = {...base, impl: {type: 'sql', conn, query, max_rows: rows}, params: tlParamsPayload(query, true)};
-    } else {
-      const cmd = $('tlNewCmd').value.trim();
-      const parts = cmd.split(/\s+/).filter(Boolean);
-      if (!parts.length) return fail('请填写完整命令');
-      const os = [...$('tlPanel').querySelectorAll('[data-tlos]:checked')].map(box => box.dataset.tlos);
-      const groups = ($('tlNewGroups') ? $('tlNewGroups').value : '').split(/[\s,，、]+/).filter(Boolean);
-      payload = {...base, binary: parts[0], argv: parts, ...(os.length ? {os} : {}), ...(groups.length ? {groups} : {}),
-                 params: tlParamsPayload(cmd)};
+    try { payload = tlProposalPayload(); } catch (ex) { return fail(ex.message); }
+    if (e.target.id === 'tlDoPropose') {
+      try {
+        const d = await tlSend('/api/tools/propose', payload);
+        tlProposing = false;
+        toast(`申请已提交（编号 ${d.pending.id}）。批准之后才能用：在「待审批」里看完整内容再批。`, 'ok', 7000);
+        openPending(d.pending.id);
+      } catch (e2) { fail('提交失败：' + e2.message); }
+      return;
     }
-    try {
-      const d = await tlSend('/api/tools/propose', payload);
-      tlProposing = false;
-      await loadTools();
-      const extra = tlProposeKind === 'script'
-        ? `  python3 /opt/ops/ops_readonly.py pending\n`
-          + `  （逐行读一遍脚本，确认无误）\n`
-          + `  python3 /opt/ops/ops_readonly.py approve ${d.pending.id}\n`
-        : `  python3 /opt/ops/ops_readonly.py pending\n`
-          + `  python3 /opt/ops/ops_readonly.py approve ${d.pending.id}\n`;
-      toast(`申请已提交（编号 ${d.pending.id}）。它现在还不能用，请在宿主机上执行：\n` + extra
-            + `批准后下一次提问即可使用，无需重启。`, 'ok', 12000);
-    } catch (e2) { fail('提交失败：' + e2.message); }
+    // 提交并立即批准：同一个人申请、同一个人审批，不用跑两趟；口令照样要输，申请照样先进待审再批
+    let created = null;
+    askPassphrase({
+      title: `提交并批准「${payload.label || payload.name}」`,
+      summary: proposalSummary(payload),
+      confirm: '提交并批准',
+      run: async passphrase => {
+        if (!created) created = (await tlSend('/api/tools/propose', payload)).pending;
+        return approveRequest(created.id, {passphrase});
+      },
+      done: result => { tlProposing = false; apResults[created.id] = result; openPending(created.id); },
+      cancel: () => {
+        if (!created) return;
+        tlProposing = false;
+        toast(`申请已提交（编号 ${created.id}），还没有批准；可以在「待审批」里再批`, '', 7000);
+        openPending(created.id);
+      },
+    });
   }
 });
 
+/* 申请表单 → 发给 /api/tools/propose 的内容。按实现类型分栏填写，发出去的是老写法（新老工具服务都认）；
+   SQL 只有新写法 impl = {type: sql, conn, query, max_rows}。填得不对就抛错，错误文字直接给人看。 */
+function tlProposalPayload() {
+  const base = {name: $('tlNewName').value.trim(), label: $('tlNewLabel').value.trim(),
+                desc: $('tlNewDesc').value.trim(), params: {}};
+  if (tlProposeKind === 'script') {
+    const script = $('tlNewScript') ? $('tlNewScript').value : '';
+    if (!script) throw new Error('请先选择一个脚本');
+    return {...base, script};
+  }
+  if (tlProposeKind === 'http') {
+    const conn = $('tlNewConn') ? $('tlNewConn').value : '';
+    const raw = $('tlNewUrl').value.trim();
+    if (conn && !raw.startsWith('/')) throw new Error('选了连接时，地址只填路径，以 / 开头（主机名和凭据都在连接里）');
+    if (!conn && !/^https?:\/\//.test(raw)) throw new Error('接口地址要以 http:// 或 https:// 开头');
+    const {url, query} = tlSplitUrl(raw);
+    return {...base, http: {url, ...(Object.keys(query).length ? {query} : {}), ...(conn ? {conn} : {})},
+            params: tlParamsPayload(raw)};
+  }
+  if (tlProposeKind === 'sql') {
+    const conn = $('tlNewConn') ? $('tlNewConn').value : '';
+    const query = $('tlNewSql').value.trim();
+    if (!conn) throw new Error('请先选一个数据库连接');
+    if (!/^(select|with)\b/i.test(query)) throw new Error('查询只能是一条 SELECT 或 WITH');
+    const rows = Math.min(1000, Math.max(1, parseInt($('tlNewRows').value, 10) || 100));
+    return {...base, impl: {type: 'sql', conn, query, max_rows: rows}, params: tlParamsPayload(query, true)};
+  }
+  const cmd = $('tlNewCmd').value.trim();
+  const parts = cmd.split(/\s+/).filter(Boolean);
+  if (!parts.length) throw new Error('请填写完整命令');
+  const os = [...$('tlPanel').querySelectorAll('[data-tlos]:checked')].map(box => box.dataset.tlos);
+  const groups = ($('tlNewGroups') ? $('tlNewGroups').value : '').split(/[\s,，、]+/).filter(Boolean);
+  return {...base, binary: parts[0], argv: parts, ...(os.length ? {os} : {}), ...(groups.length ? {groups} : {}),
+          params: tlParamsPayload(cmd)};
+}
 $('tlPanel').addEventListener('change', e => {
   if (e.target.id === 'tlNewScript') { tlScriptSel = e.target.value; loadTools(); }
   if (e.target.id === 'tlNewConn') { const box = $('tlNewUrl'); if (box) box.placeholder = e.target.value ? TL_URL_HINT.path : TL_URL_HINT.full; }
@@ -2350,12 +2429,14 @@ $('tlPanel').addEventListener('change', e => {
 async function ask() {
   const q = $('question').value.trim();
   if (!q || $('askBtn').disabled) return;
-  const playbookId = pendingPlaybook && q.startsWith(pendingPlaybook.prefix) ? pendingPlaybook.id : undefined;
+  const book = pendingPlaybook && q.startsWith(pendingPlaybook.prefix) ? pendingPlaybook : null;
+  const playbookId = book ? book.id : undefined;
   pendingPlaybook = null;
   $('question').value = ''; autosize();
   if ($('thread').querySelector('.welcome')) $('thread').innerHTML = '';
   addUser(q);
   const bot = addBot('<div class="status"></div><div class="answer"></div>');
+  if (book) { bot.dataset.playbook = book.name || ''; bot.dataset.playbookId = book.id; paintRun(bot); }
   const card = bot.querySelector('.card'), ans = bot.querySelector('.answer');
   // 等待态按服务端的阶段事件换文案，并跟着走秒；status 被 delta 分支移除后（模型先说一句再调工具）要能补回来
   const t0 = performance.now(); let tFirst = 0;
@@ -2380,7 +2461,7 @@ async function ask() {
                                        body: JSON.stringify({question: q, conversation_id: convId, web: webOn,
                                                              model: modelPick || undefined,
                                                              playbook_id: playbookId})});
-    if (r.status === 503) { const d = await r.json().catch(() => ({})); throw new Error((d.detail || '服务未就绪') + '（点右上角「管理」）'); }
+    if (r.status === 503) { const d = await r.json().catch(() => ({})); throw new Error((d.detail || '服务未就绪') + '（去「设置」配置模型）'); }
     if (!r.ok) { const d = await r.json().catch(() => ({detail: r.status})); throw new Error(d.detail); }
     const reader = r.body.getReader(), dec = new TextDecoder(); let buf = '';
     while (true) {
@@ -2415,6 +2496,7 @@ async function ask() {
                   : cat === 'compute' ? '正在沙箱里运行计算…'
                   : `正在查询：${esc(tool)}…`);
           bot.querySelector('.steps').insertAdjacentHTML('beforeend', stepHtml(msg.tool_call, true));
+          paintRun(bot);
           if (nearBottom()) toBottom();
         } else if (msg.web_sources) {
           webSrc.push(...msg.web_sources);
@@ -2470,6 +2552,7 @@ async function ask() {
     bot.dataset.took = ((performance.now() - t0) / 1000).toFixed(1);
     if (tFirst) bot.dataset.first = ((tFirst - t0) / 1000).toFixed(1);
     addTools(bot, text, q, webSrc);
+    paintRun(bot);
     $('askBtn').disabled = false; $('question').focus();
     loadConvs();
     // 自由排查（没带 SOP）用了 ≥2 次数据类工具：服务端可能在后台长出一个 SOP 提议，退避轮询取回
@@ -2512,31 +2595,40 @@ $('modelPick').addEventListener('change', e => {
   paintModels([...e.target.options].map(o => o.value).filter(x => x !== CUSTOM));
 });
 
-/* 顶栏徽标与面板标题共用服务端算好的同一套口径（live / count）：
-   工具「可用」= 已启用且本机能运行；SOP「生效」= 已启用且引用的工具都可用。 */
-function setBadge(id, c, what) {
-  for (const b of [$(id), $('m' + id[0].toUpperCase() + id.slice(1))]) {  // 顶栏徽标和管理页导航徽标同步
-    if (!b) continue;
-    b.textContent = c.total ? `${c.live}/${c.total}` : '';
-    b.classList.toggle('on', c.live > 0);
-    b.title = `${c.live} 个${what}，共 ${c.total} 个`;
-  }
-}
+/* 导航徽标、左下角状态都来自工作台汇总（/api/overview）。徽标只在有事要人处理时亮：
+   工具 = 待审批的申请 + 内容变了要重新确认的脚本；SOP = 待确认的提议；工作台 = 全部待处理（再加离线的主机）。 */
 async function refreshBadges() {
   try {
-    const [t, p] = await Promise.all([fetch('/api/tools').then(r => r.json()),
-                                      fetch('/api/playbooks').then(r => r.json())]);
-    setBadge('tlBadge', {live: t.live || 0, total: t.count || 0}, '可用');
-    setBadge('pbBadge', {live: p.live || 0, total: p.count || 0}, '生效');
-  } catch (_) { /* 徽标只是提示，失败不影响使用 */ }
+    const r = await fetch('/api/overview');
+    if (!r.ok) return;
+    overview = await r.json();
+  } catch (_) { return; }   // 徽标只是提示，失败不影响使用
+  paintNav();
 }
-/* 面板开着时，对应按钮高亮。 */
-document.addEventListener('click', () => setTimeout(() => {
-  $('tlBtn').classList.toggle('open', !$('tlPanel').hidden);
-  $('pbBtn').classList.toggle('open', !$('pbPanel').hidden);
-  $('histBtn').classList.toggle('open', !$('histPanel').hidden);
-}, 0));
-
+function todoCounts(o = overview) {
+  const p = (o && o.pending) || {};
+  const tools = (p.tools || []).length + (p.scripts || []).length, sops = (p.proposals || []).length;
+  return {tools, sops, all: tools + sops + (p.hosts || []).length};
+}
+function nb(id, text, cls, title) {
+  const el = $(id);
+  el.textContent = text || '';
+  el.className = 'nb' + (cls ? ' ' + cls : '');
+  el.title = title || '';
+}
+function paintNav() {
+  const o = overview; if (!o) return;
+  const c = todoCounts(), p = o.pending || {};
+  nb('nbHome', c.all, 'alert', `${c.all} 件事待处理`);
+  nb('nbTools', c.tools, 'alert', `${(p.tools || []).length} 条工具申请待审批` + ((p.scripts || []).length ? `，${p.scripts.length} 个脚本要重新确认` : ''));
+  nb('nbSop', c.sops, 'purple', `${c.sops} 条 SOP 提议待确认`);
+  nb('nbDocs', o.knowledge.documents, '', `${o.knowledge.documents} 个文档`);
+  nb('nbAccess', o.access.enabled ? '开' : '关', o.access.enabled ? 'on' : '', o.access.enabled ? '对外 MCP 已开启' : '对外 MCP 没有打开');
+  const t = o.tools;
+  $('sideFoot').innerHTML = `<span class="dot ${t.error ? 'bad' : ''}"></span>${t.error ? '工具服务连不上' : `工具服务在线 · ${t.live} 个工具`}<br>`
+    + `${o.knowledge.documents} 个文档 · ${o.knowledge.chunks} 个片段`;
+  paintTop();
+}
 /* 联网开关：默认开启，记在浏览器里（关掉后下次打开仍是关）。首次见到开着的开关弹一次说明，
    让人知道哪些问题会上网、哪些永远不会外发。服务端没配置搜索时按钮不显示。 */
 let webOn = localStorage.getItem('kb-web') !== 'off';
@@ -2562,17 +2654,264 @@ $('askBtn').onclick = ask;
 $('newBtn').onclick = newConv;
 $('menuBtn').onclick = () => document.body.classList.toggle('menu');
 $('scrim').onclick = () => document.body.classList.remove('menu');
-/* ---------- 管理页：导航 → 分组 → 列表 → 详情 ----------
+
+/* ---------- 页面切换 ----------
+   左侧导航 → go(页名)。工具页、SOP 页的页签和选中的条目放在查询串里（/tools?tab=pending&item=…），
+   工作台「待处理」里的「审批」「去确认」直接链过去；对话页把当前对话放在 ?c=…，刷新后还在这个对话。 */
+function tabBtn(kind, key, label, n, cls) {
+  const on = (kind === 'tl' ? tlTab : pbTab) === key;
+  return `<button class="${on ? 'on' : ''}" data-tab="${kind}:${key}">${label}${n ? `<span class="nb ${cls}">${n}</span>` : ''}</button>`;
+}
+function paintTop() {
+  const o = overview, c = todoCounts();
+  let sub = '', tabs = '';
+  if (page === 'home') sub = o ? (c.all ? `${c.all} 件事待处理` : '没有待处理的事') : '';
+  if (page === 'tools') {
+    sub = o ? `${o.tools.live} 个可用 · 共 ${o.tools.total} 个` : '';
+    tabs = tabBtn('tl', 'all', '全部工具') + tabBtn('tl', 'pending', '待审批', c.tools, 'alert') + tabBtn('tl', 'infra', '主机与数据源');
+  }
+  if (page === 'sop') {
+    sub = (o ? `${o.sops.live} 个生效 · 共 ${o.sops.total} 个` : '')
+      + (pbOrigins && o?.sops.total ? ` · 来源：文档 ${pbOrigins.doc || 0} / 实践 ${pbOrigins.practice || 0}${pbOrigins.manual ? ` / 手工 ${pbOrigins.manual}` : ''}` : '');
+    tabs = tabBtn('pb', 'all', '全部 SOP') + tabBtn('pb', 'proposals', '待确认提议', c.sops, 'purple');
+  }
+  if (page === 'docs') sub = o ? `${o.knowledge.documents} 个文档 · ${o.knowledge.chunks} 个片段` : '';
+  if (page === 'access') sub = o ? (o.access.enabled ? '已开启' : '没有打开') : '';
+  $('topTitle').textContent = PAGES[page][1];
+  $('topSub').textContent = sub;
+  $('topTabs').innerHTML = tabs;
+}
+$('topTabs').addEventListener('click', e => {
+  const b = e.target.closest('[data-tab]'); if (!b) return;
+  const [kind, key] = b.dataset.tab.split(':');
+  if (kind === 'tl') tlTab = key; else pbTab = key;
+  mGroup = null; mItem = null; mSearch = ''; tlEditing = null; tlProposing = false; pbEditing = null; pbPicking = false;
+  document.body.classList.remove('detail');
+  syncUrl(true);
+  renderManage();
+});
+function urlFor() {
+  const qs = new URLSearchParams();
+  if (page === 'tools' && tlTab !== 'all') qs.set('tab', tlTab);
+  if (page === 'sop' && pbTab !== 'all') qs.set('tab', pbTab);
+  if (['tools', 'sop', 'docs'].includes(page) && mItem) qs.set('item', mItem);
+  if (page === 'chat' && convId) qs.set('c', convId);
+  return PAGES[page][0] + (qs.toString() ? '?' + qs : '');
+}
+function syncUrl(push) {
+  const url = urlFor();
+  if (url !== location.pathname + location.search) history[push ? 'pushState' : 'replaceState'](null, '', url);
+}
+function go(name, opts = {}) {
+  if (!PAGES[name]) name = 'home';
+  const changed = page !== name;
+  page = name;
+  document.body.dataset.page = name;
+  document.body.classList.remove('menu', 'detail');
+  document.querySelectorAll('#side .nav a').forEach(a => a.classList.toggle('on', a.dataset.page === name));
+  $('pg-home').classList.toggle('on', name === 'home');
+  $('pg-chat').classList.toggle('on', name === 'chat');
+  $('pg-manage').classList.toggle('on', !['home', 'chat'].includes(name));
+  if (!['home', 'chat'].includes(name)) {
+    if (changed) { mGroup = null; mSearch = ''; tlEditing = null; tlProposing = false; pbEditing = null; pbPicking = false; mItem = null; axIssued = null; }
+    mTab = name;
+    localStorage.setItem('kb-mtab', name);
+  }
+  if (opts.tab) { if (name === 'tools') tlTab = opts.tab; if (name === 'sop') pbTab = opts.tab; }
+  if (opts.item !== undefined) mItem = opts.item;
+  applyBrand();
+  paintTop();
+  if (opts.push !== false) syncUrl(true);
+  if (name === 'home') renderHome();
+  else if (name === 'chat') { if (!$('thread').children.length) welcome(); setTimeout(() => $('question').focus(), 0); }
+  else renderManage();
+}
+document.querySelector('#side .nav').addEventListener('click', e => {
+  const a = e.target.closest('a[data-page]'); if (!a) return;
+  if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;   // 新标签页打开照常
+  e.preventDefault();
+  if (a.dataset.page === 'tools') tlTab = 'all';
+  if (a.dataset.page === 'sop') pbTab = 'all';
+  go(a.dataset.page);
+});
+/* 当前地址 → 页面。兼容老地址：/manage（#settings、#access，或上次的页签）、
+   /?q=…&pb=…&send=1（老管理页「▶ 执行」「用它提问」跳过来的） */
+function route() {
+  const path = location.pathname.replace(/\/+$/, '') || '/';
+  const qs = new URLSearchParams(location.search);
+  if (path === '/manage') {
+    const want = location.hash.slice(1) || localStorage.getItem('kb-mtab') || 'tools';
+    history.replaceState(null, '', PAGES[['tools', 'sop', 'docs', 'access', 'settings'].includes(want) ? want : 'tools'][0]);
+    return route();
+  }
+  if (path === '/' && qs.get('q')) {
+    const text = qs.get('q');
+    history.replaceState(null, '', '/chat');
+    go('chat', {push: false});
+    $('question').value = text; autosize();
+    if (qs.get('pb')) pendingPlaybook = {id: qs.get('pb'), name: (text.match(/《(.+?)》/) || [])[1] || '', prefix: text.split('（')[0]};
+    if (qs.get('send')) ask();
+    else $('question').setSelectionRange(text.length - 1, text.length - 1);
+    return;
+  }
+  const name = Object.keys(PAGES).find(k => PAGES[k][0] === path) || 'home';
+  if (name === 'tools') tlTab = ['pending', 'infra'].includes(qs.get('tab')) ? qs.get('tab') : 'all';
+  if (name === 'sop') pbTab = qs.get('tab') === 'proposals' ? 'proposals' : 'all';
+  go(name, {push: false, item: qs.get('item') || null});
+  if (name === 'chat' && qs.get('c') && qs.get('c') !== convId) openConv(qs.get('c'));
+}
+window.addEventListener('popstate', route);
+const openPending = id => go('tools', {tab: 'pending', item: id});
+
+/* ---------- 工作台 ----------
+   一屏看全：问点什么（示例按查知识 / 查数据 / 按 SOP 排查 / 计算分组）、四张状态卡（知识库、工具、SOP、对外接入）、
+   待处理（工具申请待审批、SOP 提议待确认、脚本内容变了、主机离线，每项一键进入处理）、最近的对话。 */
+const KIND_LABEL = {command: '命令型', script: '脚本型', http: '接口型', sql: 'SQL', mcp: 'MCP'};
+function ago(t) {
+  if (!t) return '';
+  const d = new Date(String(t).includes('T') || String(t).endsWith('Z') ? t : String(t).replace(' ', 'T'));
+  const s = (Date.now() - d.getTime()) / 1000;
+  if (s < 60) return '刚刚';
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+  if (s < 86400 && new Date().getDate() === d.getDate()) return `今天 ${d.toTimeString().slice(0, 5)}`;
+  return d.toLocaleString('zh-CN', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'});
+}
+function sourcePills(t) {
+  const s = t.sources || {}, h = t.hosts || {}, mcp = s.mcp || {};
+  const pill = (on, text, title) => `<span class="pill ${on ? 'ok' : 'off'}" title="${esc(title)}">${on ? '✓' : '–'} ${text}</span>`;
+  return [
+    h.configured ? `<span class="pill ${h.offline.length ? 'warn' : 'ok'}" title="主机清单：${h.offline.length ? esc(h.offline.map(x => x.name).join('、')) + ' 离线' : '全部在线'}">🖥 ${h.online}/${h.total} 主机在线</span>`
+                 : pill(false, '远程主机', '没有配置主机清单'),
+    pill(s.k8s, 'K8s', s.k8s ? `${s.k8s} 个 Kubernetes 工具` : '没有 Kubernetes 工具'),
+    pill(s.sql, `SQL${s.sql ? ' ' + s.sql : ''}`, s.sql ? `${s.sql} 个数据库连接` : '没有数据库连接'),
+    pill(mcp.servers, `MCP${mcp.servers ? ` ${mcp.online}/${mcp.servers}` : ''}`, mcp.servers ? `${mcp.online} 个 MCP server 在线，共 ${mcp.servers} 个` : '没有 MCP server'),
+    pill(s.sandbox, '计算沙箱', s.sandbox ? 'python_exec 已打开' : '没有打开计算沙箱'),
+    pill(s.web, '联网', s.web ? '联网搜索已配置' : '没有配置联网搜索'),
+  ].join('');
+}
+function tdRow(cls, icon, title, sub, action) {
+  return `<div class="td"><span class="i ${cls}">${icon}</span><div style="min-width:0"><div class="t">${title}</div><div class="s">${sub}</div></div>${action}</div>`;
+}
+function todoHtml(o) {
+  const p = o.pending || {}, rows = [];
+  for (const t of p.tools || []) {
+    const mcp = String(t.author || '').startsWith('mcp:');
+    rows.push(tdRow('tl', mcp ? '🔌' : '🔧', `工具申请：${esc(t.label || t.name)}<code>${esc(t.name)}</code>`,
+      `<span class="kd ${esc(t.kind)}">${esc(KIND_LABEL[t.kind] || t.kind)}</span>${mcp ? `MCP server ${esc(t.author.slice(4))} ${esc(t.reason || '新发现')}` : `${esc(t.author || '')} 申请`} · ${esc(ago(t.created_at))}`,
+      `<button class="btn sm warn" data-todo="tool" data-id="${esc(t.id)}">审批</button>`));
+  }
+  for (const s of p.scripts || []) rows.push(tdRow('sc', '📜', `脚本内容变了：${esc(s.label || s.tool)}<code>${esc(s.script)}</code>`,
+    s.state === 'changed' ? '和登记的哈希对不上，工具已暂停，要重新确认' : '还没确认过，工具暂不生效',
+    `<button class="btn sm" data-todo="script" data-id="${esc(s.script)}">重新确认</button>`));
+  for (const pr of p.proposals || []) rows.push(tdRow('sop', '💡', `SOP 提议：${esc(pr.name)}`,
+    `从一次自由排查里长出来的 · ${esc(ago(pr.created_at))}`, `<button class="btn sm purple" data-todo="proposal" data-id="${esc(pr.id)}">去确认</button>`));
+  for (const h of p.hosts || []) rows.push(tdRow('host', '🖥', `主机 ${esc(h.name)} 离线`, esc(h.error),
+    `<button class="btn sm" data-todo="host" data-id="${esc(h.name)}">查看</button>`));
+  return rows.join('') || '<div class="all-done">✓ 没有待处理的事</div>';
+}
+function recentHtml(list) {
+  return (list || []).slice(0, 5).map(c => `<div class="rc-item" data-conv="${esc(c.id)}"><span class="t">${esc(c.title)}</span>
+      <span class="w">${esc(ago(c.updated_at))}</span><div class="chipset">${
+      c.playbook ? `<span class="pill purple">📋 按 SOP《${esc(c.playbook)}》</span>` : ''}${
+      c.calls ? `<span class="pill acc">🔧 ${c.calls} 次工具调用</span>` : ''}${
+      !c.playbook && !c.calls ? '<span class="pill">📚 只查了知识库</span>' : ''}</div></div>`).join('')
+    || '<div class="all-done" style="color:var(--muted)">还没有对话，在上面问一句试试</div>';
+}
+function setupHtml() {
+  const o = onboard;
+  if (!o.loaded) return '';
+  if (!o.configured) return `<div class="setup"><b>先配置模型</b>还没有填对话模型和向量模型的地址与 key。可以用一个网关（LiteLLM / OneAPI），也可以直接填厂商的 OpenAI 兼容地址。${
+    o.packs && o.packs.pending.length ? '配好后会自动导入演示场景包。' : ''}<div style="margin-top:8px"><button class="btn sm pri" data-go="settings">去「设置」</button></div></div>`;
+  const note = packNote(o.packs);
+  if (note) return `<div class="setup">${note.replace(/<\/?div[^>]*>/g, '')}</div>`;
+  if (!o.docs) return `<div class="setup"><b>先上传文档</b>把制度、手册、巡检规范拖进页面任何地方就能上传；没有现成的？仓库 <code>sample_kb/</code> 里有三篇示例。</div>`;
+  return '';
+}
+async function renderHome() {
+  paintHome();
+  await refreshBadges();
+  if (page === 'home') paintHome();
+}
+function paintHome() {
+  const o = overview, box = $('home');
+  if (!o) { box.innerHTML = '<div class="empty">加载中…</div>'; return; }
+  const c = todoCounts(), k = o.knowledge, t = o.tools, s = o.sops, a = o.access;
+  const keep = $('homeQ')?.value || '';
+  box.innerHTML = `
+    <div class="hero"><div class="logo">📚</div><div><h2>${brandGreeting()}</h2>
+      <p>读文档 · 按 SOP 排查 · 用批准过的工具查真实数据 · 也能让 Claude Code、Copilot 经 MCP 接进来用</p></div></div>
+    ${setupHtml()}
+    <div class="ask-box"><textarea id="homeQ" rows="1" placeholder="问点什么…（Enter 发送，在「对话」页里继续）">${esc(keep)}</textarea><button id="homeAsk" title="发送">➤</button></div>
+    ${examplesHtml(3)}
+    <div class="cards">
+      <div class="sc" data-go="docs" role="link" tabindex="0">
+        <div class="hd"><span class="ic kb">📚</span>知识库<span class="go">文档 →</span></div>
+        <div class="big"><b>${k.documents}</b>个文档 · ${k.chunks} 个片段</div>
+        <div class="chipset">${k.categories.slice(0, 6).map(x => `<span class="pill">${esc(x.name)} ${x.documents}</span>`).join('') || '<span class="pill off">还没有文档</span>'}</div>
+      </div>
+      <div class="sc" data-go="tools" role="link" tabindex="0">
+        <div class="hd"><span class="ic tl">🔧</span>工具<span class="go">工具 →</span></div>
+        <div class="big"><b>${t.live}</b>个可用 · 共 ${t.total} 个${c.tools ? `<span class="pill warn">${c.tools} 件待审批</span>` : ''}</div>
+        <div class="line extra">${t.error ? `<span style="color:var(--danger)">工具服务连不上：${esc(t.error)}</span>` : esc(t.groups.slice(0, 4).map(g => `${g.name} ${g.live}`).join(' · '))}</div>
+        <div class="chipset">${sourcePills(t)}</div>
+      </div>
+      <div class="sc" data-go="sop" role="link" tabindex="0">
+        <div class="hd"><span class="ic sop">📋</span>SOP<span class="go">SOP →</span></div>
+        <div class="big"><b>${s.live}</b>个生效 · 共 ${s.total} 个${s.proposals ? `<span class="pill purple">${s.proposals} 条提议</span>` : ''}</div>
+        <div class="chipset">${(s.names || []).slice(0, 4).map(n => `<span class="pill">${esc(n)}</span>`).join('') || '<span class="pill off">还没有生效的 SOP</span>'}</div>
+        <div class="line extra">文档写了怎么做 → SOP 定好顺序 → 工具去执行</div>
+      </div>
+      <div class="sc" data-go="access" role="link" tabindex="0">
+        <div class="hd"><span class="ic ax">🔌</span>对外接入<span class="go">对外接入 →</span></div>
+        ${a.enabled ? `<div class="big"><b>${a.active}</b>枚令牌有效<span class="pill ok">已开启</span></div>
+          <div class="line">最近调用：${a.last_call ? esc(ago(a.last_call)) : '还没有'}</div>`
+        : `<div class="big"><span class="pill off">没有打开</span></div>
+          <div class="line">打开后，同事的 Claude Code、Copilot、Cursor 能查知识库、按 SOP 排查</div>`}
+        <div class="line extra">令牌只存哈希 · 每次调用都有记录</div>
+      </div>
+    </div>
+    <div class="duo">
+      <div class="wb todo"><h3>待处理 ${c.all ? `<span class="nb alert">${c.all}</span>` : ''}<small>审批、确认都在页面上直接做</small></h3>${todoHtml(o)}</div>
+      <div class="wb recent"><h3>最近 <small>对话和 SOP 执行</small></h3>${recentHtml(o.recent)}</div>
+    </div>`;
+}
+function askFromHome(text) {
+  text = (text || '').trim(); if (!text) return;
+  go('chat');
+  if (convId) newConv();
+  $('question').value = text; ask();
+}
+$('home').addEventListener('click', e => {
+  const q = e.target.closest('[data-q]'); if (q) return askFromHome(q.dataset.q);
+  if (e.target.closest('#homeAsk')) return askFromHome($('homeQ').value);
+  const td = e.target.closest('[data-todo]');
+  if (td) {
+    const id = td.dataset.id;
+    if (td.dataset.todo === 'tool') return openPending(id);
+    if (td.dataset.todo === 'script') return openPending('script:' + id);
+    if (td.dataset.todo === 'proposal') return go('sop', {tab: 'proposals', item: id});
+    return go('tools', {tab: 'infra'});
+  }
+  const rc = e.target.closest('[data-conv]');
+  if (rc) { go('chat'); openConv(rc.dataset.conv).then(() => syncUrl(false)); return; }
+  const g = e.target.closest('[data-go]'); if (g) return go(g.dataset.go);
+});
+$('home').addEventListener('keydown', e => {
+  if (e.target.id === 'homeQ' && e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); askFromHome(e.target.value); }
+  if (e.key === 'Enter' && e.target.matches('.sc[data-go]')) go(e.target.dataset.go);
+});
+
+/* ---------- 工具 / SOP / 文档：分组 → 列表 → 详情 ----------
    分组和列表由服务端分页接口喂数据（文档全在本地，客户端分组分页）；
-   详情区里放的是 tlPanel / pbPanel 这两个元素本身，所以抽屉那套 改名/启停/编辑/保存 的事件处理原样可用。 */
+   详情区里放的是 tlPanel / pbPanel 这两个元素本身，改名/启停/编辑/保存 的事件处理挂在它们身上。
+   工具页的「待审批」、SOP 页的「待确认提议」是没有分组栏的 列表 → 详情；「主机与数据源」、设置、对外接入是单栏。 */
 const TAB = {
   tools: {panel: 'tl', title: '工具', unit: '个可用', key: 'group', newLabel: '＋ 申请新工具'},
   sop:   {panel: 'pb', title: 'SOP', unit: '个生效', key: 'source', newLabel: '＋ 新建'},
   docs:  {title: '文档', unit: '个文档'},
-  settings: {title: '模型设置'},
+  settings: {title: '设置'},
   access: {title: '对外接入'},
 };
-// 单栏表单页：不要分组栏、列表栏和详情栏
 const PAGE_TABS = ['settings', 'access'];
 function tlRow(name, t) {
   const st = t.enabled && t.runnable ? ['ok', '可用'] : t.applicable === false ? ['', t.hosts ? '没有适用的主机' : '不适用于这台机器']
@@ -2588,7 +2927,7 @@ function pbRow(p) {
   mCache['pb:' + p.id] = p;
   return `<div class="mrow ${mItem === p.id ? 'on' : ''}" data-mitem="${esc(p.id)}">
     <div class="t">${esc(p.name)}</div>
-    <div class="s">${p.steps.length} 步 · ${esc(p.steps.map(s => s.tool).join(' → '))}${p.trigger ? ' · ' + esc(p.trigger) : ''}</div>
+    <div class="s">${p.steps.length} 步 · ${esc(p.steps.map(s => toolLabel(s.tool)).join(' → '))}${p.trigger ? ' · ' + esc(p.trigger) : ''}</div>
     <span class="st ${st[0]}">${st[1]}</span></div>`;
 }
 function docRow(d) {
@@ -2602,18 +2941,27 @@ function mgHtml(name, live, total, special) {
   return `<div class="mg ${mGroup === name ? 'on' : ''} ${special ? 'special' : ''}" data-mgroup="${esc(name)}">
     <span class="n">${esc(name)}</span><span class="c">${c}</span></div>`;
 }
+const BACK = '<button class="md-back" data-back>← 返回列表</button>';
+function unmountPanels() {
+  for (const id of ['tlPanel', 'pbPanel']) { if ($(id).parentElement !== document.body) document.body.appendChild($(id)); $(id).hidden = true; }
+}
 
 async function renderManage() {
   const cfg = TAB[mTab];
-  document.querySelectorAll('#mnav button').forEach(b => b.classList.toggle('on', b.dataset.tab === mTab));
-  document.querySelector('.head-title .t').textContent = cfg.title + (PAGE_TABS.includes(mTab) ? '' : '管理');
-  document.body.classList.toggle('settings', PAGE_TABS.includes(mTab));
-  $('msettings').hidden = !PAGE_TABS.includes(mTab);
+  const formPage = PAGE_TABS.includes(mTab) || (mTab === 'tools' && tlTab === 'infra');
+  const flat = (mTab === 'tools' && tlTab === 'pending') || (mTab === 'sop' && pbTab === 'proposals');
+  document.body.classList.toggle('settings', formPage);
+  document.body.classList.toggle('nogroups', flat);
+  $('msettings').hidden = !formPage;
+  paintTop();
   if (mTab === 'settings') return renderSettings();
   if (mTab === 'access') return renderAccess();
+  if (mTab === 'tools' && tlTab === 'infra') return renderInfra();
+  if (mTab === 'tools' && tlTab === 'pending') return renderPending();
+  if (mTab === 'sop' && pbTab === 'proposals') return renderProposals();
 
   // 1. 分组栏
-  let groups, live, count, pending = [], proposals = 0, origins = null, mcpServers = {};
+  let groups, live, count;
   if (mTab === 'docs') {
     const by = {};
     for (const d of allDocs) { const k = d.category || '未分类'; by[k] = (by[k] || 0) + 1; }
@@ -2622,29 +2970,27 @@ async function renderManage() {
   } else {
     const d = await (await fetch(LAZY[cfg.panel].url)).json();
     groups = d.groups || []; live = d.live || 0; count = d.count || 0;
-    if (mTab === 'sop') { pbTools = d.tools || {}; proposals = d.pending || 0; origins = d.origins || null; }
-    if (mTab === 'tools') { mcpServers = d.mcp_servers || {}; tlHost = d.host || {}; tlConns = d.connections || {}; tlHosts = d.hosts || {configured: false}; }
-    setBadge(cfg.panel + 'Badge', {live, total: count}, cfg.unit.slice(1));
-    if (mTab === 'tools') pending = await fetch('/api/tools/pending').then(r => r.json()).then(r => r.pending || []).catch(() => []);
+    if (mTab === 'sop') { pbTools = d.tools || {}; pbOrigins = d.origins || null; paintTop(); }
+    if (mTab === 'tools') { tlHost = d.host || {}; tlConns = d.connections || {}; tlHosts = d.hosts || {configured: false}; }
     if (d.error) toast('工具接口不可用：' + d.error, 'err');
   }
-  if (!groups.some(g => g.name === mGroup) && mGroup !== '__pending' && !(mGroup === '__proposals' && proposals)) mGroup = groups[0]?.name || null;
+  // 从工作台、对话里点过来的条目：先选中它所在的组
+  const hit = mItem && (mCache[(mTab === 'tools' ? 'tl:' : mTab === 'sop' ? 'pb:' : 'doc:') + mItem]);
+  if (hit && !mGroup) mGroup = mTab === 'tools' ? hit.t.group : mTab === 'sop' ? (hit.source || null) : (hit.category || '未分类');
+  if (!groups.some(g => g.name === mGroup)) mGroup = groups[0]?.name || null;
   $('mgroups').innerHTML = `<div class="mg-head">${mTab === 'docs' ? '分类' : mTab === 'tools' ? '分组' : '来源文档'}</div>`
     + groups.map(g => mgHtml(g.name, g.live, g.total)).join('')
-    + (mTab === 'tools' && pending.length ? `<div class="mg-head" style="margin-top:8px">审批</div>${mgHtml('__pending', null, pending.length, true).replace('__pending</span>', '待审申请</span>')}` : '')
-    + (mTab === 'sop' && proposals ? `<div class="mg-head" style="margin-top:8px">沉淀</div>${mgHtml('__proposals', null, proposals, true).replace('__proposals</span>', '待确认提议</span>')}` : '')
-    + (mTab === 'tools' && Object.keys(mcpServers).length ? `<div class="mg-head" style="margin-top:8px">MCP</div>${mcpServersHtml(mcpServers)}` : '')
-    + (mTab === 'tools' && tlHosts.configured ? `<div class="mg-head" style="margin-top:8px">主机</div>${hostsHtml(tlHosts)}` : '')
-    + (mTab === 'tools' && Object.keys(tlConns).length ? `<div class="mg-head" style="margin-top:8px">连接</div>${connectionsHtml(tlConns)}` : '')
+    + (mTab === 'tools' ? `<div class="mg-head" style="margin-top:10px">数据从哪里来</div>
+        <div class="mg" data-infra><span class="n">主机、连接、MCP server</span><span class="c">→</span></div>` : '')
     + (!groups.length ? '<div class="empty">空</div>' : '');
 
-  // 2. 列表栏：工具栏 + 行
-  const stat = (live == null ? `共 ${count} 个` : `${live} ${cfg.unit} · 共 ${count} 个`)
-             + (origins && count ? ` · 来源：文档 ${origins.doc || 0} / 实践 ${origins.practice || 0}${origins.manual ? ` / 手工 ${origins.manual}` : ''}` : '');
+  // 2. 列表栏：工具栏 + 行（总数在顶栏，这里只写这一组有几个）
+  const inGroup = groups.find(g => g.name === mGroup);
+  const stat = inGroup ? (inGroup.live == null ? `${inGroup.total} 个` : `${inGroup.live} / ${inGroup.total} ${cfg.unit.slice(1)}`) : '';
   $('mtool').innerHTML =
-    `<span class="ttl">${esc(mSearch ? '搜索结果' : mGroup === '__pending' ? '待审申请' : mGroup === '__proposals' ? '待确认提议' : mGroup || cfg.title)}<small>${stat}</small></span>
+    `<span class="ttl">${esc(mSearch ? '搜索结果' : mGroup || cfg.title)}<small>${stat}</small></span>
      <input type="search" id="mSearch" placeholder="搜索${cfg.title}…" value="${esc(mSearch)}" autocomplete="off">
-     ${mTab === 'docs' ? '<button class="act" id="mUpload">＋ 上传文档</button>'
+     ${mTab === 'docs' ? '<input id="newCat" class="cat" list="catList" placeholder="上传到哪个分类（留空自动识别）" maxlength="12"><button class="act" id="mUpload">＋ 上传文档</button>'
        : mTab === 'sop' ? '<button class="act ghost" id="mNewSop">＋ 新建</button><button class="act" id="mExtract">从文档抽取</button>'
        : `<button class="act" id="mNewTool">${cfg.newLabel}</button>`}`;
   const rows = $('mrows');
@@ -2652,19 +2998,15 @@ async function renderManage() {
     const f = mSearch.trim().toLowerCase();
     const list = allDocs.filter(d => f ? (d.source.toLowerCase().includes(f) || (d.category || '').toLowerCase().includes(f))
                                      : (d.category || '未分类') === mGroup);
-    rows.innerHTML = list.length ? list.slice(0, PAGE).map(docRow).join('')
+    rows.innerHTML = (list.length ? list.slice(0, PAGE).map(docRow).join('')
         + (list.length > PAGE ? `<button class="more" data-docmore="${PAGE}">加载更多（还有 ${list.length - PAGE} 条）</button>` : '')
-      : '<div class="empty">没有文档</div>';
+      : '<div class="empty">没有文档。把文件拖进页面任何地方就能上传。</div>')
+      + '<div class="tl-note" style="padding:10px 16px">单个 ≤ 50MB · 同名覆盖 · 图片自动识别 · PDF / Word / PPT / TXT / MD</div>';
     rows._docList = list;
     if (mSearch) $('mtool').querySelector('small').textContent = `匹配 ${list.length} 条`;
-  } else if (mGroup === '__pending') {
-    rows.innerHTML = `<div style="padding:12px 16px">${tlWaiting(pending)}</div>`;
-  } else if (mGroup === '__proposals') {
-    rows.innerHTML = '<div class="empty">加载中…</div>';
-    rows.innerHTML = `<div style="padding:8px 16px 12px">${await pendingHtml()}</div>`;
   } else {
     const params = mSearch.trim() ? {q: mSearch} : mGroup ? {[cfg.key]: mGroup} : null;
-    if (!params) rows.innerHTML = '<div class="empty">还没有条目</div>';
+    if (!params) rows.innerHTML = `<div class="empty">${mTab === 'sop' ? '还没有 SOP。点「从文档抽取」，从排查手册、巡检规范里整理出操作步骤。' : '还没有可用工具。配置 OPS_URL 后，Agent 就能查询真实数据。'}</div>`;
     else {
       rows.innerHTML = '<div class="empty">加载中…</div>';
       const d = await fetchPage(cfg.panel, params, 0);
@@ -2685,9 +3027,9 @@ let mSearchFocus = false;
 async function renderDetail() {
   const det = $('mdetail');
   for (const id of ['tlPanel', 'pbPanel']) if ($(id).parentElement !== det) { document.body.appendChild($(id)); $(id).hidden = true; }
-  const mount = id => { det.querySelectorAll(':scope > *:not(.pb-panel)').forEach(x => x.remove()); det.appendChild($(id)); $(id).hidden = false; return $(id); };
+  const mount = id => { det.querySelectorAll(':scope > *:not(.pb-panel)').forEach(x => x.remove()); det.prepend($(id)); det.insertAdjacentHTML('afterbegin', BACK); $(id).hidden = false; return $(id); };
   const empty = text => { det.querySelectorAll(':scope > .pb-panel').forEach(p => p.hidden = true); det.insertAdjacentHTML('beforeend', `<div class="md-empty">${text}</div>`); };
-  det.querySelectorAll('.md-empty, .md-doc').forEach(x => x.remove());
+  det.querySelectorAll(':scope > :not(.pb-panel)').forEach(x => x.remove());
 
   if (mTab === 'tools') {
     const p = mount('tlPanel');
@@ -2711,7 +3053,7 @@ async function renderDetail() {
     const d = mCache['doc:' + mItem] || allDocs.find(x => x.source === mItem);
     if (!d) return empty('从左侧选择一个文档<br>查看信息、改分类、下载、删除，或从它抽取 SOP');
     const ext = d.source.split('.').pop().toLowerCase(); const [label, color] = TYPE[ext] || ['FILE', '#64748b'];
-    det.insertAdjacentHTML('beforeend', `<div class="md-doc">
+    det.insertAdjacentHTML('beforeend', `${BACK}<div class="md-doc">
       <div class="hd"><div class="ico" style="background:${color}">${label}</div><div class="nm">${esc(d.source)}</div></div>
       <dl><dt>分类</dt><dd>${esc(d.category || '未分类')}</dd><dt>片段数</dt><dd>${d.chunks}</dd><dt>类型</dt><dd>${esc(ext.toUpperCase())}</dd></dl>
       <div class="acts">
@@ -2728,6 +3070,343 @@ async function renderDetail() {
   }
 }
 
+/* ---------- 待审批：申请的完整内容、风险提示，批准要输审批口令 ----------
+   审批口令不是网页登录密码：只在宿主机上设置，只存哈希，由工具服务核对（应用只转交，不保存、不记录）。
+   没设口令时批准按钮不可用，并写明在宿主机上怎么设；拒绝不用口令。 */
+let apState = {pending: [], held: [], approval: null};
+const apResults = {};   // 刚批准的：id -> 结果（写在主配置第几行、备份在哪、重新加载后几个工具）
+const approvalInfo = () => apState.approval || overview?.approval || {configured: false, max_failures: 5, lock_minutes: 15};
+const KIND_RUN = {command: '会执行的命令', script: '会执行的脚本', sql: '会执行的查询', http: '会请求的接口', mcp: '会调用的 MCP 工具'};
+const isPh = a => /^\{[a-z_][a-z0-9_]*\}$/.test(a);
+const argvHtml = argv => `<div class="argv">${argv.map(a => `<span class="${isPh(a) ? 'ph' : /^(\/|~)/.test(a) ? 'path' : ''}">${esc(a)}</span>`).join('')}</div>`;
+function passLine() {
+  const ap = approvalInfo();
+  return ap.locked ? `<span class="passline bad">🔒 审批口令输错太多次，页面审批锁定到 ${esc(ap.locked_until)}</span>`
+    : ap.configured ? '<span class="passline">🔐 审批口令已设置</span>'
+    : '<span class="passline bad">⚠ 还没设审批口令：只能看、能拒绝</span>';
+}
+function apRow(it) {
+  const t = it.tool || {}, d = it.detail || {};
+  const high = (d.risks || []).filter(r => r.level === 'high').length, warn = (d.risks || []).filter(r => r.level === 'warn').length;
+  const st = high ? ['high', `⛔ ${high} 项高风险`] : warn ? ['warn', `⚠ ${warn} 项注意`] : ['', '无风险提示'];
+  const mcp = String(it.author || '').startsWith('mcp:');
+  return `<div class="mrow ${mItem === it.id ? 'on' : ''}" data-mitem="${esc(it.id)}">
+    <div class="t">${esc(t.label || t.name)}<code>${esc(t.name)}</code></div>
+    <div class="s"><span class="kd ${esc(d.kind)}">${esc(d.kind_label || d.kind)}</span>${mcp ? `MCP server ${esc(it.author.slice(4))} 发现` : `${esc(it.author || '')} 申请`} · ${esc(ago(it.created_at))}</div>
+    <span class="st ${st[0]}">${st[1]}</span></div>`;
+}
+function heldRow(s) {
+  const id = 'script:' + s.script;
+  return `<div class="mrow ${mItem === id ? 'on' : ''}" data-mitem="${esc(id)}">
+    <div class="t">${esc(s.label || s.tool)}<code>${esc(s.script)}</code></div>
+    <div class="s"><span class="kd script">脚本型</span>${s.state === 'changed' ? '内容和登记的不一致，工具已暂停' : '还没确认过'}</div>
+    <span class="st warn">要重新确认</span></div>`;
+}
+async function renderPending() {
+  $('mgroups').innerHTML = '';
+  $('mtool').innerHTML = `<span class="ttl">待审批<small>批准要输审批口令；拒绝不用</small></span>${passLine()}`;
+  if (!apState.pending.length) $('mrows').innerHTML = '<div class="empty">加载中…</div>';
+  const [p, h] = await Promise.all([fetch('/api/tools/pending').then(r => r.json()).catch(() => ({pending: []})),
+                                    fetch('/api/tools/held').then(r => r.ok ? r.json() : {scripts: []}).catch(() => ({scripts: []}))]);
+  apState = {pending: p.pending || [], held: h.scripts || [], approval: p.approval || apState.approval};
+  $('mtool').innerHTML = `<span class="ttl">待审批<small>批准要输审批口令；拒绝不用</small></span>${passLine()}`;
+  const done = Object.values(apResults).filter(r => !apState.pending.some(x => x.id === r.id));
+  const ids = [...apState.pending.map(x => x.id), ...apState.held.map(s => 'script:' + s.script), ...done.map(r => r.id)];
+  if (!ids.includes(mItem)) mItem = ids[0] || null;
+  $('mrows').innerHTML = (apState.pending.length ? `<div class="sec">工具申请 ${apState.pending.length}</div>${apState.pending.map(apRow).join('')}` : '')
+    + (apState.held.length ? `<div class="sec">脚本内容变了，要重新确认 ${apState.held.length}</div>${apState.held.map(heldRow).join('')}` : '')
+    + (done.length ? `<div class="sec">刚批准的</div>${done.map(r => `<div class="mrow ${mItem === r.id ? 'on' : ''}" data-mitem="${esc(r.id)}">
+        <div class="t">${esc(r.tool.label || r.tool.name)}<code>${esc(r.tool.name)}</code></div><div class="s">已写进配置，马上能用</div>
+        <span class="st ok">已批准</span></div>`).join('')}` : '')
+    + (!ids.length ? '<div class="empty">✓ 没有待审批的申请<br><br>页面上提交的工具申请、MCP server 新发现的工具、内容变了的脚本，都会出现在这里</div>' : '');
+  renderApDetail();
+}
+function renderApDetail() {
+  const det = $('mdetail');
+  unmountPanels();
+  const done = apResults[mItem];
+  if (done && !apState.pending.some(x => x.id === mItem)) { det.innerHTML = BACK + apDoneHtml(done); return; }
+  const held = apState.held.find(s => 'script:' + s.script === mItem);
+  if (held) { det.innerHTML = BACK + heldDetail(held); return; }
+  const it = apState.pending.find(x => x.id === mItem);
+  det.innerHTML = it ? BACK + apDetail(it) : '<div class="md-empty">从左侧选一条申请<br>看完整内容和风险提示，再批准或拒绝</div>';
+}
+function paramType(p) {
+  if (p.type === 'int' || p.type === 'integer') {
+    const range = p.min != null || p.max != null ? `，${p.min ?? '…'}–${p.max ?? '…'}` : '';
+    return `整数${range}`;
+  }
+  if (p.enum && p.enum.length) return `只能是 ${p.enum.map(esc).join(' / ')}`;
+  if (p.pattern) return `${esc({name: '名称', k8s_name: 'K8s 名', resource: '资源类型', date: '日期'}[p.pattern] || p.pattern)}<span class="rx">${esc(p.regex || '')}</span>`;
+  return esc([p.type, p.format].filter(Boolean).join(' · ') || '文本');
+}
+function nopassHtml(cli) {
+  const ap = approvalInfo();
+  return `<div class="nopass"><b>🔒 还没有设置审批口令，页面上不能批准</b>审批口令和网页登录密码不同，只能由管理员在宿主机上设置（交互输入两次，不回显，至少 12 个字符）：
+    <div class="cli">$ ${esc(ap.command || 'python3 /opt/ops/ops_readonly.py set-approval-passphrase')}</div>
+    设置之前，照常可以在宿主机上批准：<div class="cli">$ ${esc(cli)}</div></div>`;
+}
+function apDetail(it) {
+  const t = it.tool || {}, d = it.detail || {}, ap = approvalInfo();
+  const mcp = String(it.author || '').startsWith('mcp:');
+  const meta = [`<span class="kd ${esc(d.kind)}">${esc(d.kind_label || d.kind)}</span>`,
+    mcp ? `MCP server ${esc(it.author.slice(4))} 发现（${esc((it.review || {}).reason || '新发现')}）` : `${esc(it.author || '')} 在页面上申请`,
+    esc(it.created_at || ''), `编号 ${esc(it.id)}`];
+  let run = '';
+  if (d.kind === 'command') run = argvHtml(d.argv) + `<div class="note">不经过 shell，按格子原样执行。<span style="color:var(--accent)">蓝色</span>是模型填的参数，整个占一格，按下面的格式校验；<span style="color:#b45309">橙色</span>是写死的文件路径。</div>`;
+  if (d.kind === 'script') run = `<div class="note" style="margin:0 0 6px">脚本 <code>${esc(d.script.name)}</code> · ${d.script.lines} 行 · sha256 <code>${esc(d.script.sha256.slice(0, 16))}…</code>${d.script.commands.length ? ` · 用到 ${esc(d.script.commands.join('、'))}` : ''}</div><pre class="code">${esc(d.script.content)}</pre>`;
+  if (d.kind === 'sql') run = `<pre class="code">${esc(d.sql.query)}</pre><div class="note">连接 <code>${esc(d.sql.conn)}</code>（${esc(d.sql.db)}）· 最多返回 ${d.sql.max_rows} 行 · <code>:参数</code> 由数据库驱动绑定，不拼进 SQL</div>`;
+  if (d.kind === 'http') run = `<pre class="code">${esc(d.display)}</pre>`;
+  if (d.kind === 'mcp') run = `<dl class="where"><dt>server</dt><dd>${esc(d.mcp.server_label)}（${d.mcp.transport === 'http' ? '远程' : '本机子进程'}）</dd>
+    <dt>工具</dt><dd><code>${esc(d.mcp.tool)}</code></dd><dt>只读声明</dt><dd>${d.mcp.readonly_declared
+      ? '<span class="pill ok">server 声明了 readOnlyHint</span>' : '<span class="pill bad">没有声明</span>'}</dd></dl>`;
+  if (d.invalid) run += `<div class="pb-warn" style="padding:6px 0 0">⚠ ${esc(d.invalid)}</div>`;
+  const params = (d.params || []).length ? `<table class="pt"><tr><th>参数</th><th>类型 / 格式</th><th>必填</th><th>说明</th></tr>${d.params.map(p =>
+      `<tr><td><code>${esc(p.name)}</code></td><td>${paramType(p)}</td><td>${p.required ? '必填' : `可选${p.default != null && p.default !== '' ? `，默认 ${esc(p.default)}` : ''}`}</td><td>${esc(p.desc || '')}</td></tr>`).join('')}</table>`
+    : '<div class="note" style="margin:0">没有参数：模型只能原样调用它。</div>';
+  const where = `<dl class="where">
+    ${['command', 'script'].includes(d.kind) ? `<dt>适用系统</dt><dd>${(d.os || []).length ? d.os.map(x => `<span class="pill">${esc(TL_OS[x] || x)}</span>`).join('') : '<span class="pill">不限</span>'}</dd>` : ''}
+    ${(d.groups || []).length ? `<dt>适用分组</dt><dd>${d.groups.map(g => `<span class="pill">${esc(g)}</span>`).join('')}</dd>` : ''}
+    ${(d.hosts || []).length ? `<dt>批准后在</dt><dd>${d.hosts.map(h => `<span class="pill ${h.ok ? (h.push ? 'warn' : 'ok') : 'off'}" title="${esc(h.ok ? (h.push ? '受控模式：要等管理员 push 白名单后才能跑' : '能跑') : h.reason)}">${h.ok ? '✓' : '✗'} ${esc(h.name)}${h.push ? '（要 push）' : ''}</span>`).join('')}</dd>` : ''}
+    <dt>内部/外部</dt><dd>${d.external ? `<span class="pill warn">外部</span><span style="color:var(--muted)">${esc(d.external_why || '')}</span>` : '<span class="pill ok">内部</span>'}</dd></dl>`;
+  const risks = (d.risks || []).length ? `<div class="risks">${d.risks.map(r => `<div class="risk ${esc(r.level)}"><span>${r.level === 'high' ? '⛔' : r.level === 'warn' ? '⚠️' : 'ℹ️'}</span><div><b>${esc(r.title)}</b>${esc(r.text)}</div></div>`).join('')}</div>`
+    : '<div class="note" style="margin:0">没有风险提示。</div>';
+  const undeclared = d.kind === 'mcp' && !d.mcp.readonly_declared;
+  const cli = (d.cli || '') + (undeclared ? ' --attest-readonly' : '');
+  const bar = !ap.configured ? `<div class="ap-bar">${nopassHtml(cli)}<div class="row"><span class="grow"></span>
+        <button class="btn danger" data-apreject="${esc(it.id)}">拒绝</button><button class="btn" disabled title="还没有设置审批口令">批准</button></div></div>`
+    : `<div class="ap-bar">${undeclared ? `<label class="attest"><input type="checkbox" id="apAttest"><span><b>我确认这个工具只读</b>：看过它的说明和参数，它不会改任何东西（等同于命令行的 --attest-readonly）</span></label>` : ''}
+        ${ap.locked ? `<div class="nopass"><b>🔒 页面审批已锁定到 ${esc(ap.locked_until)}</b>审批口令连续输错 ${ap.max_failures} 次。宿主机上的命令行审批不受影响。</div>` : ''}
+        <div class="row"><span class="grow">批准后写进工具服务的主配置（自动备份），下一次提问就能用${d.kind === 'script' ? '；批准的是上面这份内容' : ''}</span>
+        <button class="btn danger" data-apreject="${esc(it.id)}">拒绝</button>
+        <button class="btn warn" data-approve="${esc(it.id)}" ${d.invalid || ap.locked ? 'disabled' : ''}>批准…</button></div></div>`;
+  return `<div class="ap">
+    <div class="ap-hd"><div class="nm">${esc(t.label || t.name)}<code>${esc(t.name)}</code></div>
+      <div class="meta">${meta.join('<span>·</span>')}</div>${t.desc ? `<div class="desc">${esc(t.desc)}</div>` : ''}</div>
+    <div class="ap-sec"><h4>${KIND_RUN[d.kind] || '内容'}</h4>${run}</div>
+    <div class="ap-sec"><h4>参数 <small>模型只能按这些格式填值，填错直接拒绝执行</small></h4>${params}</div>
+    <div class="ap-sec"><h4>在哪里跑</h4>${where}</div>
+    <div class="ap-sec"><h4>风险提示 ${(d.risks || []).length ? `<small>${d.risks.length} 条</small>` : ''}</h4>${risks}</div>
+    <div class="ap-sec"><h4>也可以在宿主机上批准</h4><div class="cli">$ ${esc(cli)}</div></div>
+    ${bar}</div>`;
+}
+function heldDetail(s) {
+  const ap = approvalInfo();
+  return `<div class="ap"><div class="ap-hd"><div class="nm">${esc(s.label || s.tool)}<code>${esc(s.tool)}</code></div>
+      <div class="meta"><span class="kd script">脚本型</span>${s.state === 'changed' ? '脚本内容和登记的哈希对不上，工具已暂停' : '脚本还没确认过，工具暂不生效'}</div></div>
+    <div class="ap-sec"><h4>现在的内容 <small>sha256 ${esc(s.sha256.slice(0, 16))}…${s.trusted_sha256 ? `，登记的是 ${esc(s.trusted_sha256.slice(0, 16))}…` : ''}</small></h4><pre class="code">${esc(s.content)}</pre></div>
+    <div class="ap-sec"><h4>风险提示</h4><div class="risks"><div class="risk warn"><span>⚠️</span><div><b>内容变了</b>可能是有人按计划改了脚本，也可能是被人偷换。逐行看过、确认是预期的改动再重新确认；认不出这个改动就先去宿主机上查。</div></div></div></div>
+    <div class="ap-sec"><h4>也可以在宿主机上确认</h4><div class="cli">$ ${esc(s.cli)}</div></div>
+    <div class="ap-bar">${ap.configured ? '' : nopassHtml(s.cli)}<div class="row"><span class="grow">确认后登记这份内容的哈希，引用它的工具恢复可用</span>
+      <button class="btn warn" data-trust="${esc(s.script)}" ${ap.configured && !ap.locked ? '' : 'disabled'}>重新确认…</button></div></div></div>`;
+}
+function apDoneHtml(r) {
+  const w = r.written;
+  return `<div class="ap"><div class="ap-done"><b>✅ 已批准：${esc(r.tool.label || r.tool.name)}</b><br>
+    ${w ? `写进了主配置 <code>${esc(w.path)}</code> 第 ${w.line} 行起<br>改之前的备份：<code>${esc(w.backup)}</code><br>`
+        : r.mcp_file ? `写进了 <code>${esc(r.mcp_file)}</code><br>` : ''}
+    重新加载后共 ${r.total} 个工具定义；下一次提问就能用，不用重启。</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-seetool="${esc(r.tool.name)}">在工具列表里查看</button>
+      <button class="btn" data-asktool="${esc(r.tool.label || r.tool.name)}">💬 用它提问</button></div></div>`;
+}
+function approveSummary(d) {
+  const what = d.kind === 'command' ? argvHtml(d.argv)
+    : d.kind === 'script' ? `<pre>scripts/${esc(d.script.name)}（${d.script.lines} 行，sha256 ${esc(d.script.sha256.slice(0, 16))}…）</pre>`
+    : d.kind === 'sql' ? `<pre>${esc(d.sql.query)}</pre>` : d.kind === 'mcp' ? `<pre>MCP ${esc(d.mcp.server)} / ${esc(d.mcp.tool)}</pre>`
+    : `<pre>${esc(d.display || '')}</pre>`;
+  const high = (d.risks || []).filter(r => r.level === 'high').length;
+  return `批准后，工具服务${['command', 'script'].includes(d.kind) ? '以 root 身份' : ''}按下面执行，模型下一次提问就能用：${what}${
+    high ? `<div style="color:var(--danger);margin-top:6px">⛔ 有 ${high} 条高风险提示，确认看过再批。</div>` : ''}`;
+}
+function proposalSummary(p) {
+  const im = p.impl || {};
+  const what = p.argv ? argvHtml(p.argv) : p.script ? `<pre>scripts/${esc(p.script)}</pre>`
+    : im.type === 'sql' ? `<pre>${esc(im.query)}</pre>` : `<pre>GET ${esc((p.http || {}).url || '')}</pre>`;
+  return `先提交申请，再用口令批准；批准后工具服务按下面执行：${what}`;
+}
+
+/* 口令对话框：输错留在框里重输（还能试几次由工具服务回），锁定、脚本被改这类错误按钮变灰。
+   口令只在这次请求里用，发出去就清空输入框；不进 localStorage，不进地址栏。 */
+let dlgCancel = null;
+function closeDialog(cancelled) {
+  const wrap = document.querySelector('.dlg-scrim'); if (!wrap) return;
+  wrap.querySelectorAll('input[type=password]').forEach(x => { x.value = ''; });
+  wrap.remove();
+  const cb = dlgCancel; dlgCancel = null;
+  if (cancelled && cb) cb();
+}
+function askPassphrase({title, summary, confirm, run, done, cancel}) {
+  closeDialog();
+  const ap = approvalInfo();
+  const local = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(location.hostname);
+  const wrap = document.createElement('div');
+  wrap.className = 'dlg-scrim';
+  wrap.innerHTML = `<form class="dlg" autocomplete="off">
+    <h3>🔐 ${esc(title)}</h3><div class="sum">${summary || ''}</div>
+    <label class="pw">审批口令<input type="password" id="dlgPass" autocomplete="off" spellcheck="false">
+      <span class="hint">不是网页登录密码。审批口令由管理员在宿主机上设置，只存哈希，由工具服务核对；连续输错 ${ap.max_failures || 5} 次，页面审批锁定 ${ap.lock_minutes || 15} 分钟。</span></label>
+    ${local ? '' : `<div class="plain">⚠ 当前是明文连接（${esc(location.host)}），口令会以明文经过网络。经 SSH 隧道、从本机地址（127.0.0.1）打开更安全。</div>`}
+    <div class="err" id="dlgErr"></div>
+    <div class="row"><button type="button" class="btn" data-dlgcancel>取消</button><button type="submit" class="btn warn" id="dlgOk">${esc(confirm || '确定')}</button></div></form>`;
+  document.body.appendChild(wrap);
+  dlgCancel = cancel || null;
+  const input = $('dlgPass'), ok = $('dlgOk');
+  setTimeout(() => input.focus(), 30);
+  wrap.addEventListener('mousedown', e => { if (e.target === wrap) closeDialog(true); });
+  wrap.querySelector('[data-dlgcancel]').onclick = () => closeDialog(true);
+  wrap.querySelector('form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const pass = input.value;
+    if (!pass) { input.focus(); return; }
+    input.value = '';
+    ok.disabled = true; ok.textContent = '核对中…'; $('dlgErr').textContent = '';
+    try {
+      const result = await run(pass);
+      dlgCancel = null; wrap.remove();
+      if (done) done(result);
+    } catch (err) {
+      $('dlgErr').textContent = err.message;
+      ok.textContent = confirm || '确定';
+      ok.disabled = err.status === 423 || err.status === 409;
+      input.focus();
+      if (err.status === 423 || err.status === 409) refreshApproval();
+    }
+  });
+}
+async function refreshApproval() {
+  const r = await fetch('/api/tools/approval').catch(() => null);
+  if (r && r.ok) apState.approval = await r.json();
+}
+async function postJson(path, body) {
+  const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const err = new Error(typeof d.detail === 'string' ? d.detail : `请求失败（${r.status}）`);
+    err.status = r.status;
+    throw err;
+  }
+  return d;
+}
+const approveRequest = (id, body) => postJson(`/api/tools/pending/${encodeURIComponent(id)}/approve`, body)
+  .then(d => ({...d, id}));
+function approveFlow(id) {
+  const it = apState.pending.find(x => x.id === id); if (!it) return;
+  const d = it.detail || {}, t = it.tool || {};
+  const attest = !!$('apAttest')?.checked;
+  if (d.kind === 'mcp' && !d.mcp.readonly_declared && !attest) {
+    toast('这个 MCP 工具没有只读声明：先勾选「我确认这个工具只读」', 'err');
+    const box = $('apAttest')?.closest('.attest'); if (box) flash(box);
+    return;
+  }
+  askPassphrase({
+    title: `批准「${t.label || t.name}」`, summary: approveSummary(d), confirm: '批准',
+    run: passphrase => approveRequest(id, {passphrase, attest_readonly: attest, script_sha256: d.script?.sha256 || ''}),
+    done: result => { apResults[id] = result; mItem = id; toast(`已批准：${t.label || t.name}`, 'ok'); renderManage(); refreshBadges(); },
+  });
+}
+async function rejectFlow(id) {
+  const it = apState.pending.find(x => x.id === id); if (!it) return;
+  if (!confirm(`拒绝「${it.tool?.label || it.tool?.name}」？申请会被删掉，不会写进配置。`)) return;
+  try { await postJson(`/api/tools/pending/${encodeURIComponent(id)}/reject`); toast('已拒绝', 'ok'); }
+  catch (err) { toast('拒绝失败：' + err.message, 'err'); }
+  mItem = null; renderManage(); refreshBadges();
+}
+function trustFlow(script) {
+  const s = apState.held.find(x => x.script === script); if (!s) return;
+  askPassphrase({
+    title: `重新确认脚本 ${script}`, confirm: '确认',
+    summary: `确认的是此刻的内容（sha256 ${esc(s.sha256.slice(0, 16))}…）；引用它的工具「${esc(s.label || s.tool)}」恢复可用。`,
+    run: passphrase => postJson(`/api/tools/scripts/${encodeURIComponent(script)}/trust`, {passphrase, sha256: s.sha256}),
+    done: () => { toast(`已重新确认 ${script}`, 'ok'); mItem = null; renderManage(); refreshBadges(); },
+  });
+}
+
+/* ---------- SOP 页「待确认提议」：从自由排查里长出来的 SOP，保存或忽略 ---------- */
+async function renderProposals() {
+  $('mgroups').innerHTML = '';
+  $('mtool').innerHTML = '<span class="ttl">待确认提议<small>从自由排查里长出来的 SOP：保存后默认停用，核对每一步再启用</small></span>';
+  const d = await (await fetch('/api/proposals?status=pending')).json().catch(() => ({proposals: []}));
+  const list = d.proposals || [];
+  list.forEach(p => { mCache['pp:' + p.id] = p; });
+  if (!list.some(p => p.id === mItem)) mItem = list[0]?.id || null;
+  $('mrows').innerHTML = list.map(p => `<div class="mrow ${mItem === p.id ? 'on' : ''}" data-mitem="${esc(p.id)}">
+      <div class="t">💡 ${p.kind === 'extend_sop' ? `补充 SOP《${esc(p.target?.name || '')}》` : `新 SOP《${esc(p.name)}》`}</div>
+      <div class="s">${p.steps.length} 步 · ${esc(p.steps.map(s => toolLabel(s.tool)).join(' → '))} · ${esc(ago(p.created_at))}</div>
+      <span class="st">${p.kind === 'extend_sop' ? '补充步骤' : '新建'}</span></div>`).join('')
+    || '<div class="empty">✓ 没有待确认的提议<br><br>自由排查调了两个以上的工具、得出结论后，后台会提议把这次的做法沉淀为 SOP</div>';
+  renderProposalDetail();
+}
+function renderProposalDetail() {
+  unmountPanels();
+  const p = mCache['pp:' + mItem];
+  $('mdetail').innerHTML = p ? BACK + proposalHtml(p).replace('<details>', '<details open>')
+    : '<div class="md-empty">从左侧选一条提议<br>看步骤和依据的工具返回，再保存或忽略</div>';
+}
+
+/* ---------- 工具页「主机与数据源」：只读，写清在宿主机上怎么做 ----------
+   主机、连接、MCP server、对外开放（export）、审批口令都只能由管理员在宿主机上配：页面能定义的东西，网页密码一泄露就能被人改。 */
+async function renderInfra() {
+  $('msettings').innerHTML = '<div class="sf"><div class="empty">加载中…</div></div>';
+  const [t, s, h] = await Promise.all([
+    fetch('/api/tools').then(r => r.json()).catch(() => ({})),
+    fetch('/api/tools/scripts').then(r => r.json()).catch(() => ({scripts: []})),
+    fetch('/api/tools/held').then(r => r.ok ? r.json() : {scripts: []}).catch(() => ({scripts: []}))]);
+  await refreshApproval();
+  if (page !== 'tools' || tlTab !== 'infra') return;
+  const o = overview || {}, src = o.tools?.sources || {}, ap = approvalInfo();
+  const hosts = t.hosts || {configured: false}, conns = t.connections || {}, servers = t.mcp_servers || {};
+  const held = new Set((h.scripts || []).map(x => x.script));
+  const hostRows = Object.entries(hosts.list || {}).map(([name, x]) => {
+    const st = x.via === 'local' ? '<span class="pill ok">本机</span>' : !x.status ? '<span class="pill">还没检查</span>'
+      : x.status.reachable && !x.status.error ? '<span class="pill ok">在线</span>' : `<span class="pill bad" title="${esc(x.status.error || '')}">离线</span>`;
+    return `<tr><td><b>${esc(name)}</b>${name === hosts.default ? ' <span class="pill">默认</span>' : ''}</td><td>${x.via === 'local' ? '—' : `<code>${esc(x.user + '@' + x.address)}</code>`}</td>
+      <td>${x.via === 'local' ? '本机' : x.mode === 'direct' ? '直连（只读靠账号权限）' : '受控（强制命令 + 白名单）'}</td><td>${st}${x.status?.error ? `<div class="note">${esc(x.status.error)}</div>` : ''}</td>
+      <td>${(x.groups || []).map(g => `<span class="pill">${esc(g)}</span>`).join(' ') || '—'}</td></tr>`;
+  }).join('');
+  const connRows = Object.entries(conns).map(([name, c]) => `<tr><td><b>${esc(name)}</b>${c.label ? `<div class="note">${esc(c.label)}</div>` : ''}</td>
+      <td>${esc(TL_CONN_TYPE[c.type] || c.type)}</td><td><code>${esc(c.base || '')}</code></td>
+      <td>${c.external ? `<span class="pill warn" title="${esc(c.external_why || '')}">外部</span>` : '<span class="pill ok">内部</span>'}${c.driver ? ` <span class="pill bad" title="${esc(c.driver)}">缺驱动</span>` : ''}</td>
+      <td>${(c.used_by || []).map(esc).join('、') || '—'}</td></tr>`).join('');
+  const serverRows = Object.entries(servers).map(([id, x]) => `<tr><td><b>${esc(x.label || id)}</b><div class="note"><code>${esc(id)}</code></div></td>
+      <td>${x.transport === 'http' ? `远程 <code>${esc(x.url || '')}</code>` : '本机子进程（stdio）'}</td>
+      <td>${x.online ? '<span class="pill ok">在线</span>' : `<span class="pill bad">离线</span>${x.reason ? `<div class="note">${esc(x.reason)}</div>` : ''}`}</td>
+      <td>发现 ${x.discovered ?? '—'} · 已批准 ${x.approved ?? 0}</td></tr>`).join('');
+  const scriptRows = (s.scripts || []).map(x => `<tr><td><code>${esc(x.name)}</code></td>
+      <td>${held.has(x.name) ? '<span class="pill warn">内容变了，要重新确认</span>' : x.trusted ? '<span class="pill ok">已确认</span>' : '<span class="pill">未确认</span>'}</td>
+      <td>${esc(x.used_by || '—')}</td><td>${x.executable ? '可执行' : '<span style="color:var(--danger)">没有执行位</span>'}</td></tr>`).join('');
+  const table = (head, rows, none) => rows ? `<table class="ax"><tr>${head.map(x => `<th>${x}</th>`).join('')}</tr>${rows}</table>` : `<div class="note">${none}</div>`;
+  $('msettings').innerHTML = `<div class="sf">
+    <h2>主机与数据源</h2>
+    <p class="lead">工具从哪里取数据。这一页只读：主机、连接、MCP server、对外开放哪些工具、审批口令，都只能由管理员在宿主机上配置——
+      页面上能改的东西，网页密码一泄露就能被别人改。每一块下面写了在宿主机上怎么做。</p>
+    <div class="card"><h3>主机 <small>命令型工具在哪些机器上跑</small><span class="ro">只读</span></h3>
+      ${hosts.configured ? table(['名称', '账号与地址', '方式', '状态', '分组'], hostRows, '') : '<div class="note">没有配置主机清单：命令型工具都在工具服务所在的这台机器上跑。</div>'}
+      <div class="howto"><b>在宿主机上加一台主机：</b>在 <code>/opt/ops/ops_tools.yaml</code> 的 <code>hosts</code> 里加一条 →
+        <code>ops_readonly.py enroll &lt;主机&gt;</code> 核对并登记 host key → 按它打印的步骤在主机上装执行器 →
+        <code>ops_readonly.py push --target &lt;主机&gt;</code> 下发白名单 → <code>ops_readonly.py status</code> 检查。</div></div>
+    <div class="card"><h3>连接 <small>接口和数据库的地址、凭据引用</small><span class="ro">只读</span></h3>
+      ${table(['名称', '类型', '地址', '内部/外部', '谁在用'], connRows, '还没有连接。')}
+      <div class="howto"><b>在宿主机上：</b>在主配置的 <code>connections</code> 里加；凭据写成 <code>\${名字}</code>，值放在 <code>/etc/ops-readonly.env</code>
+        的 <code>OPS_SECRET_名字</code>。数据库要用只读账号。页面和模型都看不到凭据的值。</div></div>
+    <div class="card"><h3>MCP server <small>别人写好的工具服务器</small><span class="ro">只读</span></h3>
+      ${table(['名称', '方式', '状态', '工具'], serverRows, '没有声明 MCP server。')}
+      <div class="howto"><b>在宿主机上：</b>在主配置的 <code>mcp_servers</code> 里声明；发现到的工具自动进「待审批」，批准后才能用。server 是跑在宿主机上的代码，页面连申请都不能申请。</div></div>
+    <div class="card"><h3>脚本 <small>脚本型工具引用的脚本</small><span class="ro">只读</span></h3>
+      ${table(['脚本', '状态', '引用它的工具', '执行位'], scriptRows, '还没有脚本。')}
+      <div class="howto"><b>在宿主机上：</b>脚本由 root 放进 <code>${esc(s.directory || '/opt/ops/scripts')}/</code> 并 <code>chmod +x</code>；页面只能在申请里引用它。
+        内容一变，引用它的工具自动停用，到「待审批」里重新确认（要输审批口令），或在宿主机上 <code>ops_readonly.py trust &lt;脚本&gt;</code>。</div></div>
+    <div class="card"><h3>对外开放的数据工具 <small>外部智能体经 MCP 能调哪些</small><span class="ro">只读</span></h3>
+      <div class="note">${o.access?.enabled ? '对外接入已开启。' : '对外接入没有打开。'}数据工具默认一个都不对外；开放哪些只能在主配置里给工具加 <code>export: true</code>，场景包里写了也不算。</div>
+      <div class="howto"><b>在宿主机上：</b>编辑 <code>/opt/ops/ops_tools.yaml</code>，在要开放的工具下加一行 <code>export: true</code>，保存即生效。在「对外接入」页能看到开放了哪些。</div></div>
+    <div class="card"><h3>计算沙箱与联网</h3>
+      <div class="chipset"><span class="pill ${src.sandbox ? 'ok' : 'off'}">${src.sandbox ? '✓' : '–'} 计算沙箱（python_exec）</span><span class="pill ${src.web ? 'ok' : 'off'}">${src.web ? '✓' : '–'} 联网搜索</span></div>
+      <div class="howto"><b>在宿主机上：</b>沙箱是 <code>.env</code> 的 <code>SANDBOX_URL</code>、<code>SANDBOX_TOKEN</code>；联网是 <code>WEB_SEARCH_TOOL</code>。改完重新发版（docs/正式部署.md）。</div></div>
+    <div class="card"><h3>审批口令 <small>在页面上批准工具时要输</small><span class="ro">只读</span></h3>
+      <div class="chipset">${ap.locked ? `<span class="pill bad">锁定到 ${esc(ap.locked_until)}</span>` : ap.configured ? '<span class="pill ok">已设置</span>' : '<span class="pill warn">还没有设置</span>'}</div>
+      <div class="howto"><b>在宿主机上设置或重置：</b><code>${esc(ap.command || 'python3 /opt/ops/ops_readonly.py set-approval-passphrase')}</code>（交互输入两次，不回显，至少 12 个字符）。
+        它和网页登录密码不同，只以哈希存在工具服务上（root 才能读）；连续输错 ${ap.max_failures || 5} 次锁定 ${ap.lock_minutes || 15} 分钟，锁定期间命令行审批照常可用。忘了就用同一个命令重设。</div></div>
+  </div>`;
+}
 /* ---------- 模型设置页 ---------- */
 let stTest = null, stPoll = null;
 async function renderSettings() {
@@ -2736,10 +3415,12 @@ async function renderSettings() {
   const job = s.reindex_job ? await fetch('/api/jobs/' + s.reindex_job).then(r => r.ok ? r.json() : null).catch(() => null) : null;
   $('msettings').innerHTML = `<div class="sf">
     <h2>模型设置</h2>
+    <div class="chipset" style="margin:6px 0 12px">${[['stCardModel', '模型'], ['stCardIndex', '向量索引'], ['stCardPacks', '场景包'], ['stCardPass', '审批口令']]
+      .map(([id, t]) => `<button class="pill acc" data-jump="${id}">${t}</button>`).join('')}</div>
     ${s.configured ? '' : `<div class="warn" style="margin:0 0 14px"><b>首次配置。</b>选一个方式，点「填入示例」后改成自己的地址、key 和模型名，再「测试连接」→「保存」。
       <div class="row" style="margin-top:8px"><button data-preset="siliconflow">一家搞定：硅基流动（对话 + 向量一把 key）</button><button data-preset="gateway">有网关：LiteLLM / OneAPI</button><button data-preset="direct">没有网关：对话 + 向量各一家</button></div></div>`}
     <p class="lead">所有模型调用走 OpenAI 兼容接口。可以是一个网关统一转发，也可以<b>没有网关</b>：对话模型和向量模型各填各的地址。这里改的是<b>数据发给谁</b>；工具凭据不在这里，始终只在宿主机。保存后立刻生效，不用重启。${s.web_search ? '' : '<br>联网搜索依赖 LiteLLM 网关的 /v1/search，直连厂商时不可用。'}</p>
-    <div class="card"><h3>网关 / 对话模型地址 <small>LiteLLM、OneAPI，或任何 OpenAI 兼容地址（DeepSeek、硅基流动、百炼 compatible-mode…）</small></h3>
+    <div class="card" id="stCardModel"><h3>网关 / 对话模型地址 <small>LiteLLM、OneAPI，或任何 OpenAI 兼容地址（DeepSeek、硅基流动、百炼 compatible-mode…）</small></h3>
       <label><span>地址<i>以 /v1 结尾</i></span><div class="inline"><input id="stUrl" value="${esc(s.llm_base_url)}" placeholder="http://127.0.0.1:4000/v1">${src('llm_base_url')}</div></label>
       <label><span>API Key<i>只写不读</i></span><div class="inline"><input id="stKey" type="password" autocomplete="new-password" placeholder="${s.llm_api_key_masked ? '已设置 ' + esc(s.llm_api_key_masked) + '，留空不改' : '必填'}">${src('llm_api_key')}</div></label>
     </div>
@@ -2756,14 +3437,64 @@ async function renderSettings() {
         <button class="danger" id="stReset" title="删掉页面上的全部覆盖，回到 .env 的值">恢复 .env</button><span id="stMsg" class="note"></span></div>
       <div id="stResult" class="result" hidden></div>
     </div>
-    <div class="card"><h3>向量索引 <small>换向量模型后，所有文档要用新模型重新向量化</small></h3>
+    <div class="card" id="stCardIndex"><h3>向量索引 <small>换向量模型后，所有文档要用新模型重新向量化</small></h3>
       <dl><dt>文档数</dt><dd>${s.docs}</dd><dt>当前维度</dt><dd>${s.index_dim ?? '（空）'}</dd><dt>重建状态</dt><dd id="stJob">${job ? esc(job.stage) + (job.status === 'done' && job.result ? `（成功 ${job.result.rebuilt}/${job.result.total}${job.result.failed.length ? '，失败：' + esc(job.result.failed.join('、')) : ''}）` : '') : '—'}</dd></dl>
       <div class="row"><button id="stReindex" ${s.docs ? '' : 'disabled'}>重建全部索引</button><span class="note">从保存的原文件重新解析、向量化，图片识别走缓存不重复花钱；${s.docs} 个文档约需几分钟。</span></div>
     </div>
     <p class="note"><b>为什么 key 不回显</b>：页面只能写入新 key，看不到旧的；文件存在 data/settings.json，权限 600。<b>和工具凭据的区别</b>：这里决定问题和片段发给哪个模型，工具凭据决定宿主机执行什么——后者永远不进页面。</p>
+    <div class="card" id="stCardPacks"><h3>场景包 <small>一套文档 + 工具定义 + SOP，导入后就能问（docs/场景包.md）</small></h3><div id="stPacks" class="note">加载中…</div>
+      <div class="row"><button id="stExport">导出 SOP（sops.json）</button><span class="note">把库里现场长出来、核对过的 SOP 按场景包格式导出，放进包里给别处用。工具定义不随包导入，由宿主机 include。</span></div></div>
+    <div class="card" id="stCardPass"><h3>审批口令 <small>在页面上批准工具时要输</small><span class="ro">只读</span></h3><div id="stPass" class="note">加载中…</div></div>
   </div>`;
+  paintPacks();
+  refreshApproval().then(() => {
+    const ap = approvalInfo(), box = $('stPass'); if (!box) return;
+    box.innerHTML = `<div class="chipset" style="margin-bottom:8px">${ap.locked ? `<span class="pill bad">锁定到 ${esc(ap.locked_until)}</span>` : ap.configured ? '<span class="pill ok">已设置</span>' : '<span class="pill warn">还没有设置</span>'}</div>
+      审批口令和网页登录密码不同：只以哈希存在工具服务上，由工具服务核对；网页密码泄露了也批不了工具。
+      <div class="howto"><b>在宿主机上设置或重置：</b><code>${esc(ap.command || 'python3 /opt/ops/ops_readonly.py set-approval-passphrase')}</code>（交互输入两次，不回显，至少 12 个字符）。
+        连续输错 ${ap.max_failures || 5} 次锁定 ${ap.lock_minutes || 15} 分钟，锁定期间命令行审批照常可用。</div>`;
+  });
   if (job && (job.status === 'queued' || job.status === 'running')) pollReindex(s.reindex_job);
 }
+/* 场景包：每个包导没导入、缺不缺工具；可以（重新）导入，或把库里的 SOP 按包的格式导出 */
+const PACK_PHASE = {imported: ['ok', '已导入'], outdated: ['warn', '有新版本'], failed: ['bad', '导入失败'], invalid: ['bad', '包写错了'],
+                    pending: ['', '未导入']};
+async function paintPacks() {
+  const d = await (await fetch('/api/packs')).json().catch(() => ({packs: []}));
+  const box = $('stPacks'); if (!box) return;
+  box.innerHTML = (d.packs || []).length ? `<table class="ax"><tr><th>场景包</th><th>内容</th><th>状态</th><th></th></tr>${d.packs.map(p => {
+    const st = PACK_PHASE[p.phase] || ['', p.phase];
+    return `<tr><td><b>${esc(p.name)}</b> <span class="note">v${p.version}</span><div class="note">${esc(p.summary || '')}</div></td>
+      <td style="white-space:nowrap">${p.docs.length} 文档 · ${p.tools.length} 工具 · ${p.sops.length} SOP${p.missing_tools.length
+        ? `<div class="note" style="color:var(--danger);white-space:normal">缺工具：${esc(p.missing_tools.join('、'))}</div>` : ''}</td>
+      <td><span class="pill ${st[0]}">${st[1]}</span>${p.note ? `<div class="note">${esc(p.note)}</div>` : ''}${
+        p.problems.length ? `<div class="note" style="color:var(--danger)">${esc(p.problems.join('；'))}</div>` : ''}</td>
+      <td><button class="pk" data-packimport="${esc(p.id)}" data-force="${p.phase === 'imported' ? '1' : ''}" ${p.phase === 'invalid' ? 'disabled' : ''}>${
+        p.phase === 'imported' ? '重新导入' : '导入'}</button></td></tr>`;
+  }).join('')}</table><div class="note" style="margin-top:6px">包目录：<code>${esc(d.dir || '')}</code>${(d.auto || []).length ? `；自动导入：${esc(d.auto.join('、'))}` : ''}</div>` : '没有场景包。';
+}
+$('msettings').addEventListener('click', async e => {
+  if (mTab !== 'settings') return;
+  const jump = e.target.closest('[data-jump]');
+  if (jump) { $(jump.dataset.jump)?.scrollIntoView({behavior: 'smooth', block: 'start'}); return; }
+  const imp = e.target.closest('[data-packimport]');
+  if (imp) {
+    imp.disabled = true; imp.textContent = '导入中…';
+    try {
+      const d = await postJson(`/api/packs/${encodeURIComponent(imp.dataset.packimport)}/import${imp.dataset.force ? '?force=true' : ''}`);
+      toast(d.skipped ? '同一版本已经导入过' : `已导入：${(d.docs || []).length} 个文档、${(d.sops || []).length} 个 SOP`, 'ok');
+      loadDocs();
+    } catch (err) { toast('导入失败：' + err.message, 'err', 8000); }
+    return paintPacks();
+  }
+  if (e.target.id === 'stExport') {
+    const d = await (await fetch('/api/packs/export')).json();
+    const url = URL.createObjectURL(new Blob([JSON.stringify(d.sops || [], null, 2)], {type: 'application/json'}));
+    const link = Object.assign(document.createElement('a'), {href: url, download: 'sops.json'});
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+});
 function pollReindex(id) {
   clearInterval(stPoll);
   stPoll = setInterval(async () => {
@@ -2859,8 +3590,26 @@ function axSnippets(url, secret) {
 async function renderAccess() {
   const r = await fetch('/api/mcp');
   if (!r.ok) {
-    $('msettings').innerHTML = `<div class="sf"><h2>对外接入</h2><p class="lead">对外 MCP 出口没有打开。要让 Claude Code、Copilot、Cursor 这类外部智能体接入，
-      在 .env 里设 <code>MCP_ENABLED=true</code> 后重新发版（见 docs/正式部署.md「对外接入」）。</p></div>`;
+    // 关着时不藏：说明它是什么、打开后能做什么、在宿主机上怎么打开
+    $('msettings').innerHTML = `<div class="sf">
+      <h2>对外接入 <span class="pill off" style="vertical-align:3px">没有打开</span></h2>
+      <p class="lead">让同事的 Claude Code、GitHub Copilot、Cursor 这类外部智能体经 MCP 接进来：查知识库、按 SOP 排查、调宿主机开放的只读工具。
+        每个客户端一枚令牌，库里只存哈希；<code>/mcp</code> 只认令牌，不认这个页面的密码。</p>
+      <div class="card"><h3>打开后这里能做什么</h3><ul class="ax">
+        <li><b>签发令牌</b>：给每个客户端一枚，限定范围（知识库、SOP、数据工具）和文档分类，可设有效期、随时吊销</li>
+        <li><b>接入片段</b>：Claude Code、VS Code、Cursor 的配置直接复制</li>
+        <li><b>调用记录</b>：每次调用记客户端、工具、参数、返回大小、耗时、成败</li>
+        <li><b>导出 SKILL.md</b>：每个启用的 SOP 一个目录，放进客户端离线使用</li></ul></div>
+      <div class="card"><h3>在宿主机上打开</h3>
+        <ol class="off-steps">
+          <li>编辑 <code>/opt/kb-app/.env</code>，加上 <code>MCP_ENABLED=true</code></li>
+          <li>只让经 SSH 隧道的本机连接进来（推荐）：<code>MCP_CLIENTS=127.0.0.1,::1</code>、<code>MCP_ALLOWED_HOSTS=127.0.0.1,localhost</code></li>
+          <li>重新发版：<code>bash deploy/release.sh</code>（命令全文见 docs/正式部署.md「对外接入」）</li>
+          <li>回到这一页签发令牌，把接入片段交给使用的人</li></ol>
+        <div class="howto">数据工具默认一个都不对外，要在工具服务的主配置里给工具加 <code>export: true</code>。打开前先看 docs/工具.md「对外 MCP 出口」里的安全说明：
+          知识库片段和工具返回会进入外部智能体用的模型服务商；外部智能体通常能执行命令、改文件，要对写操作保持人工确认。</div></div>
+      <div class="card ghost"><h3>令牌 <small>打开后显示</small></h3><table class="ax"><tr><th>名字</th><th>范围</th><th>有效期至</th><th>最近使用</th><th>状态</th></tr>
+        <tr><td>张三的 Claude Code</td><td>知识库、SOP</td><td>—</td><td>—</td><td>—</td></tr></table></div></div>`;
     return;
   }
   const s = await r.json();
@@ -2958,13 +3707,8 @@ $('msettings').addEventListener('click', async e => {
   }
 });
 
-$('mnav').addEventListener('click', e => {
-  const b = e.target.closest('[data-tab]'); if (!b) return;
-  mTab = b.dataset.tab; mGroup = null; mItem = null; mSearch = ''; axIssued = null;
-  tlEditing = null; tlProposing = false; pbEditing = null; pbPicking = false;
-  localStorage.setItem('kb-mtab', mTab); renderManage();
-});
 $('mgroups').addEventListener('click', e => {
+  if (e.target.closest('[data-infra]')) { tlTab = 'infra'; syncUrl(true); return renderManage(); }
   const g = e.target.closest('[data-mgroup]'); if (!g) return;
   mGroup = g.dataset.mgroup; mSearch = ''; mItem = null; tlProposing = false; pbEditing = null; pbPicking = false; renderManage();
 });
@@ -2973,7 +3717,12 @@ $('mlist').addEventListener('click', e => {
   if (row) {
     mItem = row.dataset.mitem; tlEditing = null; tlProposing = false; pbEditing = null; pbPicking = false;
     $('mrows').querySelectorAll('.mrow').forEach(r => r.classList.toggle('on', r === row));
-    renderDetail(); return;
+    if (mTab === 'tools' && tlTab === 'pending') renderApDetail();
+    else if (mTab === 'sop' && pbTab === 'proposals') renderProposalDetail();
+    else renderDetail();
+    document.body.classList.add('detail');   // 窄屏：详情盖住整页
+    syncUrl(false);
+    return;
   }
   const more = e.target.closest('[data-docmore]');
   if (more) {
@@ -2984,9 +3733,10 @@ $('mlist').addEventListener('click', e => {
     return;
   }
   if (e.target.id === 'mUpload') return $('files').click();
-  if (e.target.id === 'mNewTool') { tlProposing = true; tlProposeKind = 'command'; tlParamState = {}; mItem = null; return renderDetail(); }
-  if (e.target.id === 'mNewSop') { pbEditing = {steps: []}; pbPicking = false; mItem = null; return renderDetail(); }
-  if (e.target.id === 'mExtract') { pbPicking = true; pbEditing = null; pbDocFilter = ''; mItem = null; return renderDetail(); }
+  const open = fn => { fn(); mItem = null; renderDetail(); document.body.classList.add('detail'); };
+  if (e.target.id === 'mNewTool') return open(() => { tlProposing = true; tlProposeKind = 'command'; tlParamState = {}; });
+  if (e.target.id === 'mNewSop') return open(() => { pbEditing = {steps: []}; pbPicking = false; });
+  if (e.target.id === 'mExtract') return open(() => { pbPicking = true; pbEditing = null; pbDocFilter = ''; });
 });
 $('mlist').addEventListener('input', e => {
   if (e.target.id !== 'mSearch') return;
@@ -2994,6 +3744,14 @@ $('mlist').addEventListener('input', e => {
   clearTimeout(searchTimer); searchTimer = setTimeout(renderManage, 250);
 });
 $('mdetail').addEventListener('click', async e => {
+  if (e.target.closest('[data-back]')) { document.body.classList.remove('detail'); return; }
+  const ok = e.target.closest('[data-approve]'); if (ok) return approveFlow(ok.dataset.approve);
+  const no = e.target.closest('[data-apreject]'); if (no) return rejectFlow(no.dataset.apreject);
+  const tr = e.target.closest('[data-trust]'); if (tr) return trustFlow(tr.dataset.trust);
+  const see = e.target.closest('[data-seetool]');
+  if (see) { tlTab = 'all'; mGroup = null; return go('tools', {item: see.dataset.seetool}); }
+  const use = e.target.closest('[data-asktool]');
+  if (use) { go('chat'); $('question').value = `用「${use.dataset.asktool}」查一下`; autosize(); $('question').focus(); return; }
   const x = e.target.closest('[data-mextract]');
   if (x) {
     x.disabled = true; x.textContent = '抽取中…';
@@ -3001,37 +3759,32 @@ $('mdetail').addEventListener('click', async e => {
       const r = await fetch('/api/playbooks/extract', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({source: x.dataset.mextract})});
       const d = await r.json();
       if (!r.ok) throw new Error(Array.isArray(d.detail) ? d.detail.map(v => v.msg).join('；') : d.detail);
-      toast(d.extracted.length ? `抽取出 ${d.extracted.length} 个 SOP，已默认停用；去 SOP 页核对后启用。${d.note ? '\n' + d.note : ''}`
+      toast(d.extracted.length ? `抽取出 ${d.extracted.length} 个 SOP，已默认停用；核对后启用。${d.note ? '\n' + d.note : ''}`
                                : `没有抽出 SOP。原因：${d.note || '未知'}`, d.extracted.length ? 'ok' : 'err', 8000);
-      if (d.extracted.length) { mTab = 'sop'; mGroup = x.dataset.mextract; mItem = d.extracted[0].id; localStorage.setItem('kb-mtab', 'sop'); renderManage(); }
+      if (d.extracted.length) { pbTab = 'all'; go('sop', {item: d.extracted[0].id}); mGroup = x.dataset.mextract; renderManage(); }
       else renderDetail();
     } catch (err) { toast('抽取失败：' + err.message, 'err'); renderDetail(); }
     return;
   }
   if (mTab === 'docs') docActions(e);
 });
-// 文档页上传完成后 loadDocs 会触发 renderManage；上传进度条借用侧栏的队列元素，搬到列表栏顶部
-/* 分栏宽度可拖：对话页侧栏、管理页的分组栏 / 详情栏各自记在浏览器里，双击分隔条恢复默认 */
-const SPLIT = {aside: [240, 520, 300], mgroups: [160, 420, 230], mdetail: [300, 800, 440]};   // [最小, 最大, 默认]
-const paneOf = id => id === 'aside' ? document.querySelector('body > aside') : $(id);
+/* 分栏宽度可拖：分组栏、详情栏各自记在浏览器里，双击分隔条恢复默认 */
+const SPLIT = {mgroups: [160, 420, 230], mdetail: [300, 800, 440]};   // [最小, 最大, 默认]
 function applySplit() {
   for (const id in SPLIT) {
     const w = +localStorage.getItem('kb-w-' + id);
-    paneOf(id).style.width = (w >= SPLIT[id][0] && w <= SPLIT[id][1] ? w : SPLIT[id][2]) + 'px';
+    $(id).style.width = (w >= SPLIT[id][0] && w <= SPLIT[id][1] ? w : SPLIT[id][2]) + 'px';
   }
 }
 document.querySelectorAll('.msplit').forEach(bar => {
-  const id = bar.dataset.split, pane = paneOf(id), [min, max, def] = SPLIT[id];
+  const id = bar.dataset.split, pane = $(id), [min, max] = SPLIT[id];
   bar.addEventListener('dblclick', () => { localStorage.removeItem('kb-w-' + id); applySplit(); });
   bar.addEventListener('pointerdown', e => {
     e.preventDefault(); bar.setPointerCapture(e.pointerId); bar.classList.add('on'); document.body.classList.add('resizing');
     const x0 = e.clientX, w0 = pane.getBoundingClientRect().width, dir = id === 'mdetail' ? -1 : 1;
-    // 管理页的上限还要给列表栏留出最小宽度，不然工具栏按钮会被挤出去
-    let cap = max;
-    if (id !== 'aside') {
-      const other = $(id === 'mdetail' ? 'mgroups' : 'mdetail').getBoundingClientRect().width;
-      cap = Math.min(max, $('manage').getBoundingClientRect().width - $('mnav').getBoundingClientRect().width - other - 360 - 10);
-    }
+    // 上限还要给列表栏留出最小宽度，不然工具栏按钮会被挤出去
+    const other = $(id === 'mdetail' ? 'mgroups' : 'mdetail').getBoundingClientRect().width;
+    const cap = Math.min(max, $('manage').getBoundingClientRect().width - other - 360 - 10);
     const move = ev => { pane.style.width = Math.min(cap, Math.max(min, w0 + dir * (ev.clientX - x0))) + 'px'; };
     const up = () => { bar.classList.remove('on'); document.body.classList.remove('resizing');
       localStorage.setItem('kb-w-' + id, Math.round(pane.getBoundingClientRect().width));
@@ -3039,25 +3792,11 @@ document.querySelectorAll('.msplit').forEach(bar => {
     bar.addEventListener('pointermove', move); bar.addEventListener('pointerup', up); bar.addEventListener('pointercancel', up);
   });
 });
-if (MANAGE) {
-  mReady = true; applySplit();
-  mTab = ['#settings', '#access'].includes(location.hash) ? location.hash.slice(1) : (localStorage.getItem('kb-mtab') || 'tools');
-  // 对外接入只在 MCP_ENABLED 打开时出现；关着时 /api/mcp 是 404，按钮一直藏着，存下来的页签退回工具
-  fetch('/api/mcp').then(r => { $('mAccessBtn').hidden = !r.ok; if (!r.ok && mTab === 'access') { mTab = 'tools'; renderManage(); } }).catch(() => {});
-  loadDocs().then(() => { $('mlist').insertBefore($('queue'), $('mrows')); renderManage(); });
-} else {
-  applySplit();
-  welcome(); loadDocs(); loadConvs(); $('question').focus();
-  // 从管理页「▶ 执行」跳过来：带着问题（和 SOP id），必要时直接发送
-  const params = new URLSearchParams(location.search);
-  if (params.get('q')) {
-    $('question').value = params.get('q'); autosize();
-    if (params.get('pb')) pendingPlaybook = {id: params.get('pb'), prefix: params.get('q').split('（')[0]};
-    history.replaceState(null, '', '/');
-    if (params.get('send')) ask();
-    else { const v = $('question').value; $('question').setSelectionRange(v.length - 1, v.length - 1); }
-  }
-}
+applySplit();
+// 先取工作台汇总（导航徽标、工具中文名都靠它），再按地址打开对应的页
+refreshBadges().finally(() => { route(); loadDocs(); loadConvs(); });
+// 窄屏上输入框放不下长提示
+if (matchMedia('(max-width: 820px)').matches) $('question').placeholder = '问点什么…';
 </script>
 </body>
 </html>

@@ -68,10 +68,11 @@ def index():
     return (WEB_DIR / "index.html").read_text(encoding="utf-8")
 
 
-@app.get("/manage", response_class=HTMLResponse)
-def manage_page():
-    """独立管理页：同一个前端，按路径切换到全屏的 工具 / SOP / 文档 管理布局。"""
-    return (WEB_DIR / "index.html").read_text(encoding="utf-8")
+# 左侧导航的各页是同一个前端，路径决定打开哪一页，刷新和书签都能回到原处。
+# /manage 是老的管理后台地址，留作兼容：页面按 #settings、#access 或上次的页签跳到对应的页。
+PAGES = ("/chat", "/tools", "/sop", "/docs", "/access", "/settings", "/manage")
+for _page in PAGES:
+    app.add_api_route(_page, index, methods=["GET"], response_class=HTMLResponse)
 
 
 # --- Documents ---------------------------------------------------------------
@@ -609,6 +610,10 @@ def conversation_messages(conversation_id: str):
         run = runs.get(message["id"])
         if run:
             message["execution_id"] = run["execution_id"]
+            if run.get("playbook_id"):
+                # 「▶ 执行」的那一轮：回放时页面照样标出按哪个 SOP 执行的（SOP 删了就只剩 id）
+                book = playbooks.get(run["playbook_id"])
+                message["playbook"] = {"id": run["playbook_id"], "name": book["name"] if book else ""}
             if run["execution_id"] in pending:
                 message["proposal"] = proposal_view(pending[run["execution_id"]])
     return {"id": conversation_id, "messages": messages}
