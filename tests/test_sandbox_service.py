@@ -10,6 +10,7 @@
 - stdout 截断并终止、stderr 留末尾；超时、OOM、被杀、起不来、意外出错，容器和临时目录都清理；
 - 每次执行只挂这次请求的文件；启动时清掉上次的残留；日志里没有代码和数据。
 """
+import http.client
 import importlib.util
 import json
 import os
@@ -131,6 +132,20 @@ class Service:
         assert status == 200, (status, body)
         return body
 
+    def post_headers_only(self, length, token=TOKEN):
+        """只发请求头（声明 Content-Length = length）、不发请求体，读回应。服务端要是等请求体，这里 10 秒后超时。"""
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=10)
+        try:
+            connection.putrequest("POST", "/run")
+            connection.putheader("Content-Type", "application/json")
+            connection.putheader("Content-Length", str(length))
+            connection.putheader("X-Sandbox-Token", token)
+            connection.endheaders()
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+        finally:
+            connection.close()
+
     def leftovers(self):
         runs = self.root / "runs"
         return sorted(p.name for p in runs.iterdir()) if runs.exists() else []
@@ -251,9 +266,16 @@ class RequestTests(ServiceCase):
             self.assertEqual((status, "数据文件合计超过" in body["error"]), (413, True))   # 6 + 6 字节 > 10
             self.assertEqual(self.service.run("print(1)", [{"name": "a.txt", "content": "1234567890"}])["status"],
                              "ok")
+        # 请求体超过 BODY_MAX：看 Content-Length 就回 413，不读、也不等请求体。所以这里只发请求头。
+        # 真把请求体发过去，客户端在请求头和请求体两次 send 之间稍一停顿，服务端就已经回了 413 并关掉连接，
+        # 晚到的请求体换来一个 RST：Linux 上已经收到的 413 照样读得到，Windows 上连同 413 一起丢掉
+        # （ConnectionAbortedError，WinError 10053），测试就时好时坏
+        started = len(self.docker.argvs)
         with patch.object(svc, "BODY_MAX", 100):
-            status, body = self.service.post({"code": "print(1)", "files": [{"name": "a.txt", "content": "x" * 200}]})
-            self.assertEqual(status, 413)
+            status, body = self.service.post_headers_only(101)
+        self.assertEqual(status, 413)
+        self.assertIn("请求体超过", body["error"])
+        self.assertEqual(len(self.docker.argvs), started)
         status, body = self.service.post(raw=b"{not json")
         self.assertEqual((status, body["error"]), (400, "请求体不是合法的 JSON"))
 
