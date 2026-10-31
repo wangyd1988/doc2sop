@@ -24,6 +24,8 @@
     internal    否                否        否          固定绑定（PLAN_TOOL）              否        否
 
 「出网污点」：x-entity 实参、返回里像资源名的标识符，本轮不能再随搜索词、链接发出去（egress.py）。
+数据类里工具服务标了 external 的（公网上的接口、远程 MCP server）本身也是出网通道：字符串实参先过出网规则，
+它的实参和返回不记污点，返回给模型时标成外部资料（loop 的 tools 节点）。
 
 「对外」是类别 × 出口：对外 MCP（app/mcp_server.py）只看得到 exported_tools() 给的工具，下发前用 public_contract()
 剥掉 _meta.doc2sop 和参数上的 x-* 扩展；令牌再按范围（knowledge / sop / data，见 AppTool.scope）筛一遍。
@@ -156,6 +158,7 @@ class Binding:
     limit_note: str | None = None             # 到了限次时给模型看的说明；None 用类别的
     clip: int | None = None                   # 结果进记忆、给模型的字数上限；None 用 loop 的默认值
     condense: bool | None = None              # 长输出要不要按日志压缩；None 看类别
+    external: bool = False                    # 数据类里的外部工具：实参发到组织外面，按出网规则检查，返回标成外部资料
 
 
 # --- 应用内提供方 ----------------------------------------------------------------
@@ -243,7 +246,13 @@ def bind_data(tool, entry=None) -> Binding:
         with ops_client.calling(getattr(turn, "caller", "")):
             return tool.invoke(args)
 
-    return Binding(tool.name, "data", schema if isinstance(schema, dict) else {}, run)
+    return Binding(tool.name, "data", schema if isinstance(schema, dict) else {}, run,
+                   external=is_external(entry))
+
+
+def is_external(entry) -> bool:
+    """工具服务标了 external 的数据类工具：调用会把实参发到组织外面（公网上的接口、远程 MCP server……）。"""
+    return meta_of(entry).get("external") is True
 
 
 def bind_app(tool: AppTool) -> Binding:
@@ -284,10 +293,13 @@ def _normalize(name, meta) -> dict:
         entry["annotations"] = dict(DATA_ANNOTATIONS)
     declared = meta_of(entry)
     extra = entry.get("_meta") if isinstance(entry.get("_meta"), dict) else {}
-    # 工具服务的工具一律是数据类，不由它自己说了算；export 照它标的（对外出口做好后才有意义）
-    entry["_meta"] = {**extra, "doc2sop": {"category": "data", "provider": "ops",
-                                           "export": declared.get("export") is True,
-                                           "group": str(declared.get("group") or "")}}
+    # 工具服务的工具一律是数据类，不由它自己说了算；export 照它标的（对外出口做好后才有意义）。
+    # external：调用会把实参发到组织外面（公网接口、远程 MCP server），应用侧对它的字符串实参套用出网规则（egress.check_args）
+    doc2sop = {"category": "data", "provider": "ops", "export": declared.get("export") is True,
+               "group": str(declared.get("group") or "")}
+    if declared.get("external") is True:
+        doc2sop["external"] = True
+    entry["_meta"] = {**extra, "doc2sop": doc2sop}
     return entry
 
 

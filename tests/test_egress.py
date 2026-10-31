@@ -476,5 +476,117 @@ class RegistryTests(unittest.TestCase):
         self.assertIsNotNone(turn.admit("knowledge", "kb_read"))
 
 
+# --- 外部数据类工具：实参也是出网通道 -----------------------------------------------------------------
+
+def external(entry):
+    return {**entry, "_meta": {"doc2sop": {"category": "data", "provider": "ops", "external": True}},
+            "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": True}}
+
+
+DATA_TOOLS = {
+    **LOGS,
+    "doc_search": external({"desc": "查公网上的产品文档", "params": {
+        "query": {"type": "str", "pattern": "name", "required": True, "desc": "检索词"}}}),
+    "holiday_calendar": external({"desc": "法定节假日", "params": {
+        "year": {"type": "int", "required": True, "min": 2007, "max": 2035, "desc": "年份"}}}),
+}
+
+
+class ExternalToolTests(unittest.TestCase):
+    """工具服务标了 external 的数据类工具：字符串实参照搜索词的规则检查，返回标成外部资料，实参和返回都不记污点。"""
+
+    def setUp(self):
+        clear_graph()
+
+    def run_agent(self, script, question="问题", outputs=None, allow_web=False, tools=DATA_TOOLS):
+        seen, messages = {}, []
+        fakes = {name: FakeTool(name, (outputs or {}).get(name, f"{name} ok")) for name in tools}
+        rounds = iter(script)
+
+        class Bound:
+            def invoke(self, view):
+                seen.setdefault("system", view[0].content)
+                messages.append(list(view))
+                calls, content = next(rounds)
+                return AIMessage(content=content, tool_calls=calls)
+
+        class Model:
+            def bind_tools(self, bound):
+                seen["tools"] = [tool.name for tool in bound]
+                return Bound()
+
+        with patch.object(agent_loop, "build_tools", return_value=list(fakes.values())), \
+                patch.object(ops_client, "available_tools", return_value=tools), \
+                patch.object(agent_loop, "chat_model", return_value=Model()), \
+                patch.object(web_search, "enabled", return_value=True), \
+                patch.object(web_fetch, "enabled", return_value=False), \
+                patch.object(egress, "start", wraps=egress.start) as started, \
+                patch.object(web_search, "search", side_effect=lambda q: (q, FOUND)) as search:
+            events = list(agent_loop.run(question, "片段", [], allow_web=allow_web))
+        seen["started"] = started.call_count
+        return events, seen, fakes, search, messages
+
+    @staticmethod
+    def results(events):
+        return [(p["tool"], p["preview"]) for k, p in events if k == "tool_result"]
+
+    def test_string_arguments_are_screened_and_checked_against_this_turns_taint(self):
+        """联网关着也一样：外部工具本身就是出网通道。内部对象名、IP 发不出去，公开的通用词照常。"""
+        script = [(call("container_logs", "1", name="payroll-db"), ""),
+                  (call("doc_search", "2", query="payroll-db") + call("doc_search", "3", query="web01")
+                   + call("doc_search", "4", query="10.0.0.5"), ""),
+                  (call("doc_search", "5", query="OOMKilled"), ""),
+                  ([], "完")]
+        with self.assertLogs("kb", level="INFO") as logged:
+            events, seen, fakes, _, _ = self.run_agent(script, outputs={"container_logs": "web01: payroll-db OOMKilled"})
+        results = [preview for _, preview in self.results(events)]
+        self.assertTrue(results[1].startswith("[未执行] 参数里含有本轮查过的内部对象「payroll-db」"), results[1])
+        self.assertIn("已拒绝调用外部服务 doc_search", results[1])
+        self.assertTrue(results[2].startswith("[未执行] 参数里含有本轮数据里出现过的标识符「web01」"), results[2])
+        self.assertTrue(results[3].startswith("[未执行] 参数里含有IP 地址"), results[3])
+        self.assertEqual(fakes["doc_search"].calls, [{"query": "OOMKilled"}])
+        self.assertEqual(seen["started"], 1)
+        self.assertIn("external tool doc_search refused by egress rule taint:entity: payroll-db", "\n".join(logged.output))
+
+    def test_returns_are_external_material_and_add_no_taint(self):
+        script = [(call("doc_search", "1", query="ingress-nginx"), ""),
+                  (call("web_search", "2", query="ingress-nginx 504"), ""),
+                  ([], "完")]
+        events, seen, fakes, search, messages = self.run_agent(
+            script, allow_web=True, outputs={"doc_search": "ingress-nginx 504 调大 proxy-read-timeout"})
+        self.assertEqual(search.call_count, 1)        # 外部的实参、返回都不是内部数据，不记污点
+        tool_message = messages[1][-1]
+        self.assertTrue(tool_message.content.startswith(agent_loop.EXTERNAL_HEAD))
+        self.assertEqual(self.results(events)[0], ("doc_search", "ingress-nginx 504 调大 proxy-read-timeout"))
+        self.assertIn("**外部工具**（doc_search、holiday_calendar）", seen["system"])
+
+    def test_integer_arguments_are_not_affected_even_in_strict_mode(self):
+        """holiday_calendar 的 year 是整数：没有内容会被带出去，什么都不查，严格模式下也照常。"""
+        script = [(call("container_logs", "1", name="kb-app"), ""),
+                  (call("holiday_calendar", "2", year=2026), ""),
+                  (call("doc_search", "3", query="OOMKilled"), ""),
+                  ([], "完")]
+        with patch.object(egress, "WEB_AFTER_DATA", "deny"):
+            events, _, fakes, _, _ = self.run_agent(script)
+        self.assertEqual(fakes["holiday_calendar"].calls, [{"year": 2026}])
+        self.assertEqual(fakes["doc_search"].calls, [])
+        self.assertIn("WEB_AFTER_DATA=deny", self.results(events)[2][1])
+
+    def test_nothing_changes_without_external_tools(self):
+        """没有外部工具、也没联网：不建出网状态，提示词一字不差。"""
+        events, seen, fakes, _, _ = self.run_agent([(call("container_logs", "1", name="kb-app"), ""), ([], "完")],
+                                                   tools=LOGS)
+        self.assertEqual(seen["started"], 0)
+        self.assertEqual(seen["system"], agent_loop.AGENT_PROMPT + agent_loop.NO_WEB_RULES)
+        self.assertEqual(fakes["container_logs"].calls, [{"name": "kb-app"}])
+
+    def test_the_registry_reads_the_mark_from_the_tool_service(self):
+        with patch.object(ops_client, "available_tools", return_value=DATA_TOOLS):
+            data = registry.data_tools()
+        self.assertTrue(registry.is_external(data["doc_search"]))
+        self.assertFalse(registry.is_external(data["container_logs"]))
+        self.assertNotIn("external", registry.meta_of(data["container_logs"]))
+
+
 if __name__ == "__main__":
     unittest.main()

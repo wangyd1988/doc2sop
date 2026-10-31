@@ -1,4 +1,5 @@
-"""统一出网规则（docs/工具.md「出网规则」）：web_search 的搜索词、web_fetch 的链接，发出去之前都过这里。
+"""统一出网规则（docs/工具.md「出网规则」）：web_search 的搜索词、web_fetch 的链接、外部数据类工具的字符串实参，
+发出去之前都过这里。
 
 规则全部在代码里执行，不靠提示词。依次检查：
 
@@ -18,6 +19,10 @@
              出网内容里按词边界出现了污点就拒绝（不分大小写）。只有字母的词（OOMKilled）和纯数字（137）不算污点，
              否则联网就没法用了。搜索结果里的链接也照查。
 
+外部数据类工具（工具服务标了 external：公网上的接口、远程 MCP server……，见 check_args）的实参也是出网通道：
+字符串实参照 1、3、4 检查；没有字符串实参的调用什么都不查。它们自己的实参不记污点、不算「调过数据类工具」，
+返回也不收集污点——那是外部资料，不是内部数据。
+
 本轮的状态在 Turn.usage["egress"]，和其他按轮计数一样每轮清零：
 
     question  用户本轮的消息：污点豁免、取用户给的链接
@@ -26,7 +31,8 @@
     taint     {小写的值: "entity" | "output"}
     data      本轮调没调过数据类工具（严格模式）
 
-本轮绑了外网类工具时 loop 才建这份状态（start）；没建时 observe() 什么都不做——不联网的轮次不必收集污点。
+本轮绑了外网类工具、或外部数据类工具时 loop 才建这份状态（start）；没建时 observe() 什么都不做——
+不出网的轮次不必收集污点。
 """
 import re
 from urllib.parse import quote, unquote, urlsplit
@@ -354,6 +360,41 @@ def check_query(turn, query) -> None:
     _gate(state, "上网搜索")
     screen(query)
     _check_taint(state, [query], "搜索词", "上网搜索", "；去掉它、只用公开的通用词再搜")
+
+
+ARG_STRINGS = 200          # 一次调用最多检查多少个字符串实参（嵌套的对象、列表里的也算）
+
+
+def _strings(value, out, depth=0) -> None:
+    if depth > 8 or len(out) >= ARG_STRINGS:
+        return
+    if isinstance(value, str):
+        if value.strip():
+            out.append(value)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _strings(item, out, depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _strings(item, out, depth + 1)
+
+
+def check_args(turn, tool, args) -> None:
+    """外部数据类工具（实参会发到组织外面）执行之前：字符串实参套用出网规则——严格模式、静态拦截、污点拦截。
+
+    嵌在对象、列表里的字符串也查，键名不查（键名由 schema 定，不是模型填的内容）。
+    没有字符串实参的调用（holiday_calendar 的 year 是整数）什么都不查，严格模式下也照常：没有内容会被带出去。
+    """
+    texts = []
+    _strings(args, texts)
+    if not texts:
+        return
+    state = _state(turn)
+    action = f"调用外部服务 {tool}"
+    _gate(state, action)
+    for text in texts:
+        screen(text, subject="参数", action=action)
+        _check_taint(state, [text], "参数", action, "；去掉它、只用公开的通用内容再调")
 
 
 def check_url(turn, url) -> str:
