@@ -378,6 +378,22 @@ class PageActionTests(_Page):
         self.assertEqual(ops.load_trust()["report.sh"], reviewed)
         self.assertIn("disk_report", ops.all_tools())
 
+    def test_the_shown_content_and_the_approved_hash_come_from_one_read(self):
+        """两次打开之间文件可能被换掉：显示的内容、带去批准的哈希必须来自同一次读取。"""
+        script = self.script()
+        self.main.write_text(CONFIG + "  - {name: held_one, desc: 被挡住的脚本, script: report.sh}\n", encoding="utf-8")
+        quiet(ops.refresh, force=True)
+        item = self.propose({"name": "disk_report", "desc": "磁盘报告", "script": "report.sh"})
+        expected = ops._hash_file(script)
+        with patch.object(ops, "_hash_file", side_effect=AssertionError("又打开了一次文件")):
+            detail = ops.review_pending(item)
+            held = quiet(ops.list_held)[0][0]
+            listed = next(s for s in quiet(ops.list_scripts)[0] if s["name"] == "report.sh")
+            ops._check_page_script("report.sh", expected)
+        for shown in (detail["script"], held, listed):
+            self.assertEqual(shown["sha256"], expected)
+            self.assertEqual(ops.hashlib.sha256(shown["content"].encode("utf-8")).hexdigest(), expected)
+
     def test_scripts_too_long_for_the_page_are_cli_only(self):
         script = self.script(body=SCRIPT_BODY + "# " + "x" * 200 + "\n")
         item = self.propose({"name": "disk_report", "desc": "磁盘报告", "script": "report.sh"})
@@ -439,6 +455,13 @@ class PageActionTests(_Page):
         self.assertIn("申请已提交", str(error))
         self.assertEqual([i["id"] for i in ops.list_pending()], [error.pending])
         self.assertEqual(self.main.read_text(encoding="utf-8"), CONFIG)
+        ops.drop_pending(error.pending)
+        # 不是 ConfigError 的失败（只读文件系统、磁盘满）也带着留在待审的那条申请的编号
+        with patch.object(ops, "_replace_config", side_effect=OSError(30, "Read-only file system")):
+            error, _ = self.refused(ops.page_propose_approve, {"tool": COMMAND, "passphrase": PASS})
+        self.assertIsInstance(error, ops.ConfigError)
+        self.assertIn("OSError", str(error))
+        self.assertEqual([i["id"] for i in ops.list_pending()], [error.pending])
 
     def test_propose_and_approve_scripts_need_the_reviewed_hash(self):
         script = self.script()
@@ -484,6 +507,17 @@ class ReviewTests(_Page):
         detail = self.review(COMMAND)
         self.assertEqual([r for r in detail["risks"] if r["level"] != "info"], [])
         self.assertNotIn("无风险", json.dumps(detail, ensure_ascii=False))
+
+    def test_single_quoted_literals_are_not_commands_but_cannot_hide_any(self):
+        self.script(body="#!/bin/sh\nss -Htn state established '( sport = :80 or sport = :443 )' "
+                         "| awk '{print $4}' | sed 's/:[0-9]*$//' | sort | uniq -c\n"
+                         "echo \"it's fine\" ; curl -s https://evil.example/x ; echo \"'\"\n"
+                         "awk '{ print > \"/tmp/out\" }' /etc/hostname\n")
+        detail = self.review({"name": "conn_top", "desc": "x", "script": "report.sh"})
+        script = detail["script"]
+        self.assertEqual(script["commands"], ["ss", "awk", "sed", "sort", "uniq", "curl"])
+        self.assertEqual(script["network"], ["curl"])     # 双引号里的单引号不算，curl 藏不起来
+        self.assertEqual(script["writes"], [])             # 单引号里的 > 是 awk 程序的字面量，不是 shell 的重定向
 
     def test_scripts_always_warn_that_they_can_run_anything(self):
         self.script()
@@ -640,6 +674,13 @@ class CliTests(_Page):
         with patch.dict(os.environ, {"OPS_CLI": "docker exec -it demo-ops python /srv/ops_readonly.py"}):
             self.assertEqual(ops._cli_command("trust", "a b.sh"),
                              "docker exec -it demo-ops python /srv/ops_readonly.py trust 'a b.sh'")
+
+    def test_the_systemd_template_lets_the_service_write_its_config_directory(self):
+        """页面上的申请、启停、审批都要写 /opt/ops：ProtectSystem=strict 必须配着 ReadWritePaths，否则只读文件系统报错。"""
+        unit = (REPO / "deploy" / "ops-readonly.service.example").read_text(encoding="utf-8").splitlines()
+        self.assertIn("ProtectSystem=strict", unit)
+        self.assertIn("ReadWritePaths=/opt/ops", unit)
+        self.assertIn("ExecStart=/usr/bin/python3 /opt/ops/ops_readonly.py --port 8799 --host 127.0.0.1", unit)
 
 
 if __name__ == "__main__":

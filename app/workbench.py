@@ -84,12 +84,10 @@ def _recent():
     """最近的对话：按哪个 SOP 执行的、调了几次数据类工具（工作台上一眼看出这一轮用了什么）。"""
     out = []
     for conv in conversations.list_conversations(RECENT):
-        runs = graph.executions_by_message(conv["id"]).values()
+        runs = list(graph.executions_by_message(conv["id"]).values())
         book = next((run["playbook_id"] for run in runs if run.get("playbook_id")), None)
-        calls = 0
-        for run in runs:
-            execution = graph.execution(run["execution_id"]) or {}
-            calls += sum(1 for call in execution.get("tool_calls", []) if registry.category_of(call["tool"]) == "data")
+        names = graph.tool_names_by_execution(run["execution_id"] for run in runs)
+        calls = sum(1 for tools in names.values() for tool in tools if registry.category_of(tool) == "data")
         out.append({**conv, "playbook": (playbooks.get(book) or {}).get("name") if book else None, "calls": calls})
     return out
 

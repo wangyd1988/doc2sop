@@ -2375,14 +2375,11 @@ def list_pending():
     return entries if isinstance(entries, list) else []
 
 
-# 页面上看脚本最多显示多少字：和页面审批的上限（PAGE_SCRIPT_MAX，64 KB）对齐，能在页面上批的脚本都能看全
-MAX_SCRIPT_VIEW = 64 * 1024
-
-
 def list_scripts():
     """Scripts on disk, with trust status and which tool references each.
 
     The UI shows these so a reviewer can read exactly what a script tool runs.
+    内容和哈希来自同一次读取（见 _read_script）：「提交并立即批准」带着这个哈希，批的就是页面上显示的这一份。
     """
     directory = _scripts_dir()
     trusted = load_trust()
@@ -2396,21 +2393,15 @@ def list_scripts():
     for script in names:
         path = directory / script
         try:
-            body = path.read_text(encoding="utf-8", errors="replace")
+            body, size, current = _read_script(path)
         except OSError as exc:
-            body = f"（读取失败：{exc}）"
-        truncated = len(body) > MAX_SCRIPT_VIEW
-        current = None
-        try:
-            current = _hash_file(path)
-        except OSError:
-            pass
+            body, size, current = f"（读取失败：{exc}）", 0, None
         out.append({"name": script,
                     "executable": os.access(path, os.X_OK),
                     "trusted": bool(trusted.get(script) and trusted[script] == current),
                     "used_by": used.get(script, ""),
                     "sha256": current or "",
-                    "content": body[:MAX_SCRIPT_VIEW] + ("\n…（已截断）" if truncated else "")})
+                    "content": body + ("\n…（已截断）" if size > PAGE_SCRIPT_MAX else "")})
     return out
 
 
@@ -3147,6 +3138,31 @@ def _command_risks(spec, risks):
                                    f"把资源类型写死在命令里。"))
 
 
+def _drop_single_quoted(line):
+    """把一行里单引号括起来的字面量换成 ''。按 shell 的引号规则走：双引号里的单引号不算、反斜杠转义下一个字符；
+    单引号没在这一行闭合时剩下的照常当代码看（宁可多报）。不然 echo "a'" ; curl … ; echo "'" 就能把 curl 藏起来。"""
+    out, index, double = [], 0, False
+    while index < len(line):
+        char = line[index]
+        if char == "\\" and index + 1 < len(line):
+            out.append(line[index:index + 2])
+            index += 2
+            continue
+        if char == '"':
+            double = not double
+        elif char == "'" and not double:
+            end = line.find("'", index + 1)
+            if end < 0:
+                out.append(line[index:])
+                break
+            out.append("''")
+            index = end + 1
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
 def _script_commands(code_lines):
     """脚本里用到的命令（每段管道、每个 ; && || $( 之后的第一个词），按第一次出现的顺序。只是辅助，不是解析器。"""
     found = []
@@ -3172,7 +3188,9 @@ def _script_review(content, size):
         stripped = line.strip()
         if stripped and not stripped.startswith("#"):
             code.append(re.sub(r"(^|\s)#.*$", "", line))
-    commands = _script_commands(code)
+    # 单引号里的是字面量（awk、sed 的程序，ss 的过滤表达式）：认命令、认重定向时不看；路径和 /dev/tcp 仍按全文查
+    literal = [_drop_single_quoted(line) for line in code]
+    commands = _script_commands(literal)
     used = set(commands)
     joined = "\n".join(code)
     net = sorted(used & SCRIPT_NET) + (["/dev/tcp"] if re.search(r"/dev/(tcp|udp)/", joined) else [])
@@ -3182,7 +3200,7 @@ def _script_review(content, size):
     for tool in ("kubectl", "docker", "helm", "crictl"):
         if tool in used and re.search(rf"\b{tool}\b[^\n|;&]*\b({'|'.join(map(re.escape, sorted(FORBIDDEN)))})\b", joined):
             writes.append(f"{tool} 的写操作")
-    targets = [m.group(1) for line in code for m in _REDIRECT.finditer(line)
+    targets = [m.group(1) for line in literal for m in _REDIRECT.finditer(line)
                if not m.group(1).startswith("&") and m.group(1) not in ("/dev/null", "/dev/stdout", "/dev/stderr")]
     if targets:
         writes.append("重定向写文件 " + "、".join(dict.fromkeys(targets[:3])))
@@ -3216,11 +3234,16 @@ def _script_review(content, size):
 
 
 def _read_script(path):
-    """(内容, 字节数, sha256)。页面最多看 PAGE_SCRIPT_MAX 字节；哈希按整个文件算。"""
-    size = os.path.getsize(path)
+    """(内容, 字节数, sha256)。只打开一次：显示的和算哈希的是同一份字节——两次打开之间文件可能被换掉，
+    那样审批人看的是 A、批准登记的却是 B 的哈希。页面最多看 PAGE_SCRIPT_MAX 字节；哈希和字节数按整个文件算。"""
+    digest, head, size = hashlib.sha256(), bytearray(), 0
     with open(path, "rb") as handle:
-        head = handle.read(PAGE_SCRIPT_MAX)
-    return head.decode("utf-8", errors="replace"), size, _hash_file(path)
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+            size += len(chunk)
+            if len(head) < PAGE_SCRIPT_MAX:
+                head += chunk[:PAGE_SCRIPT_MAX - len(head)]
+    return bytes(head).decode("utf-8", errors="replace"), size, digest.hexdigest()
 
 
 def _sql_risks(spec, risks):
@@ -3381,7 +3404,7 @@ def review_pending(item):
             risks.append(_risk("info", "暂时没有能跑它的主机", "批准后不会出现在可用工具里，要先调整主机清单或适用系统。"))
         if any(host["push"] for host in out["hosts"]):
             risks.append(_risk("info", "远程主机要 push",
-                               f"受控模式的主机要等管理员在宿主机上 push 白名单后才能跑：{_cli_command('push', '--target', '<主机>')}"))
+                               f"受控模式的主机要等管理员在宿主机上 push 白名单后才能跑：{_cli_command('push', '--target')} <主机>"))
     risks.sort(key=lambda risk: LEVELS[risk["level"]])
     return out
 
@@ -3434,7 +3457,7 @@ def _check_page_script(script, sha256):
         raise ConfigError("缺少审阅时看到的脚本哈希（script_sha256）：刷新后重新看一遍脚本内容再批")
     path = _scripts_dir() / script
     try:
-        size, digest = os.path.getsize(path), _hash_file(path)
+        _, size, digest = _read_script(path)
     except OSError as exc:
         raise Conflict(f"读不了脚本 {script}（{exc.strerror or exc}）") from None
     if size > PAGE_SCRIPT_MAX:
@@ -3518,9 +3541,11 @@ def page_propose_approve(payload, caller=""):
         item = propose_tool(raw, author=author)
         try:
             approved = approve_pending(item["id"], script_sha256=sha256)
-        except ConfigError as exc:
-            print(f"[approval] 提交并批准 {spec['name']}：已入队 {item['id']}，批准没写成：{exc}", flush=True)
-            error = type(exc)(f"申请已提交（编号 {item['id']}），但没能批准：{exc}")
+        except Exception as exc:   # 写文件失败（只读文件系统、磁盘满）也一样：页面要知道哪条申请留在了待审
+            reason = str(exc) if isinstance(exc, ConfigError) else f"{exc.__class__.__name__}: {exc}"
+            print(f"[approval] 提交并批准 {spec['name']}：已入队 {item['id']}，批准没写成：{reason}", flush=True)
+            error = (type(exc) if isinstance(exc, ConfigError) else ConfigError)(
+                f"申请已提交（编号 {item['id']}），但没能批准：{reason}")
             error.pending = item["id"]
             raise error from None
     print(f"[approval] 已提交并批准 {spec['name']}（{item['id']}）"

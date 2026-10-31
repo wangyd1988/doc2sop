@@ -11,8 +11,10 @@ ExecStart=/usr/bin/python3 /opt/ops/ops_readonly.py --port 8799 --host 127.0.0.1
 Restart=always
 RestartSec=5
 
-# 它要读 docker.sock，但自身不需要写文件系统
+# 系统目录只读，只放开工具服务自己的配置目录：页面上的申请、启停、审批要写 /opt/ops 下的主配置、待审、覆盖层、
+# 脚本哈希表、MCP 批准文件和备份。配置不在 /opt/ops 就改这一行。审批口令（/etc/ops-readonly/approval.hash）它只读不写
 ProtectSystem=strict
+ReadWritePaths=/opt/ops
 ProtectHome=yes
 PrivateTmp=yes
 NoNewPrivileges=yes

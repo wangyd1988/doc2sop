@@ -264,6 +264,21 @@ class OverviewTests(_WithOps):
         self.assertEqual(workbench.host_reason("gw", "连不上：超时"), "连不上：超时")
         self.assertEqual(workbench.host_reason("gw", ""), "连不上")
 
+    def test_recent_conversations_say_which_sop_and_how_many_data_calls(self):
+        from app import conversations
+        book = playbooks.save(None, "内存巡检", "内存紧张时", [{"tool": "one", "args": {}, "checkpoint": "看可用内存",
+                                                             "evidence": "先看内存"}], {"one"}, enabled=True)
+        self.addCleanup(playbooks.delete, book)
+        conv = conversations.create("内存够不够")
+        self.addCleanup(conversations.delete, conv["id"])
+        conversations.add_message(conv["id"], "user", "内存够不够")
+        run = graph.start_execution(conv["id"], "内存够不够", book)
+        for tool in ("one", "kb_search", "one"):
+            graph.record_tool_call(run, tool, {}, "输出", True, 5)
+        graph.finish_execution(run, "够", message_id=conversations.add_message(conv["id"], "assistant", "够"))
+        recent = next(item for item in workbench._recent() if item["id"] == conv["id"])
+        self.assertEqual((recent["playbook"], recent["calls"]), ("内存巡检", 2))   # kb_search 是知识类，不算
+
 
 class SameOriginTests(unittest.TestCase):
     """别的网站借浏览器里缓存的 Basic 凭据发写请求：Origin（没有就看 Referer）和 Host 对不上就 403。"""
@@ -317,6 +332,12 @@ class SameOriginTests(unittest.TestCase):
         self.assertFalse(blocked("https://evil.example", "kb.internal", path="/mcp"))   # 对外 MCP 自己拒绝带 Origin 的
         self.assertTrue(blocked("https://evil.example", "kb.internal", method="OPTIONS"))
         self.assertFalse(cross_site("POST", "/api/x", {"host": "kb.internal"}))         # curl：两个头都没有
+
+    def test_the_middleware_can_be_built_the_old_starlette_way(self):
+        """老版本的 Starlette 用 cls(app=…) 建中间件：参数名不对整个应用都起不来。"""
+        inner = object()
+        self.assertIs(app_main.SameOriginOnly(app=inner).app, inner)
+        self.assertIs(app_main.SameOriginOnly(inner).app, inner)
 
 
 class PageTests(unittest.TestCase):

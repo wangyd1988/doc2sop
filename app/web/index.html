@@ -3332,7 +3332,8 @@ function askPassphrase({title, summary, confirm, run, done, cancel}) {
     } catch (err) {
       $('dlgErr').textContent = err.message;
       ok.textContent = confirm || '确定';
-      ok.disabled = err.status === 423 || err.status === 409;
+      // 锁定、没设口令、脚本被改过，或者申请已经入队（再点只会撞上同名申请）：按钮变灰，关掉对话框再处理
+      ok.disabled = err.status === 423 || err.status === 409 || !!err.pending;
       input.focus();
       if (err.status === 423 || err.status === 409) refreshApproval();
     }

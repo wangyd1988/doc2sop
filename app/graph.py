@@ -381,6 +381,20 @@ def tool_calls_by_ids(ids):
     return {r["id"]: _call_row(r) for r in rows}
 
 
+def tool_names_by_execution(execution_ids):
+    """执行 id -> 按顺序调过的工具名。只取名字、不取返回内容：工作台的「最近」每次刷新都要算。"""
+    ids = list(execution_ids)
+    if not ids:
+        return {}
+    with lock:
+        rows = db.execute(f"SELECT execution_id, tool FROM tool_calls WHERE execution_id IN ({','.join('?' * len(ids))})"
+                          " ORDER BY execution_id, seq", ids).fetchall()
+    out = {}
+    for row in rows:
+        out.setdefault(row["execution_id"], []).append(row["tool"])
+    return out
+
+
 def executions_by_message(conversation_id):
     """message_id -> 执行摘要。回放时给每条助手消息挂上它的执行身份。"""
     with lock:

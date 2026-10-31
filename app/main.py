@@ -101,10 +101,12 @@ def cross_site(method: str, path: str, headers: dict) -> bool:
 
 
 class SameOriginOnly:
-    """纯 ASGI 中间件：在路由和 Basic 认证之前看一眼请求头，跨站的写请求直接 403。"""
+    """纯 ASGI 中间件：在路由和 Basic 认证之前看一眼请求头，跨站的写请求直接 403。
 
-    def __init__(self, inner):
-        self.inner = inner
+    构造参数必须叫 app：老版本的 Starlette 用 cls(app=…) 建中间件（requirements.txt 允许的 FastAPI 0.115 就是这样）。"""
+
+    def __init__(self, app):
+        self.app = app
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
@@ -114,7 +116,7 @@ class SameOriginOnly:
                             (headers.get("origin") or headers.get("referer") or "")[:100], headers.get("host", "")[:100])
                 response = JSONResponse({"detail": "跨站请求被拒绝：只接受从本站页面发出的修改请求"}, status_code=403)
                 return await response(scope, receive, send)
-        await self.inner(scope, receive, send)
+        await self.app(scope, receive, send)
 
 
 app.add_middleware(SameOriginOnly)
