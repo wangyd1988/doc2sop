@@ -1440,11 +1440,17 @@ def _yaml():
     return yaml
 
 
-def _read_yaml(path):
-    """Read a yaml mapping. A missing file is simply empty."""
+def _read_yaml(path, text=None):
+    """Read a yaml mapping. A missing file is simply empty.
+
+    text：已经拿到手的内容（批准前验证插入结果时用），按 path 那个文件来解析，不再读盘。
+    """
     try:
-        with open(path, encoding="utf-8") as handle:
-            document = _yaml().safe_load(handle) or {}
+        if text is None:
+            with open(path, encoding="utf-8") as handle:
+                document = _yaml().safe_load(handle) or {}
+        else:
+            document = _yaml().safe_load(text) or {}
     except FileNotFoundError:
         return {}
     except Exception as exc:
@@ -1550,8 +1556,10 @@ def load_tools(path):
     return tools, problems
 
 
-def _load_all(path):
+def _load_all(path, text=None):
     """load_tools 的完整版：多返回主文件声明的 MCP server 配置、连接和主机清单。
+
+    text：主文件的内容（不给就读 path）。批准申请时用它加载「插入之后」的内容，和服务是同一套逻辑。
 
     除了自己的 `tools:`，主文件还可以用顶层 `include:` 引入别的定义文件（例如一个场景包的
     tools.yaml）。被包含的文件和主文件同等可信——它们是管理员亲手写进主文件的路径，所以同样
@@ -1568,7 +1576,7 @@ def _load_all(path):
     凭据同理：不来自主文件的接口型工具，只能经主文件的连接、或发往宿主机环境决定的地址（${…} 开头）用到凭据，
     见 _check_pack_credentials。主文件里写和场景包工具同名的工具，就是替换它的实现（参数要兼容，见 _incompatible）。
     """
-    document = _read_yaml(path)
+    document = _read_yaml(path, text)
     entries = document.get("tools")
     if not isinstance(entries, list):
         raise ConfigError("配置里缺少 tools 列表")
@@ -2510,10 +2518,15 @@ def drop_pending(ident):
 
 
 def approve_pending(ident, attest_readonly=False):
-    """Append an approved tool to the main file. Only runs on the host.
+    """Approve a pending proposal. Only runs on the host.
 
     MCP 条目走另一条路：写进 ops_tools.mcp.yaml（同名替换），并且必须有只读依据——
     server 声明了 readOnlyHint，或者审批人加 --attest-readonly 亲口确认。
+
+    其余（命令、脚本、接口、SQL）写进手写的主配置文件：插到顶层 tools 列表的末尾（见 _insert_tool_text），
+    其余内容一个字节都不动。写之前用和服务同一套加载逻辑加载插入后的内容，必须正好多出这一个工具、
+    别的都不变（见 _check_insertion）；认不出写法或验证不过就不写，申请留在待审。写入是原子的，
+    保留属主和权限，写之前在同一目录留一份带时间戳的备份（见 _replace_config）。写成了才删待审。
     """
     item = _find_pending(ident)
     spec = _check_tool(item.get("tool") or {})  # 再校验一次，文件可能被改过
@@ -2522,23 +2535,225 @@ def approve_pending(ident, attest_readonly=False):
     if spec["name"] in all_tools():
         raise ConfigError(f"已存在同名工具：{spec['name']}")
     _bind_connection(spec, _state.get("connections", {}))   # 连接可能在申请之后被删了
-    if spec.get("type") == "script":
-        # 批准脚本 = 认可此刻的脚本内容，把它的哈希登记为可信。
-        trust_script(spec["script"])
-    document = _read_yaml(_state["path"])
-    current = document.get("tools")
-    if isinstance(current, list) and current:
-        # 文件里已有条目：直接在末尾追加，保留手写的注释与格式。
-        block = _yaml().safe_dump([item["tool"]], allow_unicode=True,
-                                  sort_keys=False, default_flow_style=None)
-        with open(_state["path"], "a", encoding="utf-8") as handle:
-            handle.write("\n" + textwrap.indent(block, "  "))
-    else:
-        # 空列表（没有可追加的锚点）：整体重写一份，其他顶层键（如 include）原样保留。
-        _write_yaml(_state["path"], {**document, "tools": (current or []) + [item["tool"]]})
-    drop_pending(item["id"])
+    path = Path(_state["path"])
+    try:
+        original = path.read_bytes()
+        text = original.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"读不了主配置 {path}（{exc}）：没有改主配置，申请仍在待审") from None
+    new_text, line = _insert_tool_text(text, item["tool"])
+    try:
+        before = _load_all(path, text)
+    except ConfigError as exc:
+        raise ConfigError(f"主配置现在就加载不了（{exc}）：没有改主配置，申请仍在待审") from None
+    script = spec.get("type") == "script"
+    trusted_before = _file_bytes(_trust_file()) if script else None
+    try:
+        if script:
+            # 批准脚本 = 认可此刻的脚本内容，把它的哈希登记为可信（没写成主配置就恢复原来的登记）。
+            trust_script(spec["script"])
+        _check_insertion(path, new_text, before, spec["name"])
+        backup = _replace_config(path, original, new_text.encode("utf-8"))
+    except BaseException:
+        if script:
+            _restore_bytes(_trust_file(), trusted_before)
+        raise
+    try:
+        drop_pending(item["id"])
+    except (OSError, ConfigError) as exc:
+        raise ConfigError(f"已写入主配置（改之前的备份：{backup}），但没能从待审里删掉这条申请（{exc}）："
+                          f"用 ops_readonly.py reject {item['id']} 清掉") from None
     refresh(force=True)
+    spec["written"] = {"path": str(path), "line": line, "backup": backup}
     return spec
+
+
+# ---- 批准写进主配置：插到顶层 tools 列表末尾，其余内容一个字节都不动 ---------------------------------------
+
+_TOOLS_KEY = re.compile(r"tools[ \t]*:")
+_TOOLS_BLOCK = re.compile(r"tools[ \t]*:[ \t]*(?:#.*)?")
+_TOOLS_EMPTY = re.compile(r"(tools[ \t]*:)[ \t]*\[[ \t]*\]([ \t]*(?:#.*)?)")
+_SEQ_ITEM = re.compile(r"( *)-(?: |$)")
+
+
+def _insert_tool_text(text, tool):
+    """把一个工具条目插到主配置顶层 tools: 列表的末尾，返回 (新内容, 新条目从第几行开始)。
+
+    tools 后面还有别的顶层段（hosts、connections、export…）时，插在那一段前面——它上方顶格的注释算那一段的；
+    文件末尾只剩顶格注释时，插在这些注释前面。其余内容一个字节都不动：注释、空行、缩进、换行符（LF / CRLF）、
+    有没有结尾换行都保持原样；只有 tools: [] 这一行会去掉 []（空的流式列表没法往里追加块列表项）。
+    认不出写法——找不到或有多个顶层 tools:、非空的流式写法、第一项不是「- 」开头——就抛 ConfigError，
+    并附上要手工加的那段 YAML。
+    """
+    entry = _yaml().safe_dump([tool], allow_unicode=True, sort_keys=False, default_flow_style=None)
+
+    def manual(reason):
+        return ConfigError(f"{reason}，没法只插入一段而不动别的内容：没有改主配置，申请仍在待审。"
+                           f"请手工把下面这段加到 tools 列表末尾，确认加载正常后用 ops_readonly.py reject <id> "
+                           f"清掉这条申请：\n{textwrap.indent(entry, '  ')}")
+
+    lines = re.findall(r"[^\n]*\n|[^\n]+\Z", text)   # 每行带着自己的换行符，最后一行可能没有
+    bodies = []
+    for index, raw in enumerate(lines):
+        body = raw[:-1] if raw.endswith("\n") else raw
+        body = body[:-1] if body.endswith("\r") else body
+        if index == 0 and body.startswith("\ufeff"):
+            body = body[1:]
+        bodies.append(body)
+    found = [i for i, body in enumerate(bodies) if _TOOLS_KEY.match(body)]
+    if len(found) != 1:
+        raise manual("主配置里找不到顶层的 tools:" if not found else "主配置里有不止一个顶层的 tools:")
+    start = found[0]
+    ending = re.search(r"\r?\n\Z", lines[start])
+    eol = ending.group(0) if ending else ("\r\n" if "\r\n" in text else "\n")
+
+    def blank(index):
+        return not bodies[index].strip()
+
+    empty = _TOOLS_EMPTY.fullmatch(bodies[start])
+    if empty:
+        offset = sum(len(raw) for raw in lines[:start])
+        bom = "\ufeff" if start == 0 and lines[0].startswith("\ufeff") else ""
+        tail = lines[start][len(bom) + len(bodies[start]):]      # 这一行原来的换行符；文件最后一行没有换行时是空串
+        block = textwrap.indent(entry, "  ").split("\n")[:-1]
+        head = bom + empty.group(1) + empty.group(2)
+        if tail:
+            after = eol if start + 1 < len(lines) and not blank(start + 1) else ""
+            inserted = head + tail + eol.join(block) + eol + after
+        else:
+            inserted = head + eol + eol.join(block)
+        return text[:offset] + inserted + text[offset + len(lines[start]):], start + 2
+    if not _TOOLS_BLOCK.fullmatch(bodies[start]):
+        raise manual("主配置里的 tools 是流式写法（tools: [...]），或者在同一行写了别的值")
+    first = next((i for i in range(start + 1, len(lines))
+                  if not blank(i) and not bodies[i].lstrip().startswith("#")), None)
+    item = _SEQ_ITEM.match(bodies[first]) if first is not None else None
+    if item is None:
+        raise manual("认不出主配置里 tools 列表的写法（tools: 下面第一项不是「- 」开头的块列表项）")
+    indent = len(item.group(1))
+    # 列表到哪一行为止：下一个顶格、不是注释、也不是列表项的行（下一个顶层段，或 --- 之类）
+    end = len(lines)
+    for i in range(first + 1, len(lines)):
+        body = bodies[i]
+        if blank(i) or body[0] in " \t" or body.startswith("#") or (indent == 0 and _SEQ_ITEM.match(body)):
+            continue
+        end = i
+        break
+    # 列表末尾的空行和顶格注释：顶格注释算下一段（或文件末尾的说明），条目插在第一行顶格注释前面
+    stop = end
+    while stop - 1 > first and (blank(stop - 1) or bodies[stop - 1].startswith("#")):
+        stop -= 1
+    at = next((i for i in range(stop, end) if bodies[i].startswith("#")), end)
+    offset = sum(len(raw) for raw in lines[:at])
+    block = textwrap.indent(entry, " " * indent).split("\n")[:-1]
+    lead = "" if blank(at - 1) else eol               # 紧挨着的上一行有内容：先空一行
+    if at == len(lines) and not text.endswith("\n"):
+        inserted = eol + lead + eol.join(block)        # 原文件没有结尾换行：补上上一行的换行，新内容末尾也不加
+        line = text.count("\n") + 2 + (1 if lead else 0)
+    else:
+        after = eol if at < len(lines) and not blank(at) else ""   # 下一行是注释或下一段：再空一行
+        inserted = lead + eol.join(block) + eol + after
+        line = text[:offset].count("\n") + 1 + (1 if lead else 0)
+    return text[:offset] + inserted + text[offset:], line
+
+
+def _check_insertion(path, new_text, before, name):
+    """用和服务同一套加载逻辑加载插入后的完整内容：必须正好多出 name 这一个工具，
+    其余工具、加载问题、MCP server、连接、主机清单都和现在一样。不满足就抛 ConfigError，说清哪里不一样。"""
+    try:
+        after = _load_all(path, new_text)
+    except ConfigError as exc:
+        raise ConfigError(f"插入后的主配置加载失败（{exc}）：没有改主配置，申请仍在待审") from None
+    tools, problems, servers, connections, hosts = before
+    new_tools, new_problems, new_servers, new_connections, new_hosts = after
+    reasons = []
+    added = sorted(set(new_tools) - set(tools))
+    removed = sorted(set(tools) - set(new_tools))
+    if added != [name] or removed:
+        reasons.append(f"工具的变化不是正好多出 {name}（多出：{'、'.join(added) or '无'}；少了：{'、'.join(removed) or '无'}）")
+    changed = sorted(n for n in tools if n in new_tools and new_tools[n] != tools[n])
+    if changed:
+        reasons.append(f"别的工具变了：{'、'.join(changed)}")
+    if new_problems != problems:
+        diff = [p for p in new_problems if p not in problems] or [p for p in problems if p not in new_problems]
+        reasons.append(f"加载问题变了：{diff[0][:200] if diff else '顺序不同'}")
+    for label, old, new in (("MCP server", servers, new_servers), ("连接", connections, new_connections),
+                            ("主机清单", hosts, new_hosts)):
+        if old != new:
+            reasons.append(f"{label}变了")
+    if reasons:
+        raise ConfigError("插入后的加载结果不对：" + "；".join(reasons) + "。没有改主配置，申请仍在待审")
+
+
+def _replace_config(path, original, data):
+    """主配置的原子写入：先确认文件还是读到时的样子，在同一目录留一份带时间戳的备份，
+    再写临时文件（属主、权限和原文件一样）、rename 过去。返回备份路径。"""
+    real = os.path.realpath(path)
+    with open(real, "rb") as handle:
+        if handle.read() != original:
+            raise ConfigError("主配置在批准过程中被改过：没有改主配置，申请仍在待审，请重新执行")
+    info = os.stat(real)
+    stamp = time.strftime("%Y%m%d%H%M%S")
+    backup, serial = f"{real}.bak-{stamp}", 1
+    while os.path.exists(backup):
+        backup, serial = f"{real}.bak-{stamp}-{serial}", serial + 1
+    shutil.copy2(real, backup)
+    _keep_owner(backup, info, strict=False)
+    folder, base = os.path.split(real)
+    temporary = os.path.join(folder, f".{base}.{secrets.token_hex(3)}.tmp")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, stat.S_IMODE(info.st_mode))
+        _keep_owner(temporary, info, strict=True)
+        os.replace(temporary, real)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+    return backup
+
+
+def _keep_owner(path, info, strict):
+    """让 path 的属主和 info 一样（POSIX）。strict：做不到就不写，抛 ConfigError。"""
+    if not hasattr(os, "chown"):
+        return
+    current = os.stat(path)
+    if (current.st_uid, current.st_gid) == (info.st_uid, info.st_gid):
+        return
+    try:
+        os.chown(path, info.st_uid, info.st_gid)
+    except OSError as exc:
+        if strict:
+            raise ConfigError(f"新文件没法保留原来的属主 {info.st_uid}:{info.st_gid}（{exc}）：没有改主配置，"
+                              f"申请仍在待审；请用主配置文件的属主（通常是 root）执行") from None
+
+
+def _file_bytes(path):
+    """文件内容；文件不存在时是 None。"""
+    try:
+        return Path(path).read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _restore_bytes(path, saved):
+    """把文件恢复成 _file_bytes 拿到的样子（原来不存在就删掉）。"""
+    if saved is None:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        return
+    temporary = f"{path}.{secrets.token_hex(3)}.tmp"
+    with open(temporary, "wb") as handle:
+        handle.write(saved)
+    os.replace(temporary, path)
 
 
 def _approve_mcp(item, spec, attest_readonly):
@@ -5511,6 +5726,14 @@ def _cli(command, ident, config, attest_readonly=False, options=None):
             if spec.get("type") == "mcp":
                 print(f"  只读依据：{'server 声明' if spec['readonly_declared'] else '管理员确认（--attest-readonly）'}"
                       f"；条目已写入 {_mcp_file().name}")
+            written = spec.get("written")
+            if written:
+                print(f"  写在 {written['path']} 的 tools 列表末尾（第 {written['line']} 行起）；"
+                      f"改之前的备份：{written['backup']}")
+            print(f"重新加载后共 {len(_state['tools'])} 个工具定义。")
+            if spec["name"] not in _state["tools"]:
+                print(f"注意：重新加载的结果里没有 {spec['name']}，看上面 [config] 开头的提示", file=sys.stderr)
+                return 1
             print("下一次提问即可使用，无需重启。")
         elif command == "trust":
             if ident not in {s["name"] for s in list_scripts()}:
