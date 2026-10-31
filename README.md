@@ -24,7 +24,7 @@ Turn your team's docs into agent SOPs — executed only with the read-only tools
 git clone https://github.com/wangyd1988/doc2sop.git && cd doc2sop
 cp .env.example .env        # 只改两处：WEB_PASSWORD（登录密码）、LLM_API_KEY（你的 key）
 docker compose up -d --build
-# 打开 http://127.0.0.1:8765 ，用户名 admin。几十秒后两个演示场景包导入完成，点示例问题就能看到上面两段效果
+# 打开 http://127.0.0.1:8765 ，用户名 admin。几十秒后三个演示场景包导入完成，点示例问题就能看到上面两段效果
 ```
 
 > 国内网络 `up` 卡在拉取 `python:3.12-slim`？`.env` 里打开 `BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim` 那一行，再 `up` 一次。
@@ -61,15 +61,16 @@ docker compose up -d --build
 
 ## 场景包
 
-一个场景包 = 文档 + 工具定义 + SOP 放在同一个目录里，拿走就用、改了就能贡献。仓库自带三个：
+一个场景包 = 文档 + 工具定义 + SOP 放在同一个目录里，拿走就用、改了就能贡献。仓库自带四个：
 
 | 目录 | 谁用 | 知识库里放 | 工具查什么 | 一句话提问 |
 |---|---|---|---|---|
 | [`packs/leave-planning`](packs/leave-planning/) | 行政 / 人事 / 全员 | 《休假管理制度》 | 法定节假日与补班、日期是星期几 | 「国庆想连休到 10 月 11 日要请几天年假」 |
 | [`packs/model-selfcheck`](packs/model-selfcheck/) | 研发 / 任何调模型的人 | 《模型服务自查手册》 | 这把 key 能用哪些模型、余额与状态 | 「我这把 key 能用哪些模型？余额还剩多少？」 |
+| [`packs/it-assets`](packs/it-assets/) | IT / 行政 / 全员 | 《IT 资产管理规范》 | 资产台账、报修记录、即将过保（SQL 查资产库） | 「笔记本 NB-0042 键盘又坏了，还在保修期吗？」 |
 | [`packs/ops-inspection`](packs/ops-inspection/) | 运维 | 《日常巡检规范》 | 磁盘、内存、负载、容器状态 | 「帮我做一次日常巡检」（需宿主机 docker） |
 
-前两个不需要任何基础设施，是快速开始里自动导入的内容。目录格式、导入发生了什么、怎么贡献一个包：[`docs/场景包.md`](docs/场景包.md)。
+前三个不需要任何基础设施（资产库在演示站是随包的 sqlite 假库），是快速开始里自动导入的内容。目录格式、导入发生了什么、怎么贡献一个包：[`docs/场景包.md`](docs/场景包.md)。
 
 ## 它怎么工作
 
@@ -88,15 +89,14 @@ docker compose up -d --build
 
 每一轮提问都记进**组织运行图谱**（`data/graph.db`，一个 SQLite 文件）：工具的完整返回（不是页面上的预览）、按哪个 SOP 跑的、
 结论质量；容器、命名空间、SOP、文档、阈值自动成为实体，事实带出处、只追加不覆盖。「从实践里长出 SOP」就建在它上面——
-回答结束后，后台把本轮轨迹整理成 SOP 提议，证据指向具体某次工具调用，人批准才保存；下面 Roadmap 里的漂移检测、可审计记忆也都从这里长。
-链路细节见 [`docs/architecture.md`](docs/architecture.md)。
+回答结束后，后台把本轮轨迹整理成 SOP 提议，证据指向具体某次工具调用，人批准才保存；下面 Roadmap 里的漂移检测、可审计记忆也都从这里长。链路细节见 [`docs/architecture.md`](docs/architecture.md)。
 
 ## 功能
 
 - **多格式入库**：PDF / Word / PPT / Markdown / 纯文本 / 图片，后台入库显示进度；文档内嵌的截图、架构图识别后插回原位，一并可检索。
 - **混合检索 + 重排**：向量 + BM25 两路召回、RRF 融合，交叉编码器精排；回答里的 `[1]` 可点开看原文、来源文件、页码和分数。打开 `KB_TOOLS` 后模型还能自己换说法补查、读片段的前后文。
 - **多轮记忆**：追问自动补全指代；LangGraph 检查点记住工具与搜索的原始返回，追问不必重查。
-- **只读工具**：命令 / 脚本 / HTTP 接口三种，Agent 自行判断要不要查并与知识库对照；新增工具走宿主机审批，改完不用重启。可选的计算沙箱让模型写 Python 算准统计、比对：只读本轮查到的数据，在无网络的一次性 gVisor 容器里跑。[`docs/工具.md`](docs/工具.md)
+- **只读工具**：命令 / 脚本 / HTTP 接口 / SQL 查询四种（K8s API、Prometheus 有现成模板），也能接本机或远程的 MCP server；Agent 自行判断要不要查并与知识库对照；新增工具走宿主机审批，改完不用重启。可选的计算沙箱让模型写 Python 算准统计、比对：只读本轮查到的数据，在无网络的一次性 gVisor 容器里跑。[`docs/工具.md`](docs/工具.md)
 - **SOP**：从文档自动抽取，每步附原句供核对；页面编排启停、一键「▶ 执行」；一次自由排查后可沉淀为 SOP。文档怎么写才抽得准：[`docs/SOP文档写法.md`](docs/SOP文档写法.md)
 - **联网补充**：知识库答不了时经网关搜索，IP、密钥、内网域名在代码层拦截不外发；搜到的答案经人确认可存回知识库。
 - **选模型**：顶栏切换这把 key 有权用的模型；管理页改网关地址、key（只写不读）、对话 / 向量 / 图片模型，保存即生效。
@@ -127,12 +127,12 @@ docker compose up -d --build
 - [x] 图谱落盘：每次执行的工具完整返回、实体、带出处的事实
 - [x] 自由排查长出 SOP：提议 → 人批准 → 默认停用的 SOP
 - [x] 场景包：文档 + 工具 + SOP 一个目录，拿走就用
-- [x] 一键演示：`docker compose up` 自动导入两个场景包
-- [x] 工具层接 MCP server（第 1 期：stdio 客户端 + 逐个审批与只读确认）；doc2sop 自己作为 MCP server：`/mcp` 对外开放知识库、SOP（工具、提示词、`SKILL.md`）和宿主机标了 `export` 的只读工具，按客户端发令牌、审计、限流（`MCP_ENABLED`，默认关，见 [`docs/工具.md`](docs/工具.md#对外-mcp-出口让-claude-codecopilotcursor-用上知识库和-sop)）；知识检索工具化：`kb_search` / `kb_read` / `kb_catalog` 补查与读前后文、三种检索模式、待办清单 `plan`（默认关，评测达标后再定默认）；计算沙箱 `python_exec`：模型写 Python 算本轮数据工具的完整返回，宿主机沙箱服务起一次性 gVisor 容器（无网络、只读、限资源），输出照样算出网污点（`SANDBOX_URL`，默认空，见 [`docs/正式部署.md`](docs/正式部署.md#计算沙箱python_exec)）；远程主机：经 SSH 巡检一批 Linux 主机，`target` 参数与 `@组` 并发，受控模式（主机上的执行器 + root 所有的白名单 + 强制命令公钥）与直连模式，`enroll` / `push` / `status`，不配主机清单时一切照旧（见 [`docs/工具.md`](docs/工具.md#远程主机在别的-linux-主机上跑命令型工具)；演示站带一台演示主机）
+- [x] 一键演示：`docker compose up` 自动导入三个场景包
+- [x] 工具层接 MCP server（第 1 期：stdio 客户端 + 逐个审批与只读确认）；doc2sop 自己作为 MCP server：`/mcp` 对外开放知识库、SOP（工具、提示词、`SKILL.md`）和宿主机标了 `export` 的只读工具，按客户端发令牌、审计、限流（`MCP_ENABLED`，默认关，见 [`docs/工具.md`](docs/工具.md#对外-mcp-出口让-claude-codecopilotcursor-用上知识库和-sop)）；知识检索工具化：`kb_search` / `kb_read` / `kb_catalog` 补查与读前后文、三种检索模式、待办清单 `plan`（默认关，评测达标后再定默认）；计算沙箱 `python_exec`：模型写 Python 算本轮数据工具的完整返回，宿主机沙箱服务起一次性 gVisor 容器（无网络、只读、限资源），输出照样算出网污点（`SANDBOX_URL`，默认空，见 [`docs/正式部署.md`](docs/正式部署.md#计算沙箱python_exec)）；远程主机：经 SSH 巡检一批 Linux 主机，`target` 参数与 `@组` 并发，受控模式（主机上的执行器 + root 所有的白名单 + 强制命令公钥）与直连模式，`enroll` / `push` / `status`，不配主机清单时一切照旧（见 [`docs/工具.md`](docs/工具.md#远程主机在别的-linux-主机上跑命令型工具)；演示站带一台演示主机）；更多数据源：只读 SQL 模板（PostgreSQL / MySQL / SQLite，参数绑定、只读事务）、K8s API 与 Prometheus 接口模板、远程 MCP server（Streamable HTTP，两代协议），参数会发到组织外的「外部」工具过出网规则，部署的人在主配置里写同名工具就能换掉场景包的实现；工具服务查 K8s 改用只读 ServiceAccount（见 [`docs/工具.md`](docs/工具.md#sql-工具按模板查只读数据库)）
 
 计划（顺序大致如此，不承诺时间）：
 
-- [ ] MCP 第 2、3 期与更多数据源：Streamable HTTP 传输、真实第三方场景包；SQL 模板、K8s / Prometheus 接口模板，场景包的工具可以换实现
+- [ ] MCP 第 3 期：真实第三方场景包（接真实的数据源和第三方 MCP server，拿走就用）
 - [ ] 触发式 SOP：cron / 告警 webhook → 执行 → 结论推企微 / 飞书 / 钉钉
 - [ ] 按角色生成执行报告
 - [ ] 文档漂移检测：文档说 900MB、现实连续三周 12MB → 提议改文档

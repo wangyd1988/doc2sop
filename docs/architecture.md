@@ -101,8 +101,9 @@ flowchart LR
 点「▶ 执行」时代码先按 SOP 步骤预填。流程类调用不算观察到系统、不进 SOP、不记进图谱。
 
 **联网与出网规则。** 联网打开时绑 `web_search`，再打开 `WEB_FETCH` 时多绑 `web_fetch`（读本轮搜索结果或用户给的链接的正文，
-作为 `[W]` 来源接着编号）。两条出网通道——搜索词和链接——发出去之前都过 `egress.py` 的同一套规则：静态拦截、
-本轮数据类调用和沙箱输出留下的污点、链接来源、可选的严格模式（`WEB_AFTER_DATA=deny`），见 `docs/工具.md`「出网规则」。
+作为 `[W]` 来源接着编号）。出网通道——搜索词、链接、外部数据类工具（公网接口、远程 MCP server）的字符串参数——发出去之前都过
+`egress.py` 的同一套规则：静态拦截、本轮数据类调用和沙箱输出留下的污点、链接来源、可选的严格模式（`WEB_AFTER_DATA=deny`），
+见 `docs/工具.md`「出网规则」「外部工具」。外部工具的返回给模型看时标成外部资料，不算污点。
 
 **计算沙箱（`SANDBOX_URL`，默认空）。** 配了才绑计算类工具 `python_exec`：模型写一段 Python，应用把它和本轮数据类调用的
 **完整返回**（图谱里存的那一份，不是给模型看的压缩版）一起发给宿主机上的沙箱服务（`deploy/sandbox/`，`127.0.0.1:8797`，令牌），
@@ -219,7 +220,7 @@ app/
 │   ├── grow.py        从一次自由排查长出 SOP 提议（回答后后台判断、生成、去重）
 │   ├── web_search.py  联网搜索（经网关）
 │   ├── web_fetch.py   读网页正文（WEB_FETCH）：只读搜索结果和用户给的链接，防 SSRF、限大小和类型、HTML 转正文
-│   ├── egress.py      统一出网规则：搜索词和链接的静态拦截、污点拦截、链接来源、严格模式
+│   ├── egress.py      统一出网规则：搜索词、链接和外部工具参数的静态拦截、污点拦截、链接来源、严格模式
 │   ├── sandbox.py     计算类工具 python_exec（SANDBOX_URL）：本轮数据的完整返回作为文件发给沙箱服务，说明每次现算
 │   └── ops_client.py  只读接口客户端
 ├── rag/
@@ -237,17 +238,21 @@ app/
 deploy/
 ├── release.sh         正式发版：base 镜像按依赖哈希预烘焙 → 只 COPY 代码 → 停旧起新 → 比对片段数 → 不一致回滚（docs/正式部署.md）
 ├── Dockerfile.release 发版用的应用镜像：FROM base 只 COPY app/ packs/（根 Dockerfile 的 base 阶段装依赖，app 阶段给 compose）
-├── ops_readonly.py    宿主机上的只读运维接口（白名单 + 令牌），支持 include 场景包的工具定义；
+├── ops_readonly.py    宿主机上的只读运维接口（白名单 + 令牌），支持 include 场景包的工具定义（主配置写同名工具即替换实现）；
 │                      /tools 按统一契约多回 inputSchema 等字段，export 只认主配置文件；/exec 日志记调用方；
-│                      内置标准库手写的 MCP stdio 客户端，发现的工具进待审、批准后写 ops_tools.mcp.yaml；
+│                      连接（http / postgres / mysql / sqlite）：接口型、SQL 工具共用的地址和凭据引用，只认主配置；
+│                      SQL 工具：只读查询模板，驱动按需从 vendor/ 导入；按地址判断工具是否「外部」；
+│                      内置标准库手写的 MCP 客户端（stdio 子进程、远程 Streamable HTTP），发现的工具进待审、批准后写 ops_tools.mcp.yaml；
 │                      主机清单 hosts：命令型工具经系统 ssh 在远程 Linux 主机上跑（target 参数、@组并发），
 │                      enroll / push / status 接入和检查主机
 ├── ops_exec.py        命令型工具的执行核心（参数校验、argv、写动词黑名单、超时与输出上限），工具服务在本机执行就用它；
 │                      也是受控模式装在远程主机上的执行器（强制命令 --stdio，按 root 所有的 allowlist.json 执行）。
 │                      只用标准库、兼容 Python 3.6
-├── ops_tools.yaml     工具定义的唯一真相源，改完即时生效；顶层 mcp_servers 声明 MCP server，hosts 声明主机
+├── ops_tools.yaml     工具定义的唯一真相源，改完即时生效；顶层 mcp_servers 声明 MCP server，connections 声明连接，hosts 声明主机
+├── templates/         可直接 include 的工具模板：k8s-api.yaml（经 K8s API 的 kube_*）、prometheus.yaml（常用 PromQL）
+├── k8s-readonly.yaml  工具服务查 K8s 用的只读 ServiceAccount（view + 少量集群级只读资源）
 ├── mcp/               玩具 MCP server holiday_mcp.py（测试 + 演示）与把拼假工具换成 MCP 来源的 holiday_tools.yaml
-├── demo/              一键演示：工具 sidecar（Dockerfile.ops + entrypoint.py，按 DEMO_PACKS 生成 include、按 DEMO_HOST 生成 hosts）
+├── demo/              一键演示：工具 sidecar（Dockerfile.ops + entrypoint.py，按 DEMO_PACKS 生成 include 和场景包的演示库连接、按 DEMO_HOST 生成 hosts）
 │                      和演示主机（Dockerfile.host：sshd + 执行器 + 只开放三个工具的 host-allowlist.json）
 ├── sandbox/           计算沙箱：sandbox_service.py（宿主机 systemd 服务，127.0.0.1 + 令牌，每次执行一个 gVisor 一次性容器，
 │                      镜像和限制写死）、Dockerfile + requirements.txt（标准库 + 锁定哈希的 PyYAML）、security_check.py（真实环境安全用例）
@@ -260,6 +265,7 @@ deploy/
 packs/                 场景包：每个目录 = pack.yaml + docs/ + tools.yaml + sops.json（docs/场景包.md）
 ├── leave-planning     行政-请假拼假
 ├── model-selfcheck    研发-模型调用自查
+├── it-assets          IT-资产与报修（SQL 工具查资产库；演示站用随包的 sqlite 假库）
 └── ops-inspection     运维-日常巡检（需要一台能读 docker 的 Linux 主机：本机，或配了 hosts 的远程主机）
 ```
 
@@ -281,6 +287,11 @@ packs/                 场景包：每个目录 = pack.yaml + docs/ + tools.yaml
 **MCP 工具不直连应用，仍经宿主机工具服务。** 应用侧只认 `/tools` 和 `/exec`，SOP 校验「只能引用
 当前存在的工具」这条线不用动；审批、只读确认、schema 指纹、输出脱敏也全部复用同一个地方。
 MCP 客户端用标准库手写而不引入 SDK，是为了保住 `ops_readonly.py`「单文件、零依赖、扔到任何主机就能跑」。
+远程传输（Streamable HTTP）同样手写：官方 Python SDK 要求 Python 3.10+，还带进 pydantic、starlette、uvicorn 等一串依赖，而工具服务只用到
+`tools/list`、`tools/call` 两个方法；兼容性由测试里用官方 SDK 起的 server（两代协议）兜底。
+
+**数据库驱动是可选依赖，按需导入。** 不配数据库连接时工具服务仍然只用标准库 + PyYAML；配了才导入对应的驱动，
+装在工具服务旁边的 `vendor/`（`pip install --target`），不碰系统 Python。缺驱动只影响用这种连接的工具。
 
 **计算沙箱和应用在同一台机器上，用 gVisor 隔离，而不是另开一台。** 模型写的代码跑在 runsc 里，系统调用由 gVisor 的用户态内核
 接住，再加无网络、只读、nobody、限资源；起容器的权限只在沙箱服务手里，它只接受固定镜像和固定参数。代价是一旦逃逸，影响的是整台机器，

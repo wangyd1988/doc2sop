@@ -4,13 +4,14 @@
 # 应用侧会从 /tools 拉取这里的描述与参数，动态生成给模型的函数签名。
 #
 # 工具不限于运维：任何岗位只要有「查得到的数据」，都可以接成工具。
-# 一个工具 = 能力（name、label、group、desc、params：模型和人看到的）+ 实现（impl：去哪儿取数）。五种实现：
+# 一个工具 = 能力（name、label、group、desc、params：模型和人看到的）+ 实现（impl：去哪儿取数）。六种实现：
 #   内置    impl: {type: builtin, func: date_info}            随工具服务发布的纯计算，不依赖任何命令，哪台机器上都能用
 #   命令型  impl: {type: command, argv: [df, -h], os: linux}  执行宿主机上的只读命令
 #   脚本型  impl: {type: script, script: x.sh}                执行 scripts/ 目录里经哈希登记的脚本
 #   接口型  impl: {type: http, url: ..., conn: ...}           调用只读 HTTP 接口（只允许 GET），可以引用下面的连接
+#   SQL 型  impl: {type: sql, conn: ..., query: ...}          在下面的数据库连接上跑一条写死的只读查询（SELECT / WITH），模型只填参数
 #   MCP 型  impl: {type: mcp, server: ..., tool: ...}         调用下面 mcp_servers 里声明的 MCP server 上的某个工具（见 docs/工具.md）
-# 老写法照常可用，就是对应的实现：binary + argv 即 command，script、http、mcp 字段即同名实现。
+# 老写法照常可用，就是对应的实现：binary + argv 即 command，script、http、mcp 字段即同名实现（SQL 型只有新写法）。
 # 本文件多数条目是老写法，date_info 是新写法的例子。impl 里写了不认识的字段，整条拒绝加载，不会被悄悄忽略。
 #
 # 安全约定（加载时会强制校验，不满足则该工具不加载）：
@@ -19,9 +20,11 @@
 #      binary（新写法里就是 argv 的第一项）不能是 bash/sh/python/env/xargs 等能执行任意命令的程序。
 #   2. 接口型：主机名写死，参数只能出现在路径或 query 的值里，并整体 URL 编码；
 #      请求头只能由管理员填写，凭据按名字引用：${prom_token} 对应宿主机环境变量 OPS_SECRET_PROM_TOKEN
-#      （老写法 ${OPS_SECRET_xxx} 照常可用）；不跟随跳转。
+#      （老写法 ${OPS_SECRET_xxx} 照常可用）；不跟随跳转。参数嵌在 query 值中间（PromQL 的 instance=~"{host}"）
+#      只对 name / k8s_name / resource / date 和整数开放。
 #   3. 字符串参数必须声明 pattern，且只能引用下面的预置正则，不能自己写正则。
-#   4. 只放只读能力。写操作动词另有黑名单兜底，命中直接拒绝执行。
+#   4. 只放只读能力。写操作动词另有黑名单兜底，命中直接拒绝执行。SQL 型只能是一条 SELECT / WITH，参数由驱动绑定，
+#      连接要用只读账号，执行时再套只读事务、超时和行数上限。
 #   5. MCP 型：server 只能在本文件顶层 mcp_servers 里声明（它是宿主机上跑的任意代码，页面不能申请）。
 #      发现到的工具先进待审，批准后才出现在 /tools；server 没声明 readOnlyHint 的，批准时必须加
 #      --attest-readonly；destructiveHint 的工具不列。批准条目写在旁边的 ops_tools.mcp.yaml，
@@ -44,24 +47,34 @@
 #   os        命令型、脚本型可选：linux / darwin / windows，或它们的列表（新写法写在 impl 里）。和工具服务所在
 #             机器不符时，工具不下发给模型，页面显示「不适用于这台机器」而不是「缺命令」。不写就是不限
 #
-# 连接（只给接口型工具用；只能写在本文件，被 include 的文件里写了会被忽略）：一个数据源的地址前缀和凭据写一次，
-# 多个工具用 conn 共用，工具里的 url 只写路径。连接只能由管理员在这里添加，页面申请工具时只能选一个已有的。
+# 连接（接口型、SQL 工具用；只能写在本文件，被 include 的文件里写了会被忽略）：一个数据源的地址和凭据写一次，
+# 多个工具用 conn 共用，接口型工具里的 url 只写路径。连接只能由管理员在这里添加，页面申请工具时只能选一个已有的。
+# 四种：http（base、headers、bearer / bearer_file、ca）、postgres / mysql（host、port、database、user、password、tls、ca、
+# timeout）、sqlite（path）。密码、令牌只能写 ${名字}；写了不认识的字段，整个连接不加载。详见 docs/工具.md「连接与凭据引用」。
 #
 # connections:
 #   - name: prom
-#     type: http                                         # 目前只有 http
+#     type: http
 #     base: https://prometheus.example.internal:9090     # 也可以整个写成 ${prom_url}
-#     headers: {Authorization: "Bearer ${prom_token}"}   # 值在宿主机环境变量 OPS_SECRET_PROM_TOKEN 里
+#     bearer: ${prom_token}                              # 值在宿主机环境变量 OPS_SECRET_PROM_TOKEN 里
+#     ca: /etc/ops-readonly/prom-ca.pem                  # 可选：只信这个 CA
+#   - {name: cmdb, type: postgres, host: db.example.internal, database: cmdb, user: doc2sop_ro, password: "${cmdb_password}"}
 #
 # tools:
 #   - name: prom_targets_up
 #     desc: 查看 Prometheus 的各个抓取目标是否在线
 #     impl: {type: http, conn: prom, url: /api/v1/query, query: {query: up}, pick: ["data.result[].metric.instance"]}
 #     params: {}
+#   - name: cmdb_host
+#     desc: 按主机名查 CMDB 里的负责人和环境
+#     impl: {type: sql, conn: cmdb, query: "SELECT owner, env FROM v_hosts WHERE hostname = :host", max_rows: 20}
+#     params: {host: {type: str, pattern: name, required: true}}
 #
 # 引入别的定义文件（例如一个场景包的 tools.yaml，见 docs/场景包.md）：顶层 include 列表，
-# 每项是路径或 glob，相对路径相对本文件所在目录。被包含的文件与本文件同等可信，同样只能由
-# 宿主机 root 维护；它们自己不能再 include。改动被包含的文件同样即时生效。
+# 每项是路径或 glob，相对路径相对本文件所在目录。被包含的文件同样只能由宿主机 root 维护；它们自己不能再 include，
+# 也不能声明连接、主机清单、MCP server 和 export，里面的接口型工具只能把凭据发往管理员定的地址（经连接，或地址来自 ${…}）。
+# 本文件里写一个和被包含文件同名的工具，就是替换它的实现（参数要兼容，见 docs/工具.md「替换场景包的实现」）。
+# 改动被包含的文件同样即时生效。deploy/templates/ 里有 K8s API、Prometheus 的现成模板。
 #
 # include:
 #   - ../packs/leave-planning/tools.yaml
@@ -73,7 +86,7 @@
 #
 # export: [holiday__holiday_calendar, date_info]
 #
-# MCP server（第四种工具类型的来源；只能写在这里，被 include 的文件里写了会被忽略）：
+# MCP server（MCP 型工具的来源；只能写在这里，被 include 的文件里写了会被忽略）：
 #
 # mcp_servers:
 #   holiday:
@@ -81,6 +94,9 @@
 #     command: python3
 #     args: [/opt/ops/mcp/holiday_mcp.py]
 #     env: {HOLIDAY_TOKEN: "${OPS_SECRET_HOLIDAY}"}   # 可选；子进程只拿到这里声明的变量和 PATH/HOME/LANG
+#   learn:                                            # 远程 server（Streamable HTTP）：写 url 而不是 command
+#     label: 微软文档
+#     url: https://learn.microsoft.com/api/mcp        # 可选 headers（固定值或 ${名字}）、protocol、timeout、ca、external
 #
 # 然后 python3 ops_readonly.py pending 看发现了什么，approve <id> [--attest-readonly] 逐个批准。
 # 也可以不等发现，直接手写一条 mcp 条目（名字自己定）：
