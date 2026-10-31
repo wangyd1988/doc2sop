@@ -532,6 +532,9 @@ class LitellmUsageTemplateTests(_Configured):
     def test_the_tools_load_on_the_documented_connection_and_bind_integers(self):
         tools, problems = self.load()
         self.assertEqual((sorted(tools), problems), (self.NAMES, []))
+        for name in ("gateway_usage_by_model", "gateway_usage_by_key"):   # 没配价格的模型花费是 0：别当成总花费
+            self.assertIn("没配价格的模型花费是 0，不代表免费", tools[name]["desc"])
+            self.assertIn("要列出花费为 0 的模型", tools[name]["desc"])
         seen = []
 
         class Cursor:
