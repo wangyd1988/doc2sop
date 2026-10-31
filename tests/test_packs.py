@@ -123,6 +123,30 @@ class ShippedPacksTests(unittest.TestCase):
         """它用来演示 SOP 从实践里长出来：grow 会和已有 SOP（含停用）去重，所以包里不能预置同路径的 SOP。"""
         self.assertEqual(self.found["model-selfcheck"]["sops"], [])
 
+    def test_examples_say_what_they_are_for(self):
+        """工作台按用途分组示例问题：{q, kind} 写法和老的纯文本写法（算查数据）都在用。"""
+        kinds = {}
+        for pack_id, pack in self.found.items():
+            self.assertEqual([item["text"] for item in pack["example_items"]], pack["examples"])
+            for item in pack["example_items"]:
+                self.assertIn(item["kind"], packs.EXAMPLE_KINDS)
+                kinds.setdefault(item["kind"], []).append(pack_id)
+        self.assertLessEqual({"knowledge", "data", "sop"}, set(kinds))
+        self.assertEqual({item["kind"] for item in self.found["model-selfcheck"]["example_items"]}, {"data"})
+        self.assertEqual(self.found["leave-planning"]["example_items"][0],
+                         {"text": "国庆想连休到 10 月 11 日要请几天年假", "kind": "sop"})
+
+    def test_example_entries_are_validated(self):
+        problems = []
+        items = packs._examples(["纯文本", {"q": "查一下", "kind": "knowledge"}, {"q": "没写用途"},
+                                 {"q": "写错用途", "kind": "magic"}, {"kind": "sop"}, ""], problems)
+        self.assertEqual(items, [{"text": "纯文本", "kind": "data"}, {"text": "查一下", "kind": "knowledge"},
+                                 {"text": "没写用途", "kind": "data"}])
+        self.assertEqual(len(problems), 2)
+        self.assertIn("kind 只能是", problems[0])
+        self.assertIn("没写 q", problems[1])
+        self.assertEqual(packs._examples("一句", []), [{"text": "一句", "kind": "data"}])
+
     def test_it_assets_sop_quotes_its_document(self):
         pack = self.found["it-assets"]
         doc = squash((SHIPPED / "it-assets" / "docs" / "IT资产管理规范.md").read_text(encoding="utf-8"))
@@ -329,6 +353,8 @@ class ImportTests(PackTestCase):
             self.assertEqual(packs.progress()["pending"], ["demo-pack"])
             packs.import_pack("demo-pack", self.ingest, self.tools)
             self.assertEqual(packs.examples(), ["示例问题一", "示例问题二"])
+            self.assertEqual(packs.example_items(), [{"text": "示例问题一", "kind": "data"},
+                                                     {"text": "示例问题二", "kind": "data"}])
             after = packs.status({"t_one"})[0]
             self.assertEqual(after["phase"], "imported")
             self.assertEqual(after["missing_tools"], ["t_two"])

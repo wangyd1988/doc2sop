@@ -35,6 +35,8 @@ STATE_PATH = DATA_DIR / "packs.json"
 PACK_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
 TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")   # 与 deploy/ops_readonly.py 一致
 EXAMPLES_MAX = 6
+# 示例问题的用途：查知识、查数据、按 SOP 排查、计算。工作台按它分组；老的纯文本写法算查数据
+EXAMPLE_KINDS = ("knowledge", "data", "sop", "compute")
 
 _lock = threading.Lock()          # 状态文件读写 + 一次只导一个包
 _wake = threading.Event()
@@ -71,10 +73,28 @@ def _strings(value):
     return [str(value).strip()] if value not in (None, "") else []
 
 
+def _examples(value, problems):
+    """pack.yaml 的 examples → [{text, kind}]。每一项可以是纯文本（算查数据），也可以写成 {q: 问题, kind: 用途}。"""
+    items = []
+    for raw in value if isinstance(value, (list, tuple)) else [value] if value not in (None, "") else []:
+        if isinstance(raw, dict):
+            text, kind = str(raw.get("q") or "").strip(), str(raw.get("kind") or "data").strip()
+            if not text:
+                problems.append("examples 里有一项没写 q（示例问题）")
+                continue
+            if kind not in EXAMPLE_KINDS:
+                problems.append(f"examples 里「{text[:20]}」的 kind 只能是 {'、'.join(EXAMPLE_KINDS)} 之一，不是 {kind[:20]}")
+                continue
+            items.append({"text": text, "kind": kind})
+        elif str(raw).strip():
+            items.append({"text": str(raw).strip(), "kind": "data"})
+    return items
+
+
 def _read_pack(folder: Path) -> dict:
     """解析一个包目录。格式问题收进 problems 而不是抛出：列表页要能把坏包连同原因一起显示。"""
     pack = {"id": folder.name, "dir": str(folder), "name": folder.name, "version": 1, "summary": "",
-            "roles": [], "requires": [], "category": "", "examples": [], "docs": [], "tools": [],
+            "roles": [], "requires": [], "category": "", "examples": [], "example_items": [], "docs": [], "tools": [],
             "sops": [], "problems": []}
     problems = pack["problems"]
     if not PACK_ID.match(folder.name):
@@ -100,7 +120,8 @@ def _read_pack(folder: Path) -> dict:
         pack["roles"] = _strings(meta.get("roles"))
         pack["requires"] = _strings(meta.get("requires"))
         pack["category"] = str(meta.get("category") or "").strip()[:config.CATEGORY_MAX]
-        pack["examples"] = _strings(meta.get("examples"))[:EXAMPLES_MAX]
+        pack["example_items"] = _examples(meta.get("examples"), problems)[:EXAMPLES_MAX]
+        pack["examples"] = [item["text"] for item in pack["example_items"]]
         if not pack["summary"]:
             problems.append("pack.yaml 缺少 summary（一句话说明）")
 
@@ -314,14 +335,19 @@ def export_sops(source="") -> list:
 
 
 def examples() -> list:
-    """已导入的包的示例问题，给欢迎页当「点一下就问」的 chips。自动导入的包排前面。"""
+    """已导入的包的示例问题（纯文本），给欢迎页当「点一下就问」的 chips。自动导入的包排前面。"""
+    return [item["text"] for item in example_items()][:EXAMPLES_MAX]
+
+
+def example_items() -> list:
+    """已导入的包的示例问题，带用途（knowledge / data / sop / compute），给工作台分组用。自动导入的包排前面。"""
     state, packs, out, seen = _state(), discover(), [], set()
     for pack_id in list(config.DEMO_PACKS) + sorted(packs):
         if pack_id in seen or pack_id not in packs or pack_id not in state:
             continue
         seen.add(pack_id)
-        out.extend(packs[pack_id]["examples"])
-    return out[:EXAMPLES_MAX]
+        out.extend(packs[pack_id]["example_items"])
+    return out
 
 
 def progress() -> dict:

@@ -12,5 +12,5 @@ requires:
   - 演示站的多机巡检只用了本包的磁盘、内存、负载三个工具（演示主机上没有 docker），所以本包在 DEMO_HOST_PACKS 里、不在 DEMO_PACKS 里
 category: 运维规范
 examples:
-  - 帮我做一次日常巡检
+  - {q: 帮我做一次日常巡检, kind: sop}
   - 现在机器内存和磁盘还够吗？

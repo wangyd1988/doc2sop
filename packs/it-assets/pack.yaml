@@ -9,9 +9,9 @@ requires:
   - 演示站不用准备：演示 sidecar 用随包的 demo/assets.sql 建一个 sqlite 假库，连接自动建好
 category: IT制度
 examples:
-  - 笔记本 NB-0042 键盘又坏了，还在保修期吗？该怎么处理？
-  - PC-0012 开不了机，之前修过吗？
-  - 最近 60 天有哪些设备要过保？
+  - {q: 笔记本 NB-0042 键盘又坏了，还在保修期吗？该怎么处理？, kind: sop}
+  - {q: PC-0012 开不了机，之前修过吗？, kind: sop}
+  - {q: 最近 60 天有哪些设备要过保？, kind: data}
 # 演示 sidecar 用的假数据库：每次启动用 script 建一个 sqlite 库，在生成的主配置里建名为 conn 的连接（只读打开）
 demo:
   sqlite: {conn: it_assets, script: demo/assets.sql}

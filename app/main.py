@@ -11,13 +11,15 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
 
-from app import catalog, conversations, graph, jobs, models, packs, playbooks, settings
+from app import catalog, conversations, graph, jobs, models, packs, playbooks, settings, workbench
 from app.agent import grow
 from app.agent import loop as agent_loop
 from app.agent import ops_client, registry, web_search
@@ -51,6 +53,71 @@ def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
 # Auth guards every route, including the UI itself.
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None,
               dependencies=[Depends(require_auth)])
+
+
+# --- 防跨站请求伪造 ------------------------------------------------------------
+# 网页用 Basic 认证，浏览器会自动带上凭据：别的网站放一个表单或一段 fetch，就能借登录用户的身份改东西。
+# /api/ 下除 GET、HEAD 以外的请求，带了 Origin（没有就看 Referer）、而主机和端口跟请求的 Host 对不上的，一律 403。
+# 页面自己的 fetch 是同源的；curl、评测脚本不带这两个头，照常可用。/mcp 不在 /api 下，它自己拒绝带 Origin 的请求。
+# 前面有反向代理时，要原样转发 Host（nginx：proxy_set_header Host $host）。
+
+SAFE_METHODS = ("GET", "HEAD")
+DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin_site(value: str):
+    """Origin / Referer → 「主机[:端口]」（小写，去掉协议的默认端口）；认不出（含 Origin: null）时是 None。"""
+    try:
+        parts = urlsplit(value.strip())
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in DEFAULT_PORTS or not host:
+        return None
+    return host if port in (None, DEFAULT_PORTS[parts.scheme]) else f"{host}:{port}"
+
+
+def _host_site(value: str):
+    """Host 头 → 「主机[:端口]」（小写，去掉 80、443：代理后面看不出客户端用的是哪个协议）。"""
+    try:
+        parts = urlsplit("//" + value.strip())
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        return None
+    if not host:
+        return None
+    return host if port in (None, 80, 443) else f"{host}:{port}"
+
+
+def cross_site(method: str, path: str, headers: dict) -> bool:
+    """这个请求该不该当跨站写请求拦下。headers 的键是小写的头名。"""
+    if method in SAFE_METHODS or not path.startswith("/api/"):
+        return False
+    source = headers.get("origin") or headers.get("referer")
+    if not source:
+        return False
+    expected = _host_site(headers.get("host", ""))
+    return expected is None or _origin_site(source) != expected
+
+
+class SameOriginOnly:
+    """纯 ASGI 中间件：在路由和 Basic 认证之前看一眼请求头，跨站的写请求直接 403。"""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in scope["headers"]}
+            if cross_site(scope["method"], scope["path"], headers):
+                log.warning("cross-site %s %s refused (origin=%s host=%s)", scope["method"], scope["path"],
+                            (headers.get("origin") or headers.get("referer") or "")[:100], headers.get("host", "")[:100])
+                response = JSONResponse({"detail": "跨站请求被拒绝：只接受从本站页面发出的修改请求"}, status_code=403)
+                return await response(scope, receive, send)
+        await self.inner(scope, receive, send)
+
+
+app.add_middleware(SameOriginOnly)
 
 
 def safe_name(filename: str) -> str:
@@ -502,7 +569,8 @@ def reject_proposal(proposal_id: str):
 #
 # 页面能改工具的哪些部分，是一条安全边界：
 #   启停、改描述  -> 直接生效（都不改变实际执行的命令）
-#   新增工具      -> 只能提交申请，由人在宿主机上批准后才写入配置
+#   新增工具      -> 只能提交申请；在「待审批」里输审批口令批准（口令由工具服务核对），或由人在宿主机上批准，
+#                    批准后才写入配置
 # 命令模板永远只在宿主机那份手写配置里定义，这个接口碰不到。
 
 class ToolOverride(BaseModel):
@@ -565,12 +633,12 @@ def tools_override(body: ToolOverride):
 
 @app.get("/api/tools/pending")
 def tools_pending():
-    return {"pending": ops_client.list_pending()}
+    """待审批：申请的完整内容和风险提示、内容变了要重新确认的脚本、审批口令的状态（都由工具服务给）。"""
+    return ops_client.review()
 
 
-@app.post("/api/tools/propose")
-def tools_propose(body: ToolProposal):
-    """提交新工具申请。申请不会生效，要在宿主机上批准。"""
+def _proposal_payload(body: "ToolProposal") -> dict:
+    """表单 → 发给工具服务的申请。新写法（impl）只转发 impl；老写法按实现类型只留它用得上的字段。"""
     tool = body.model_dump()
     if tool.get("impl") is not None:
         # 新写法：老写法的字段一律不转发，免得一条申请里两种写法打架
@@ -583,12 +651,129 @@ def tools_propose(body: ToolProposal):
         for field in ("binary", "argv", "script", "http", "os", "groups"):
             if field not in keep or (field in ("os", "groups") and not tool.get(field)):
                 tool.pop(field, None)
+    return tool
+
+
+@app.post("/api/tools/propose")
+def tools_propose(body: ToolProposal):
+    """提交新工具申请。申请不会生效，要在「待审批」里批准（审批口令），或在宿主机上批准。"""
     try:
-        result = ops_client.propose(tool, author=WEB_USER)
+        result = ops_client.propose(_proposal_payload(body), author=WEB_USER)
     except ops_client.OpsUnavailable as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     log.info("tool proposal queued: %s", body.name)
     return result
+
+
+# --- 页面审批 ------------------------------------------------------------------
+# 批准、重新确认脚本、提交并立即批准要输审批口令。口令只在这几个请求里经过应用：原样转给工具服务核对，
+# 不保存、不记日志，也不出现在任何回复里——所以请求体手动解析，不走 FastAPI 的校验（它的 422 会回显输入）。
+# 拒绝不要口令。
+
+APPROVAL_BODY_MAX = 64 * 1024
+OPS_REFUSALS = (400, 403, 404, 409, 423, 501)
+
+
+async def _json_body(request: Request) -> dict:
+    body = await request.body()
+    if len(body) > APPROVAL_BODY_MAX:
+        raise HTTPException(413, "请求体太大")
+    try:
+        data = json.loads(body or b"{}")
+    except ValueError:
+        raise HTTPException(400, "请求体不是合法 JSON") from None
+    if not isinstance(data, dict):
+        raise HTTPException(400, "请求体必须是 JSON 对象")
+    return data
+
+
+def _passphrase(data: dict) -> str:
+    value = data.get("passphrase")
+    if not isinstance(value, str) or not value:
+        raise HTTPException(400, "没有输入审批口令")
+    return value
+
+
+def _approval_caller(request: Request) -> str:
+    """谁、从哪里批的：只进工具服务的日志。"""
+    return f"web user={WEB_USER} ip={request.client.host if request.client else '-'}"
+
+
+def _ops_refused(exc: ops_client.OpsUnavailable) -> JSONResponse:
+    """工具服务的拒绝（口令不对、锁定、没设口令、脚本被改过……）连同状态码转给页面；连不上是 502。"""
+    body = {"detail": str(exc)}
+    if exc.data.get("pending"):
+        body["pending"] = exc.data["pending"]
+    return JSONResponse(body, status_code=exc.status if exc.status in OPS_REFUSALS else 502)
+
+
+@app.get("/api/tools/approval")
+def tools_approval():
+    return ops_client.approval_status()
+
+
+@app.post("/api/tools/pending/{pending_id}/approve")
+async def tools_approve(pending_id: str, request: Request):
+    data = await _json_body(request)
+    passphrase = _passphrase(data)
+    try:
+        result = await run_in_threadpool(ops_client.approve, pending_id, passphrase,
+                                         data.get("attest_readonly") is True, str(data.get("script_sha256") or ""),
+                                         _approval_caller(request))
+    except ops_client.OpsUnavailable as exc:
+        return _ops_refused(exc)
+    log.info("tool approved from the page: %s", (result.get("tool") or {}).get("name"))
+    return result
+
+
+@app.post("/api/tools/pending/{pending_id}/reject")
+def tools_reject(pending_id: str, request: Request):
+    try:
+        result = ops_client.reject(pending_id, _approval_caller(request))
+    except ops_client.OpsUnavailable as exc:
+        return _ops_refused(exc)
+    log.info("tool proposal rejected from the page: %s", result.get("rejected"))
+    return result
+
+
+@app.post("/api/tools/scripts/{script}/trust")
+async def tools_trust(script: str, request: Request):
+    data = await _json_body(request)
+    passphrase = _passphrase(data)
+    try:
+        result = await run_in_threadpool(ops_client.trust, script, passphrase, str(data.get("sha256") or ""),
+                                         _approval_caller(request))
+    except ops_client.OpsUnavailable as exc:
+        return _ops_refused(exc)
+    log.info("script re-trusted from the page: %s", script)
+    return result
+
+
+@app.post("/api/tools/propose-approve")
+async def tools_propose_approve(request: Request):
+    """提交并立即批准：同一个人申请、同一个人审批。口令不对时什么都不提交。"""
+    data = await _json_body(request)
+    passphrase = _passphrase(data)
+    try:
+        body = ToolProposal.model_validate(data.get("tool") if isinstance(data.get("tool"), dict) else {})
+    except ValidationError as exc:
+        problems = "；".join(f"{'.'.join(map(str, error['loc']))}：{error['msg']}" for error in exc.errors()[:3])
+        raise HTTPException(400, f"申请内容不合法（{problems}）") from None
+    try:
+        result = await run_in_threadpool(ops_client.propose_approve, _proposal_payload(body), WEB_USER, passphrase,
+                                         str(data.get("script_sha256") or ""), _approval_caller(request))
+    except ops_client.OpsUnavailable as exc:
+        return _ops_refused(exc)
+    log.info("tool proposed and approved from the page: %s", body.name)
+    return result
+
+
+# --- Workbench ------------------------------------------------------------------
+
+@app.get("/api/overview")
+def overview():
+    """工作台：四张状态卡、待处理、示例问题、最近的对话；左侧导航的徽标也用它。"""
+    return workbench.overview(usable_tools())
 
 
 # --- Conversations -----------------------------------------------------------

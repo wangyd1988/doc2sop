@@ -19,7 +19,14 @@ _caller = contextvars.ContextVar("ops_caller", default="")
 
 
 class OpsUnavailable(RuntimeError):
-    """The ops endpoint is not configured or not reachable."""
+    """The ops endpoint is not configured, not reachable, or refused the request.
+
+    status：工具服务回的 HTTP 状态码（连不上、没配置时是 None）；data：它回的 JSON（比如提交并批准失败时申请的编号）。"""
+
+    def __init__(self, message, status=None, data=None):
+        super().__init__(message)
+        self.status = status
+        self.data = data if isinstance(data, dict) else {}
 
 
 def enabled() -> bool:
@@ -47,12 +54,13 @@ def _request(path, payload=None, timeout=30, headers=None):
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
-        detail = ""
+        data = {}
         try:
-            detail = json.load(exc).get("error", "")
+            data = json.load(exc)
         except Exception:
             pass
-        raise OpsUnavailable(detail or f"接口返回 {exc.code}") from exc
+        detail = data.get("error", "") if isinstance(data, dict) else ""
+        raise OpsUnavailable(detail or f"接口返回 {exc.code}", status=exc.code, data=data) from exc
     except Exception as exc:
         raise OpsUnavailable(why(exc)) from exc
 
@@ -113,6 +121,78 @@ def override(name: str, enabled_flag=None, desc=None, label=None, reset=False) -
 def propose(tool: dict, author: str = "web") -> dict:
     """Queue a new tool for host-side review. It is inert until approved."""
     return _request("/tools/propose", {"tool": tool, "author": author})
+
+
+# --- 页面审批 ---------------------------------------------------------------------------
+# 口令原样转交给工具服务核对：这里不保存、不记录，也判断不了对错。caller 是「谁、从哪里」，工具服务只写进日志。
+
+OLD_SERVICE = "工具服务版本较旧，不支持页面审批：升级宿主机上的 ops_readonly.py（和 ops_exec.py 一起拷）"
+
+
+def _caller_headers(caller):
+    caller = " ".join(str(caller or "").split())[:200]
+    return {CALLER_HEADER: caller.encode("ascii", "replace").decode("ascii")} if caller else None
+
+
+def _no_approval(problem):
+    return {"configured": False, "locked": False, "unlock_minutes": 0, "problem": problem}
+
+
+def approval_status() -> dict:
+    """审批口令的状态：设没设、锁没锁、还有几分钟解锁。不含哈希和参数（工具服务本来就不给）。"""
+    if not enabled():
+        return _no_approval("未配置只读工具接口（OPS_URL / OPS_TOKEN）")
+    try:
+        return _request("/tools/approval", timeout=10).get("approval") or _no_approval(OLD_SERVICE)
+    except OpsUnavailable as exc:
+        return _no_approval(OLD_SERVICE if exc.status == 404 else str(exc))
+
+
+def review() -> dict:
+    """页面审批要看的：待审申请（带完整内容和风险提示）、要重新确认的脚本、审批口令的状态。
+
+    老工具服务没有 /tools/review：退回只有待审列表，页面上能看能拒绝、不能批。"""
+    if not enabled():
+        return {"pending": [], "held": [], "approval": _no_approval("未配置只读工具接口（OPS_URL / OPS_TOKEN）")}
+    try:
+        data = _request("/tools/review", timeout=20)
+    except OpsUnavailable as exc:
+        if exc.status == 404:
+            return {"pending": list_pending(), "held": [], "approval": _no_approval(OLD_SERVICE)}
+        return {"pending": [], "held": [], "approval": _no_approval(str(exc)), "error": str(exc)}
+    return {"pending": data.get("pending") or [], "held": data.get("held") or [],
+            "approval": data.get("approval") or _no_approval(OLD_SERVICE)}
+
+
+def _action(path, payload, caller):
+    try:
+        return _request(path, payload, timeout=60, headers=_caller_headers(caller))
+    except OpsUnavailable as exc:
+        if exc.status == 404 and str(exc) in ("Not found", "接口返回 404"):
+            raise OpsUnavailable(OLD_SERVICE, status=501) from None
+        raise
+
+
+def approve(ident: str, passphrase: str, attest_readonly=False, script_sha256="", caller="") -> dict:
+    payload = {"id": ident, "passphrase": passphrase, "attest_readonly": bool(attest_readonly)}
+    if script_sha256:
+        payload["script_sha256"] = script_sha256
+    return _action("/tools/approve", payload, caller)
+
+
+def reject(ident: str, caller="") -> dict:
+    return _action("/tools/reject", {"id": ident}, caller)
+
+
+def trust(script: str, passphrase: str, sha256: str, caller="") -> dict:
+    return _action("/tools/trust", {"script": script, "passphrase": passphrase, "sha256": sha256}, caller)
+
+
+def propose_approve(tool: dict, author: str, passphrase: str, script_sha256="", caller="") -> dict:
+    payload = {"tool": tool, "author": author, "passphrase": passphrase}
+    if script_sha256:
+        payload["script_sha256"] = script_sha256
+    return _action("/tools/propose-approve", payload, caller)
 
 
 def execute(name: str, args: dict) -> dict:
