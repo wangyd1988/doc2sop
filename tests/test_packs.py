@@ -6,12 +6,15 @@ SOP 只引用本包的工具。导入 SOP 仍然走 playbooks.validate，所以�
 import importlib.util
 import json
 import re
+import sqlite3
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -23,7 +26,7 @@ from app.main import app
 
 REPO = Path(__file__).resolve().parent.parent
 SHIPPED = REPO / "packs"
-DEMO = ("leave-planning", "model-selfcheck")
+DEMO = ("leave-planning", "model-selfcheck", "it-assets")
 
 if "ops_readonly" in sys.modules:
     ops = sys.modules["ops_readonly"]
@@ -39,6 +42,24 @@ def squash(text):
     return re.sub(r"\s+|\*\*", "", text)
 
 
+def load_as_included(pack_id, folder):
+    """按真实用法加载一个包的工具：主配置 include 它；包要的演示库（pack.yaml 的 demo.sqlite）照演示 sidecar 的做法建好、
+    在主配置里建连接。被包含的文件受场景包的规则约束（凭据只能经连接、或发往 ${…} 地址），直接当主文件加载就测不到。"""
+    meta = yaml.safe_load((SHIPPED / pack_id / "pack.yaml").read_text(encoding="utf-8")) or {}
+    demo = (meta.get("demo") or {}).get("sqlite")
+    main = Path(folder) / "ops_tools.yaml"
+    document = {"include": [str(SHIPPED / pack_id / "tools.yaml")], "tools": []}
+    if demo:
+        db = Path(folder) / f"{pack_id}.db"
+        connection = sqlite3.connect(db)
+        connection.executescript((SHIPPED / pack_id / demo["script"]).read_text(encoding="utf-8"))
+        connection.commit()
+        connection.close()
+        document["connections"] = [{"name": demo["conn"], "type": "sqlite", "path": str(db)}]
+    main.write_text(yaml.safe_dump(document, allow_unicode=True), encoding="utf-8")
+    return main
+
+
 class ShippedPacksTests(unittest.TestCase):
     """仓库里的三个包就是场景包格式的参考实现，必须一直通过校验。"""
 
@@ -46,7 +67,7 @@ class ShippedPacksTests(unittest.TestCase):
         self.found = packs.discover(SHIPPED)
 
     def test_every_shipped_pack_is_clean(self):
-        self.assertEqual(sorted(self.found), ["leave-planning", "model-selfcheck", "ops-inspection"])
+        self.assertEqual(sorted(self.found), ["it-assets", "leave-planning", "model-selfcheck", "ops-inspection"])
         for pack_id, pack in self.found.items():
             with self.subTest(pack=pack_id):
                 self.assertEqual(pack["problems"], [])
@@ -59,18 +80,22 @@ class ShippedPacksTests(unittest.TestCase):
 
     def test_tool_definitions_load_in_ops_readonly_without_problems(self):
         for pack_id, pack in self.found.items():
-            with self.subTest(pack=pack_id):
-                tools, problems = ops.load_tools(SHIPPED / pack_id / "tools.yaml")
+            with self.subTest(pack=pack_id), tempfile.TemporaryDirectory() as folder:
+                tools, problems = ops.load_tools(load_as_included(pack_id, folder))
                 self.assertEqual(problems, [])
                 self.assertEqual(sorted(tools), sorted(pack["tools"]))
 
     def test_demo_packs_need_no_infrastructure(self):
-        """默认演示的两个包只用公网 HTTP 和内置函数，不依赖工具服务所在机器装了什么；运维包才需要 docker，所以不在默认名单。"""
+        """默认演示的包只用公网 HTTP、内置函数和随包建的 sqlite 演示库，不依赖工具服务所在机器装了什么；
+        运维包才需要 docker，所以不在默认名单。"""
         for pack_id in DEMO:
-            tools, _ = ops.load_tools(SHIPPED / pack_id / "tools.yaml")
+            with tempfile.TemporaryDirectory() as folder:
+                tools, _ = ops.load_tools(load_as_included(pack_id, folder))
             for name, spec in tools.items():
                 with self.subTest(pack=pack_id, tool=name):
-                    self.assertIn(spec.get("type"), ("http", "builtin"))
+                    self.assertIn(spec.get("type"), ("http", "builtin", "sql"))
+                    if spec["type"] == "sql":
+                        self.assertEqual(spec["connection"]["type"], "sqlite")
         ops_tools, _ = ops.load_tools(SHIPPED / "ops-inspection" / "tools.yaml")
         self.assertIn("docker", {spec["binary"] for spec in ops_tools.values()})
         # 运维包的命令都是 Linux 写法（df -h、free -m）：声明了 os，在别的系统上是「不适用」而不是「缺命令」
@@ -97,6 +122,34 @@ class ShippedPacksTests(unittest.TestCase):
     def test_model_selfcheck_ships_without_sops_on_purpose(self):
         """它用来演示 SOP 从实践里长出来：grow 会和已有 SOP（含停用）去重，所以包里不能预置同路径的 SOP。"""
         self.assertEqual(self.found["model-selfcheck"]["sops"], [])
+
+    def test_it_assets_sop_quotes_its_document(self):
+        pack = self.found["it-assets"]
+        doc = squash((SHIPPED / "it-assets" / "docs" / "IT资产管理规范.md").read_text(encoding="utf-8"))
+        sop = pack["sops"][0]
+        self.assertEqual([s["tool"] for s in sop["steps"]], ["asset_lookup", "asset_tickets"])
+        for step in sop["steps"]:
+            self.assertIn(squash(step["evidence"]), doc)
+
+    def test_it_assets_demo_database_answers_the_examples(self):
+        """演示库的日期按建库那天推算：什么时候跑，NB-0042「还在保、90 天内第二次报修」的结论都一样。"""
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.dict(ops._state, {"path": load_as_included("it-assets", folder), "mtime": None, "omtime": None,
+                                        "tmtime": None, "imtime": None, "mmtime": None, "includes": [], "tools": {},
+                                        "problems": [], "mcp_servers": {}, "connections": {}, "hosts": None}):
+            ops.refresh(force=True)
+            lookup = ops.run_tool("asset_lookup", {"tag": "NB-0042"})["output"].splitlines()
+            tickets = ops.run_tool("asset_tickets", {"tag": "NB-0042"})["output"].splitlines()
+            expiring = ops.run_tool("assets_warranty_expiring", {"days": 60})["output"]
+        warranty_end = lookup[1].split(" | ")[-1]
+        self.assertGreater(warranty_end, date.today().isoformat())
+        self.assertIn("王敏", lookup[1])
+        self.assertEqual(tickets[-1], "（共 2 行）")
+        self.assertIn("又有按键失灵", tickets[1])
+        self.assertIn("NB-0042", expiring)
+        self.assertIn("PC-0007", expiring)
+        self.assertNotIn("PRN-0003", expiring)         # 80 天后才过保
+        self.assertNotIn("NB-0057", expiring)          # 已经过保了
 
     def test_leave_pack_does_not_hard_code_a_year(self):
         """示例问题、文档、录制脚本都不写死年份：年底来的人不该看到「2026 年国庆」这种过期的提问。

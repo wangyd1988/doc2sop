@@ -1,0 +1,51 @@
+# IT-资产与报修 用到的工具：三个只读的 SQL 查询模板。格式与 deploy/ops_tools.yaml 完全一致（见其头部注释）。
+#
+# 连接 it_assets 由部署工具服务的人在主配置里建（只读账号，见 docs/工具.md「SQL 工具」）；
+# 演示 sidecar 用随包的 demo/assets.sql 建一个 sqlite 假库（pack.yaml 的 demo 字段）。
+# 查询是按演示库的表结构写的（assets、tickets，日期函数是 sqlite 的）。别的组织的资产库长得不一样时，
+# 在自己的主配置里写同名工具、换成自己的查询即可：参数名和类型不变，SOP 照常（见 docs/工具.md「替换场景包的实现」）。
+tools:
+  - name: asset_lookup
+    label: 资产台账
+    group: IT 资产
+    desc: >-
+      按资产编号查资产台账：类型、型号、使用人、部门、状态、购入日期、保修截止日期。问某台设备归谁、
+      还在不在保修期时用它。资产编号形如 NB-0042（贴在设备背面的资产标签上）。
+    params:
+      tag: {type: str, pattern: name, required: true, desc: 资产编号，例如 NB-0042}
+    impl:
+      type: sql
+      conn: it_assets
+      query: >-
+        SELECT tag, kind, model, owner, dept, status, purchased, warranty_end
+        FROM assets WHERE tag = :tag
+      max_rows: 5
+
+  - name: asset_tickets
+    label: 报修记录
+    group: IT 资产
+    desc: 按资产编号查这台设备的报修工单（最近的在前）：开单、关单日期，优先级，状态，问题描述。判断是不是老毛病、上次怎么处理的时用它。
+    params:
+      tag: {type: str, pattern: name, required: true, desc: 资产编号，例如 NB-0042}
+    impl:
+      type: sql
+      conn: it_assets
+      query: >-
+        SELECT id, opened, closed, priority, status, summary
+        FROM tickets WHERE tag = :tag ORDER BY opened DESC
+      max_rows: 20
+
+  - name: assets_warranty_expiring
+    label: 即将过保的设备
+    group: IT 资产
+    desc: 列出多少天内保修到期、还在用的设备（按到期日排序）。做续保、换新计划时用它。
+    params:
+      days: {type: int, default: 60, min: 1, max: 365, desc: 多少天内到期，默认 60}
+    impl:
+      type: sql
+      conn: it_assets
+      query: >-
+        SELECT tag, kind, model, owner, dept, warranty_end FROM assets
+        WHERE status = '在用' AND warranty_end BETWEEN date('now') AND date('now', '+' || :days || ' days')
+        ORDER BY warranty_end
+      max_rows: 50

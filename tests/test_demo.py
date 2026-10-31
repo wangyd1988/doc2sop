@@ -16,7 +16,7 @@ from unittest.mock import patch
 import yaml
 
 REPO = Path(__file__).resolve().parent.parent
-DEMO = ("leave-planning", "model-selfcheck")
+DEMO = ("leave-planning", "model-selfcheck", "it-assets")
 
 _SPEC = importlib.util.spec_from_file_location("demo_entrypoint", REPO / "deploy" / "demo" / "entrypoint.py")
 entrypoint = importlib.util.module_from_spec(_SPEC)
@@ -216,6 +216,33 @@ class EntrypointTests(unittest.TestCase):
         self.assertNotIn("OPS_SECRET_GATEWAY_URL", environ)
         self.assertNotIn("OPS_SECRET_GATEWAY_KEY", environ)
         self.assertEqual(yaml.safe_load(self.config.read_text(encoding="utf-8"))["include"], [])
+
+    def test_a_pack_demo_database_is_built_and_its_connection_declared(self):
+        """it-assets 的 SQL 工具查一个 sqlite 假库：sidecar 启动时用包里的脚本建库、在主配置里建连接，每次启动重建。"""
+        state = self.config.parent
+        state.mkdir(parents=True, exist_ok=True)
+        environ = {"DEMO_PACKS": "it-assets"}
+        with patch.object(entrypoint, "CONFIG", self.config), patch.object(entrypoint, "STATE_DIR", state), \
+                patch.object(entrypoint, "PACKS_DIR", REPO / "packs"):
+            entrypoint.prepare(environ)
+            entrypoint.prepare(environ)                         # 重启：库重建，连接不重复
+        document = yaml.safe_load(self.config.read_text(encoding="utf-8"))
+        self.assertEqual(document["connections"], [{"name": "it_assets", "type": "sqlite",
+                                                    "path": str(state / "demo-it-assets.db"),
+                                                    "label": "IT-资产与报修（演示库）"}])
+        with patch.dict(ops._state, {"path": self.config, "mtime": None, "omtime": None, "tmtime": None,
+                                     "imtime": None, "mmtime": None, "includes": [], "tools": {}, "problems": [],
+                                     "mcp_servers": {}, "connections": {}, "hosts": None}):
+            ops.refresh(force=True)
+            self.assertEqual(ops._state["problems"], [])
+            result = ops.run_tool("asset_lookup", {"tag": "NB-0042"})
+        self.assertTrue(result["ok"], result)
+        self.assertIn("王敏", result["output"])
+        # 坏的 demo 声明不建库、不建连接，也不影响别的包
+        bad = Path(self.tmp.name) / "badpacks" / "x"
+        bad.mkdir(parents=True)
+        (bad / "pack.yaml").write_text("demo: {sqlite: {conn: it_assets, script: ../../evil.sql}}\n", encoding="utf-8")
+        self.assertEqual(entrypoint.demo_databases(["x"], bad.parent, state), [])
 
 
 @unittest.skipUnless(os.name == "posix" and shutil.which("ssh-keygen"), "演示 sidecar 跑在 Linux 容器里：需要类 Unix 的 ssh-keygen")

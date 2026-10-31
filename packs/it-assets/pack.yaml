@@ -1,0 +1,17 @@
+# 场景包：IT-资产与报修。格式说明见 docs/场景包.md
+id: it-assets
+name: IT-资产与报修
+version: 1
+summary: 按资产编号查资产台账和报修记录，对照《IT 资产管理规范》判断走厂商保修、自行维修还是换机评估。
+roles: [IT 运维, 行政, 全员]
+requires:
+  - 数据来自资产数据库：主配置的 connections 里要有一个名为 it_assets 的只读数据库连接（表 assets 和 tickets，见 demo/assets.sql）
+  - 演示站不用准备：演示 sidecar 用随包的 demo/assets.sql 建一个 sqlite 假库，连接自动建好
+category: IT制度
+examples:
+  - 笔记本 NB-0042 键盘又坏了，还在保修期吗？该怎么处理？
+  - PC-0012 开不了机，之前修过吗？
+  - 最近 60 天有哪些设备要过保？
+# 演示 sidecar 用的假数据库：每次启动用 script 建一个 sqlite 库，在生成的主配置里建名为 conn 的连接（只读打开）
+demo:
+  sqlite: {conn: it_assets, script: demo/assets.sql}

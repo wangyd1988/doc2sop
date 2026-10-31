@@ -7,12 +7,14 @@
 import importlib.util
 import json
 import sys
+import tempfile
 import unittest
 import uuid
 from pathlib import Path
 from typing import Annotated, Any, Literal, Optional, TypedDict
 from unittest.mock import patch
 
+import yaml
 from fastapi.testclient import TestClient
 
 from tests.support import clear_graph
@@ -44,9 +46,31 @@ else:
     _SPEC.loader.exec_module(ops)
 
 
+_TMP = tempfile.TemporaryDirectory()
+
+
+def standalone(config):
+    """配置文件 → 能单独加载的主配置。场景包的 SQL 工具要用主配置里的连接（包里不能声明）：pack.yaml 写了 demo.sqlite 的包，
+    生成一份带这个连接、include 它的主配置，和演示 sidecar 的做法一样。别的原样返回。"""
+    config = Path(config)
+    meta = config.parent / "pack.yaml"
+    if config.name != "tools.yaml" or not meta.is_file():
+        return config
+    sqlite = ((yaml.safe_load(meta.read_text(encoding="utf-8")) or {}).get("demo") or {}).get("sqlite")
+    if not sqlite:
+        return config
+    folder = Path(_TMP.name) / config.parent.name
+    folder.mkdir(exist_ok=True)
+    main = folder / "ops_tools.yaml"
+    main.write_text(yaml.safe_dump({"connections": [{"name": sqlite["conn"], "type": "sqlite",
+                                                     "path": str(folder / "demo.db")}],
+                                    "include": [str(config)], "tools": []}, allow_unicode=True), encoding="utf-8")
+    return main
+
+
 def advertised(config):
     """工具服务对这份配置下发的 /tools（假装命令本机都有、本机就是目标平台 Linux），按 HTTP 往返一遍。"""
-    state = {"path": Path(config), "mtime": None, "omtime": None, "tmtime": None, "imtime": None,
+    state = {"path": standalone(config), "mtime": None, "omtime": None, "tmtime": None, "imtime": None,
              "mmtime": None, "includes": [], "tools": {}, "problems": [], "mcp_servers": {}}
     with patch.dict(ops._state, state), patch.object(ops.shutil, "which", return_value="/usr/bin/true"), \
             patch.object(ops, "HOST_OS", "linux"):
@@ -304,9 +328,11 @@ class LegacyEquivalenceTests(unittest.TestCase):
             self.assertEqual(specs, {n: {"desc": m.get("desc", ""), "params": m.get("params") or {}}
                                      for n, m in payload.items()})
             for path in sorted(REPO.glob("packs/*/sops.json")):
+                # 场景包的 SOP 引用的是包自己的工具：主配置里的加上本包的（IT 资产包的 SQL 工具不在主配置里）
+                own, _ = advertised(path.parent / "tools.yaml")
                 for sop in json.loads(path.read_text(encoding="utf-8")):
                     with self.subTest(sop=sop["name"]):
-                        _, _, steps = playbooks.validate(sop["name"], sop["trigger"], sop["steps"], set(usable))
+                        _, _, steps = playbooks.validate(sop["name"], sop["trigger"], sop["steps"], set(usable) | set(own))
                         self.assertEqual([s["tool"] for s in steps], [s["tool"] for s in sop["steps"]])
 
 
