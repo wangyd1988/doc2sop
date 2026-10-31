@@ -518,6 +518,7 @@ class ToolProposal(BaseModel):
     desc: str = Field(min_length=1, max_length=300)
     # 按实现类型申请（命令型 binary + argv + 适用系统 os + 适用分组 groups；脚本型 script；接口型 http，可带 conn
     # 选已有连接），具体校验在工具服务一侧。页面发的是这种老写法，新老工具服务都认；新写法 impl = {type, …} 也接受。
+    # sql 工具只有新写法：impl = {type: sql, conn: 已有的数据库连接, query: 查询模板, max_rows}
     binary: str = Field(default="", max_length=40)
     argv: list[str] = Field(default_factory=list, max_length=20)
     os: list[str] = Field(default_factory=list, max_length=3)

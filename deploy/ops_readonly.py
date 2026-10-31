@@ -5165,7 +5165,7 @@ def _print_pending():
             print(f"      理由：{item['reason']}")
         print()
     print("批准：ops_readonly.py approve <id>     拒绝：ops_readonly.py reject <id>")
-    print("批准前请逐字读一遍「命令」或脚本内容——这是它唯一会执行的东西。")
+    print("批准前请逐字读一遍「命令」、SQL 或脚本内容——这是它唯一会执行的东西。")
     print("MCP 工具没有 server 的只读声明时，要加 --attest-readonly 表示你确认过它不改任何东西。")
     return 0
 

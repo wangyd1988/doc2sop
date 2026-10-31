@@ -312,6 +312,18 @@ header svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke
 .tl-wait .tag.ok, .tl-ro.ok { color: var(--ok, #15803d); border-color: var(--ok, #15803d); }
 .pb-top .src.tl-mcp { color: #7c3aed; border-color: #7c3aed; font-weight: 600; }
 .pb-top .src.tl-ro { font-weight: 500; }
+.pb-top .src.tl-sql { color: #0e7490; border-color: #0e7490; font-weight: 600; }
+.pb-top .src.tl-ext, .tl-servers .tl-ext { color: #b45309; border-color: #b45309; }
+/* 工具卡片的标记多（SQL、外部、连接……），一行放不下就折行，按钮靠右，不把「停用」挤出卡片 */
+.pb-top.tl-top { flex-wrap: wrap; row-gap: 5px; }
+.pb-top.tl-top .nm { flex: 1 0 auto; max-width: 100%; }
+.pb-top.tl-top .tl-acts { display: inline-flex; gap: 8px; margin-left: auto; flex-shrink: 0; }
+.tl-servers code { font-size: 11px; overflow-wrap: anywhere; }
+#tlNewSql { width: 100%; box-sizing: border-box; min-height: 70px; font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 7px; border-radius: 7px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+  resize: vertical; margin-bottom: 6px; }
+.tl-rows { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); margin: 0 0 6px; }
+.pb-pick .tl-rows input { width: 90px; flex: none; }
 .tl-servers { font-size: 11.5px; color: var(--muted); padding: 6px 8px; line-height: 1.6; }
 .tl-servers b { color: var(--text); font-weight: 600; }
 .tl-servers .off { color: var(--danger); }
@@ -1859,6 +1871,17 @@ let tlHosts = {configured: false};
 /* MCP 工具的只读依据：server 自己声明的，还是管理员批准时确认的。两者都没有的不能执行。 */
 const TL_RO = {declared: ['ok', '只读 · server 声明'], attested: ['ok', '只读 · 管理员确认'], none: ['warn', '未确认只读']};
 const TL_OS = {linux: 'Linux', darwin: 'macOS', windows: 'Windows'};
+const TL_CONN_TYPE = {http: 'HTTP', postgres: 'PostgreSQL', mysql: 'MySQL', sqlite: 'SQLite'};
+const TL_DB = ['postgres', 'mysql', 'sqlite'];
+/* 连接：只显示名字、类型、地址（字面量或 ${名字}），永远没有凭据的值 */
+function connectionsHtml(conns) {
+  const list = Object.entries(conns || {});
+  if (!list.length) return '';
+  return `<div class="tl-servers">连接：${list.map(([name, c]) =>
+    `<b title="${esc(c.label || '')}">${esc(name)}</b> ${esc(TL_CONN_TYPE[c.type] || c.type || 'HTTP')} · <code>${esc(c.base || '')}</code>`
+    + (c.external ? ` <span class="tl-ext" title="${esc(c.external_why || '')}：用它的工具，参数会发到组织外面">外部</span>` : '')
+    + (c.driver ? ` <span class="off" title="${esc(c.driver)}">缺驱动</span>` : '')).join('；')}</div>`;
+}
 /* 一个命令型工具在各主机上：ok 能跑，unknown 还不确定（没检查过、暂时连不上），no 不能跑。不适用的主机不列 */
 const TL_HOST_STATE = {ok: ['ok', '✓'], unknown: ['warn', '?'], no: ['bad', '✗']};
 function tlHostLine(t) {
@@ -1888,6 +1911,7 @@ function hostsHtml(hosts) {
 function tlWhyNot(t) {
   if (t.applicable === false) return t.reason || '不适用于这台机器';
   if (t.type === 'mcp') return t.reason || 'MCP 工具暂不可用';
+  if (t.type === 'sql') return t.reason || '数据库驱动不可用';
   return t.reason || `本机没有 ${t.binary}，该工具不可用`;
 }
 function tlParamHint(p) {
@@ -1906,19 +1930,22 @@ function tlCard(name, t) {
   return `<div class="pb ${t.enabled ? '' : 'off'} ${t.runnable ? '' : t.applicable === false ? 'off' : 'bad'}"
        data-search="${searchable(name, t.label, t.desc, t.command, t.group,
                                  params.map(([k, p]) => [k, p.desc]))}">
-    <div class="pb-top">
+    <div class="pb-top tl-top">
       <span class="nm">${esc(t.label || name)}</span>
       ${t.label ? `<span class="src">${esc(name)}</span>` : ''}
       ${mcp ? `<span class="src tl-mcp" title="来自 MCP server ${esc(t.mcp?.server || '')}">MCP</span><span class="src tl-ro ${ro[0]}">${ro[1]}</span>` : ''}
       ${t.type === 'builtin' ? '<span class="src" title="随工具服务发布的纯计算，不依赖本机装了什么命令">内置</span>' : ''}
+      ${t.type === 'sql' ? `<span class="src tl-sql" title="只读查询模板：模型只填参数，由数据库驱动绑定；只读事务执行，最多 ${esc(t.max_rows || '')} 行">SQL</span>` : ''}
+      ${t.external ? `<span class="src tl-ext" title="${esc(t.external_why || '')}：调用时参数会发到组织外面，按出网规则检查；返回标成外部资料">外部</span>` : ''}
+      ${t.replaces ? `<span class="src" title="主配置里的同名工具替换了场景包 ${esc(t.replaces.pack)} 的默认实现（原来是 ${esc(t.replaces.impl)}）；名字和参数不变，SOP 照常">替换场景包实现</span>` : ''}
       ${(t.os || []).length ? `<span class="src" title="只适用于这些系统">${esc(t.os.map(o => TL_OS[o] || o).join(' / '))}</span>` : ''}
       ${(t.groups || []).length ? `<span class="src" title="只在这些分组的主机上跑">分组 ${esc(t.groups.join(' / '))}</span>` : ''}
       ${t.conn ? `<span class="src" title="地址和凭据来自管理员配置的连接">连接 ${esc(t.conn)}</span>` : ''}
       ${mcp && !t.schema_locked ? '<span class="src" title="手写条目没有 schema 指纹，server 改了参数形状也不会自动停用">未锁定 schema</span>' : ''}
       ${(t.overridden || []).length ? '<span class="src">已在页面改过</span>' : ''}
-      ${t.enabled && t.runnable ? `<button class="run" data-tluse="${esc(name)}" title="把「用这个工具查…」填进对话框">💬 用它提问</button>` : ''}
+      <span class="tl-acts">${t.enabled && t.runnable ? `<button class="run" data-tluse="${esc(name)}" title="把「用这个工具查…」填进对话框">💬 用它提问</button>` : ''}
       <button data-tledit="${esc(name)}">${editing ? '收起' : '改名/说明'}</button>
-      <button data-tltoggle="${esc(name)}">${t.enabled ? '停用' : '启用'}</button>
+      <button data-tltoggle="${esc(name)}">${t.enabled ? '停用' : '启用'}</button></span>
     </div>
     <div class="pb-body">
       ${editing ? `<input id="tlLabel" maxlength="40" style="${field};margin-bottom:5px"
@@ -1954,16 +1981,19 @@ const TL_PARAM_TYPES = [
   ['int', '整数'],
 ];
 let tlParamState = {};
-function tlPlaceholders(text) {
-  return [...new Set([...(text || '').matchAll(/\{([a-z][a-z0-9_]*)\}/g)].map(m => m[1]))];
+/* 由模型填的参数：命令、地址里是 {参数名}；SQL 里是 :参数名（引号里的不算，:: 是类型转换） */
+function tlPlaceholders(text, sql) {
+  if (!sql) return [...new Set([...(text || '').matchAll(/\{([a-z][a-z0-9_]*)\}/g)].map(m => m[1]))];
+  const bare = (text || '').replace(/'[^']*'|"[^"]*"|`[^`]*`/g, ' ');
+  return [...new Set([...bare.matchAll(/(^|[^:]):([a-z_][a-z0-9_]*)/g)].map(m => m[2]))];
 }
-function tlParamRows(text) {
-  const names = tlPlaceholders(text);
+function tlParamRows(text, sql) {
+  const names = tlPlaceholders(text, sql);
   if (!names.length) return '';
   return `<div class="tl-pform"><div class="tl-note" style="padding:0 0 4px">参数（模型填值，宿主机按类型校验）</div>` + names.map(n => {
     const st = tlParamState[n] || (tlParamState[n] = {type: 'name', required: true, def: '', desc: ''});
     return `<div class="tl-param" data-tlparam="${esc(n)}">
-      <code>{${esc(n)}}</code>
+      <code>${sql ? ':' + esc(n) : '{' + esc(n) + '}'}</code>
       <select data-pf="type">${TL_PARAM_TYPES.map(([v, t]) => `<option value="${v}" ${st.type === v ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
       <label><input type="checkbox" data-pf="required" ${st.required ? 'checked' : ''}> 必填</label>
       <input data-pf="def" placeholder="默认值（非必填时要给）" value="${esc(st.def)}" maxlength="60" ${st.required ? 'disabled' : ''}>
@@ -1971,9 +2001,9 @@ function tlParamRows(text) {
     </div>`;
   }).join('') + `</div>`;
 }
-function tlParamsPayload(text) {
+function tlParamsPayload(text, sql) {
   const out = {};
-  for (const n of tlPlaceholders(text)) {
+  for (const n of tlPlaceholders(text, sql)) {
     const st = tlParamState[n] || {type: 'name', required: true, def: '', desc: ''};
     const spec = {desc: st.desc, required: !!st.required};
     if (st.type === 'int') { spec.type = 'int'; if (st.def.trim()) spec.default = Number(st.def); }
@@ -2005,6 +2035,7 @@ function tlPendingWhat(t) {
   const what = kind === 'script' ? '脚本 ' + (im.script || t.script)
              : kind === 'http' ? 'GET ' + (http.conn ? `[连接 ${http.conn}] ` : '') + (http.url || '')
                + (Object.keys(http.query || {}).length ? '?' + Object.entries(http.query).map(([k, v]) => `${k}=${v}`).join('&') : '')
+             : kind === 'sql' ? `SQL [连接 ${im.conn || ''}] ${im.query || ''}`
              : (im.argv || t.argv || []).join(' ');
   return what + (os ? `（${os}）` : '') + (groups ? `（分组 ${groups}）` : '');
 }
@@ -2015,6 +2046,8 @@ function tlProposeForm() {
      <input id="tlNewDesc" placeholder="给模型看的说明：什么情况下该调用它" maxlength="300">`;
   const tab = (k, text) =>
     `<button class="tl-tab ${tlProposeKind === k ? 'on' : ''}" data-tlkind="${k}">${text}</button>`;
+  // SQL 只能借管理员建好的数据库连接：没有数据库连接就不显示这一栏
+  const dbConns = Object.entries(tlConns).filter(([, c]) => TL_DB.includes(c.type));
 
   let body, note;
   if (tlProposeKind === 'script') {
@@ -2035,7 +2068,7 @@ function tlProposeForm() {
             这和「上传文档自动变工具」不同，不是上传代码。<br>
             批准后，脚本内容一旦被改动，工具会自动停用，直到在宿主机上重新确认。`;
   } else if (tlProposeKind === 'http') {
-    const conns = Object.entries(tlConns);
+    const conns = Object.entries(tlConns).filter(([, c]) => (c.type || 'http') === 'http');
     body = (conns.length ? `<select id="tlNewConn">
              <option value="">不用连接：填完整地址（只能是不需要凭据的接口）</option>
              ${conns.map(([n, c]) => `<option value="${esc(n)}">连接 ${esc(n)}${c.label ? '（' + esc(c.label) + '）' : ''}：${esc(c.base)}${
@@ -2049,6 +2082,17 @@ function tlProposeForm() {
               ? '在上面选一个管理员建好的<b>连接</b>（地址前缀和凭据都在连接里），地址只填路径'
               : '请管理员先在宿主机配置文件里建一个<b>连接</b>（地址前缀 + 凭据引用），这里就能选它'}；
             密钥只放在宿主机上，模型和页面都看不到。`;
+  } else if (tlProposeKind === 'sql') {
+    body = `<select id="tlNewConn">${dbConns.map(([n, c]) =>
+             `<option value="${esc(n)}">连接 ${esc(n)}（${esc(TL_CONN_TYPE[c.type] || c.type)}）：${esc(c.base)}${
+               c.driver ? '　⚠ 缺驱动' : ''}</option>`).join('')}</select>
+            <textarea id="tlNewSql" maxlength="4000"
+              placeholder="查询模板，如 SELECT owner, env FROM v_hosts WHERE hostname = :host"></textarea>
+            <label class="tl-rows">最多返回 <input id="tlNewRows" type="number" min="1" max="1000" value="100"> 行（1–1000）</label>
+            <div id="tlParams">${tlParamRows('', true)}</div>`;
+    note = `只读查询：<b>只能是一条 SELECT 或 WITH</b>，不能有分号、注释和写语句。查询里用 <code>:参数名</code> 表示由模型填的值，
+            由数据库驱动按参数绑定，从不拼进 SQL；每个参数要选类型，不合法就拒绝执行。<br>
+            地址、账号和密码都在管理员建好的<b>连接</b>里，页面看不到；连接要用只读账号，工具服务还会用只读事务执行，并限制超时和行数。`;
   } else {
     const hostOs = TL_OS[tlHost.os] ? tlHost.os : 'linux';
     const groups = Object.keys((tlHosts || {}).groups || {}).filter(g => g !== 'all');
@@ -2069,7 +2113,8 @@ function tlProposeForm() {
 
   return `<div class="pb-pick tl-pick">
     <div class="hd">申请新工具</div>
-    <div class="tl-tabs">${tab('command', '命令')}${tab('http', '接口')}${tab('script', '脚本')}</div>
+    <div class="tl-tabs">${tab('command', '命令')}${tab('http', '接口')}${tab('script', '脚本')}${
+      dbConns.length || tlProposeKind === 'sql' ? tab('sql', 'SQL') : ''}</div>
     ${common}
     ${body}
     <div class="tl-note">${note}<br>提交后<b>不会生效</b>，要在宿主机上批准——页面定义不了宿主机执行什么。<br>
@@ -2110,7 +2155,9 @@ function mcpServersHtml(servers) {
   const list = Object.entries(servers || {});
   if (!list.length) return '';
   return `<div class="tl-servers">MCP server：${list.map(([id, s]) =>
-    `<b>${esc(s.label || id)}</b> ${s.online
+    `<b>${esc(s.label || id)}</b>${s.transport === 'http'
+      ? ` <span title="远程 Streamable HTTP server${s.protocol ? '，协议 ' + esc(s.protocol) : ''}">远程</span> <code>${esc(s.url || '')}</code>` : ''}${
+      s.external ? ' <span class="tl-ext" title="调用时参数会发到组织外面，按出网规则检查；返回标成外部资料">外部</span>' : ''} ${s.online
       ? `在线 · 发现 ${s.discovered} · 已批准 ${s.approved}`
       : `<span class="off">离线${s.reason ? '：' + esc(s.reason) : ''}</span>`}${
       (s.notes || []).length ? `<span title="${esc(s.notes.join('\n'))}">（${s.notes.length} 条未列出）</span>` : ''}`
@@ -2137,7 +2184,7 @@ async function loadTools() {
        <button class="icon-btn" id="tlNew">＋ 申请新工具</button>
        <button class="x" data-close title="关闭">✕</button></div>` +
     (d.error ? `<div class="pb-warn">工具接口不可用：${esc(d.error)}</div>` : '') +
-    mcpServersHtml(d.mcp_servers) + hostsHtml(tlHosts) +
+    mcpServersHtml(d.mcp_servers) + hostsHtml(tlHosts) + connectionsHtml(tlConns) +
     (tlProposing ? tlProposeForm() : tlWaiting(waiting)) +
     (tc.total > 3 ? searchBox('tlSearch', tlSearch, '搜索工具：名称、显示名、说明、命令、分组、参数…') : '') +
     (tc.total ? groupsHtml('tl', d.groups || [])
@@ -2157,8 +2204,10 @@ $('tlBtn').onclick = () => {
 };
 $('tlPanel').addEventListener('input', e => {
   if (e.target.id === 'tlSearch') { tlSearch = e.target.value; onSearchInput('tl', tlSearch); }
-  // 命令 / 地址一变，参数行跟着增减；只重画参数区，不打断正在输入的框
-  if (e.target.id === 'tlNewCmd' || e.target.id === 'tlNewUrl') { const box = $('tlParams'); if (box) box.innerHTML = tlParamRows(e.target.value); }
+  // 命令 / 地址 / SQL 一变，参数行跟着增减；只重画参数区，不打断正在输入的框
+  if (e.target.id === 'tlNewCmd' || e.target.id === 'tlNewUrl' || e.target.id === 'tlNewSql') {
+    const box = $('tlParams'); if (box) box.innerHTML = tlParamRows(e.target.value, e.target.id === 'tlNewSql');
+  }
   const pf = e.target.dataset.pf, row = e.target.closest('[data-tlparam]');
   if (pf && row && pf !== 'required') (tlParamState[row.dataset.tlparam] ||= {type: 'name', required: true, def: '', desc: ''})[pf] = e.target.value;
 });
@@ -2255,6 +2304,14 @@ $('tlPanel').addEventListener('click', async e => {
       const {url, query} = tlSplitUrl(raw);
       payload = {...base, http: {url, ...(Object.keys(query).length ? {query} : {}), ...(conn ? {conn} : {})},
                  params: tlParamsPayload(raw)};
+    } else if (tlProposeKind === 'sql') {
+      // SQL 只有新写法：impl = {type: sql, conn, query, max_rows}
+      const conn = $('tlNewConn') ? $('tlNewConn').value : '';
+      const query = $('tlNewSql').value.trim();
+      if (!conn) return fail('请先选一个数据库连接');
+      if (!/^(select|with)\b/i.test(query)) return fail('查询只能是一条 SELECT 或 WITH');
+      const rows = Math.min(1000, Math.max(1, parseInt($('tlNewRows').value, 10) || 100));
+      payload = {...base, impl: {type: 'sql', conn, query, max_rows: rows}, params: tlParamsPayload(query, true)};
     } else {
       const cmd = $('tlNewCmd').value.trim();
       const parts = cmd.split(/\s+/).filter(Boolean);
@@ -2578,6 +2635,7 @@ async function renderManage() {
     + (mTab === 'sop' && proposals ? `<div class="mg-head" style="margin-top:8px">沉淀</div>${mgHtml('__proposals', null, proposals, true).replace('__proposals</span>', '待确认提议</span>')}` : '')
     + (mTab === 'tools' && Object.keys(mcpServers).length ? `<div class="mg-head" style="margin-top:8px">MCP</div>${mcpServersHtml(mcpServers)}` : '')
     + (mTab === 'tools' && tlHosts.configured ? `<div class="mg-head" style="margin-top:8px">主机</div>${hostsHtml(tlHosts)}` : '')
+    + (mTab === 'tools' && Object.keys(tlConns).length ? `<div class="mg-head" style="margin-top:8px">连接</div>${connectionsHtml(tlConns)}` : '')
     + (!groups.length ? '<div class="empty">空</div>' : '');
 
   // 2. 列表栏：工具栏 + 行
