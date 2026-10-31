@@ -45,6 +45,14 @@ button:disabled { opacity: .5; cursor: default; }
 .nav a.on::before { content: ''; position: absolute; left: -10px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0;
                     background: var(--accent); }
 .nav .sec { font-size: 11px; color: var(--muted); letter-spacing: .08em; padding: 14px 12px 4px; }
+/* 对话下面常驻最近 5 条对话（手机上在导航抽屉里） */
+.nav-recent { display: flex; flex-direction: column; gap: 1px; margin: 0 0 4px 21px; padding-left: 6px; border-left: 1px solid var(--border); }
+.nav-recent:empty { display: none; }
+.nav .nav-recent a { display: block; padding: 4px 9px; font-size: 12.5px; color: var(--muted); border-radius: 7px;
+                     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav .nav-recent a:hover { color: var(--text); }
+.nav .nav-recent a.on { background: none; color: var(--accent); font-weight: 600; }
+.nav .nav-recent a.on::before { display: none; }
 .nb { margin-left: auto; min-width: 20px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600;
       line-height: 16px; text-align: center; background: var(--panel-2); color: var(--muted); font-variant-numeric: tabular-nums; }
 .nb:empty { display: none; }
@@ -772,6 +780,7 @@ table.pt th { color: var(--muted); font-weight: 500; white-space: nowrap; }
 table.pt .rx { display: block; font-size: 11px; color: var(--muted); font-family: ui-monospace, Consolas, monospace; word-break: break-all; }
 .where { display: grid; grid-template-columns: 70px 1fr; gap: 7px 10px; font-size: 12.5px; margin: 0; }
 .where dt { color: var(--muted); } .where dd { margin: 0; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.where.facts { grid-template-columns: 76px 1fr; margin: 0 0 8px; padding: 8px 10px; border-radius: 9px; background: var(--panel-2); }
 .risks { display: flex; flex-direction: column; gap: 6px; }
 .risk { display: grid; grid-template-columns: 18px 1fr; gap: 6px; padding: 8px 10px; border-radius: 9px; font-size: 12.5px; line-height: 1.55;
         border: 1px solid var(--border); background: var(--panel-2); }
@@ -882,6 +891,7 @@ table.pt .rx { display: block; font-size: 11px; color: var(--muted); font-family
     <a href="/chat" data-page="chat">
       <svg viewBox="0 0 24 24"><path d="M21 12a8.5 8.5 0 0 1-12.4 7.6L3.5 21l1.4-4.8A8.5 8.5 0 1 1 21 12z"/><path d="M8.5 10.5h7M8.5 14h4.5"/></svg>
       对话</a>
+    <div class="nav-recent" id="navRecent" aria-label="最近的对话"></div>
     <a href="/tools" data-page="tools" title="工具：模型能查询的真实数据，全部只读；新工具在这里审批">
       <svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/></svg>
       工具<span class="nb" id="nbTools"></span></a>
@@ -1219,7 +1229,9 @@ function examplesHtml(limit) {
   return `<div class="ex">${EX_KINDS.map(([kind, icon, label]) => {
     const items = list.filter(x => x.kind === kind).slice(0, limit);
     return `<div class="k"><h4><i>${icon}</i>${label}</h4>${items.length
-      ? items.map(x => `<button data-q="${esc(x.text)}">${esc(x.text)}</button>`).join('')
+      ? items.map(x => x.playbook
+        ? `<button data-pb="${esc(x.playbook.id)}" title="按 SOP《${esc(x.playbook.name)}》执行">${esc(x.text)}</button>`
+        : `<button data-q="${esc(x.text)}">${esc(x.text)}</button>`).join('')
       : `<div class="none">${none[kind]}</div>`}</div>`;
   }).join('')}</div>`;
 }
@@ -1534,6 +1546,7 @@ async function pendingHtml() {
 }
 
 $('thread').addEventListener('click', e => {
+  const pb = e.target.closest('[data-pb]'); if (pb) { runPlaybookById(pb.dataset.pb); return; }
   const q = e.target.closest('[data-q]'); if (q) { $('question').value = q.dataset.q; ask(); return; }
   const sop = e.target.closest('.rl.sop');
   if (sop) { pbTab = 'all'; mItem = sop.dataset.sop || null; mGroup = null; go('sop'); return; }
@@ -1556,14 +1569,22 @@ const nearBottom = () => { const c = $('chat'); return c.scrollHeight - c.scroll
 const toBottom = () => { $('chat').scrollTop = $('chat').scrollHeight; };
 
 /* ---------- Conversations ---------- */
+let convList = [];
 async function loadConvs() {
   const d = await (await fetch('/api/conversations')).json();
+  convList = d.conversations || [];
   const when = t => new Date(t).toLocaleString('zh-CN', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'});
   $('histPanel').innerHTML = d.conversations.length ? d.conversations.map(c =>
     `<div class="conv${c.id === convId ? ' on' : ''}" data-id="${c.id}">
        <div class="meta"><div class="title">${esc(c.title)}</div><div class="sub">${when(c.updated_at)} · ${c.messages} 条</div></div>
        <button class="del" data-del="${c.id}" title="删除">✕</button></div>`).join('')
     : '<div class="empty">还没有历史对话</div>';
+  paintNavRecent();
+}
+// 左侧导航「对话」下面的最近 5 条：点了直接打开那条对话
+function paintNavRecent() {
+  $('navRecent').innerHTML = convList.slice(0, 5).map(c => `<a href="/chat?c=${encodeURIComponent(c.id)}" data-conv="${esc(c.id)}"
+      class="${page === 'chat' && c.id === convId ? 'on' : ''}" title="${esc(c.title)}">${esc(c.title)}</a>`).join('');
 }
 async function openConv(id) {
   const r = await fetch('/api/conversations/' + encodeURIComponent(id));
@@ -1591,8 +1612,9 @@ async function openConv(id) {
   }
   if (!d.messages.length) welcome();
   toBottom();
+  paintNavRecent();
 }
-function newConv() { convId = null; hideNudge(); welcome(); $('question').focus(); }
+function newConv() { convId = null; hideNudge(); welcome(); $('question').focus(); paintNavRecent(); if (page === 'chat') syncUrl(false); }
 // 品牌区当主页按钮：回到工作台
 document.querySelector('#side .brand').addEventListener('click', () => go('home'));
 $('histPanel').addEventListener('click', async e => {
@@ -1839,6 +1861,12 @@ function runPlaybook(p) {
     return;
   }
   ask();
+}
+// 工作台、欢迎页上 SOP 类的示例带着 SOP：取它的步骤（看有没有要人补的参数），照「▶ 执行」那样跑
+async function runPlaybookById(id) {
+  const r = await fetch('/api/playbooks/' + encodeURIComponent(id)).catch(() => null);
+  if (!r || !r.ok) { toast('这个 SOP 已经不在了，刷新页面看看', 'err'); return; }
+  runPlaybook(await r.json());
 }
 $('pbPanel').addEventListener('click', async e => {
   const id = t => e.target.closest(`[data-${t}]`)?.dataset[t];
@@ -2360,22 +2388,22 @@ $('tlPanel').addEventListener('click', async e => {
       } catch (e2) { fail('提交失败：' + e2.message); }
       return;
     }
-    // 提交并立即批准：同一个人申请、同一个人审批，不用跑两趟；口令照样要输，申请照样先进待审再批
-    let created = null;
+    // 提交并立即批准：同一个人申请、同一个人审批，不用跑两趟。工具服务先核对口令，对了才提交并批准；
+    // 口令不对什么都不提交。批准没写成时申请留在待审（错误里带着它的编号），关掉对话框就跳过去
+    const script = tlProposeKind === 'script' ? tlScripts.find(s => s.name === payload.script) : null;
+    let queued = null;
     askPassphrase({
       title: `提交并批准「${payload.label || payload.name}」`,
-      summary: proposalSummary(payload),
+      summary: proposalSummary(payload, script),
       confirm: '提交并批准',
-      run: async passphrase => {
-        if (!created) created = (await tlSend('/api/tools/propose', payload)).pending;
-        return approveRequest(created.id, {passphrase});
-      },
-      done: result => { tlProposing = false; apResults[created.id] = result; openPending(created.id); },
+      run: passphrase => postJson('/api/tools/propose-approve', {tool: payload, passphrase, script_sha256: script?.sha256 || ''})
+        .catch(err => { if (err.pending) queued = err.pending; throw err; }),
+      done: result => { tlProposing = false; apResults[result.id] = result; openPending(result.id); refreshBadges(); },
       cancel: () => {
-        if (!created) return;
+        if (!queued) return;
         tlProposing = false;
-        toast(`申请已提交（编号 ${created.id}），还没有批准；可以在「待审批」里再批`, '', 7000);
-        openPending(created.id);
+        toast(`申请已提交（编号 ${queued}），还没有批准：在「待审批」里看原因再批`, '', 7000);
+        openPending(queued); refreshBadges();
       },
     });
   }
@@ -2708,7 +2736,8 @@ function go(name, opts = {}) {
   page = name;
   document.body.dataset.page = name;
   document.body.classList.remove('menu', 'detail');
-  document.querySelectorAll('#side .nav a').forEach(a => a.classList.toggle('on', a.dataset.page === name));
+  document.querySelectorAll('#side .nav a[data-page]').forEach(a => a.classList.toggle('on', a.dataset.page === name));
+  paintNavRecent();
   $('pg-home').classList.toggle('on', name === 'home');
   $('pg-chat').classList.toggle('on', name === 'chat');
   $('pg-manage').classList.toggle('on', !['home', 'chat'].includes(name));
@@ -2727,6 +2756,14 @@ function go(name, opts = {}) {
   else renderManage();
 }
 document.querySelector('#side .nav').addEventListener('click', e => {
+  const c = e.target.closest('a[data-conv]');
+  if (c) {
+    if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+    e.preventDefault();
+    go('chat', {push: false});
+    openConv(c.dataset.conv).then(() => syncUrl(true));
+    return;
+  }
   const a = e.target.closest('a[data-page]'); if (!a) return;
   if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;   // 新标签页打开照常
   e.preventDefault();
@@ -2841,7 +2878,7 @@ function paintHome() {
     <div class="hero"><div class="logo">📚</div><div><h2>${brandGreeting()}</h2>
       <p>读文档 · 按 SOP 排查 · 用批准过的工具查真实数据 · 也能让 Claude Code、Copilot 经 MCP 接进来用</p></div></div>
     ${setupHtml()}
-    <div class="ask-box"><textarea id="homeQ" rows="1" placeholder="问点什么…（Enter 发送，在「对话」页里继续）">${esc(keep)}</textarea><button id="homeAsk" title="发送">➤</button></div>
+    <div class="ask-box"><textarea id="homeQ" rows="1" placeholder="${homePlaceholder()}">${esc(keep)}</textarea><button id="homeAsk" title="发送">➤</button></div>
     ${examplesHtml(3)}
     <div class="cards">
       <div class="sc" data-go="docs" role="link" tabindex="0">
@@ -2881,7 +2918,12 @@ function askFromHome(text) {
   if (convId) newConv();
   $('question').value = text; ask();
 }
+// 手机上占位文字换一句短的：长的会折行、被截掉一半
+const NARROW = matchMedia('(max-width: 820px)');
+const homePlaceholder = () => NARROW.matches ? '问点什么…' : '问点什么…（Enter 发送，在「对话」页里继续）';
+NARROW.addEventListener('change', () => { const q = $('homeQ'); if (q) q.placeholder = homePlaceholder(); });
 $('home').addEventListener('click', e => {
+  const pb = e.target.closest('[data-pb]'); if (pb) return runPlaybookById(pb.dataset.pb);
   const q = e.target.closest('[data-q]'); if (q) return askFromHome(q.dataset.q);
   if (e.target.closest('#homeAsk')) return askFromHome($('homeQ').value);
   const td = e.target.closest('[data-todo]');
@@ -3072,27 +3114,36 @@ async function renderDetail() {
 
 /* ---------- 待审批：申请的完整内容、风险提示，批准要输审批口令 ----------
    审批口令不是网页登录密码：只在宿主机上设置，只存哈希，由工具服务核对（应用只转交，不保存、不记录）。
-   没设口令时批准按钮不可用，并写明在宿主机上怎么设；拒绝不用口令。 */
+   没设口令时批准按钮不可用，并写明在宿主机上怎么设；拒绝不用口令。风险提示由工具服务自动检测，只是辅助：
+   没检测到问题时只说「没有检测到风险」，不说成没有风险；脚本型总有一条「可以执行任意命令，请逐行看内容」。 */
 let apState = {pending: [], held: [], approval: null};
 const apResults = {};   // 刚批准的：id -> 结果（写在主配置第几行、备份在哪、重新加载后几个工具）
 const approvalInfo = () => apState.approval || overview?.approval || {configured: false, max_failures: 5, lock_minutes: 15};
 const KIND_RUN = {command: '会执行的命令', script: '会执行的脚本', sql: '会执行的查询', http: '会请求的接口', mcp: '会调用的 MCP 工具'};
 const isPh = a => /^\{[a-z_][a-z0-9_]*\}$/.test(a);
 const argvHtml = argv => `<div class="argv">${argv.map(a => `<span class="${isPh(a) ? 'ph' : /^(\/|~)/.test(a) ? 'path' : ''}">${esc(a)}</span>`).join('')}</div>`;
+const setCmd = ap => ap.command || 'python3 /opt/ops/ops_readonly.py set-approval-passphrase';
+const unlockIn = ap => `${ap.unlock_minutes || ap.lock_minutes || 15} 分钟后解锁`;
 function passLine() {
   const ap = approvalInfo();
-  return ap.locked ? `<span class="passline bad">🔒 审批口令输错太多次，页面审批锁定到 ${esc(ap.locked_until)}</span>`
+  return ap.locked ? `<span class="passline bad">🔒 审批口令输错太多次，页面审批锁定中，${unlockIn(ap)}</span>`
     : ap.configured ? '<span class="passline">🔐 审批口令已设置</span>'
+    : ap.problem ? '<span class="passline bad">⚠ 审批口令现在不可用：只能看、能拒绝</span>'
     : '<span class="passline bad">⚠ 还没设审批口令：只能看、能拒绝</span>';
 }
+// 列表上的一句话：有高风险、要注意的报条数；都没有时是「没有检测到风险」（自动检测会漏，不能说成没有风险）
+function riskMark(risks) {
+  const high = (risks || []).filter(r => r.level === 'high').length, warn = (risks || []).filter(r => r.level === 'warn').length;
+  return high ? ['high', `⛔ ${high} 项高风险`] : warn ? ['warn', `⚠ ${warn} 项注意`] : ['', '没有检测到风险'];
+}
+const riskHtml = r => `<div class="risk ${esc(r.level)}"><span>${r.level === 'high' ? '⛔' : r.level === 'warn' ? '⚠️' : 'ℹ️'}</span><div><b>${esc(r.title)}</b>${esc(r.text)}</div></div>`;
 function apRow(it) {
   const t = it.tool || {}, d = it.detail || {};
-  const high = (d.risks || []).filter(r => r.level === 'high').length, warn = (d.risks || []).filter(r => r.level === 'warn').length;
-  const st = high ? ['high', `⛔ ${high} 项高风险`] : warn ? ['warn', `⚠ ${warn} 项注意`] : ['', '无风险提示'];
+  const st = it.detail ? riskMark(d.risks) : ['', '工具服务没给内容'];
   const mcp = String(it.author || '').startsWith('mcp:');
   return `<div class="mrow ${mItem === it.id ? 'on' : ''}" data-mitem="${esc(it.id)}">
     <div class="t">${esc(t.label || t.name)}<code>${esc(t.name)}</code></div>
-    <div class="s"><span class="kd ${esc(d.kind)}">${esc(d.kind_label || d.kind)}</span>${mcp ? `MCP server ${esc(it.author.slice(4))} 发现` : `${esc(it.author || '')} 申请`} · ${esc(ago(it.created_at))}</div>
+    <div class="s"><span class="kd ${esc(d.kind)}">${esc(d.kind_label || d.kind || '申请')}</span>${mcp ? `MCP server ${esc(it.author.slice(4))} 发现` : `${esc(it.author || '')} 申请`} · ${esc(ago(it.created_at))}</div>
     <span class="st ${st[0]}">${st[1]}</span></div>`;
 }
 function heldRow(s) {
@@ -3106,9 +3157,8 @@ async function renderPending() {
   $('mgroups').innerHTML = '';
   $('mtool').innerHTML = `<span class="ttl">待审批<small>批准要输审批口令；拒绝不用</small></span>${passLine()}`;
   if (!apState.pending.length) $('mrows').innerHTML = '<div class="empty">加载中…</div>';
-  const [p, h] = await Promise.all([fetch('/api/tools/pending').then(r => r.json()).catch(() => ({pending: []})),
-                                    fetch('/api/tools/held').then(r => r.ok ? r.json() : {scripts: []}).catch(() => ({scripts: []}))]);
-  apState = {pending: p.pending || [], held: h.scripts || [], approval: p.approval || apState.approval};
+  const p = await fetch('/api/tools/pending').then(r => r.json()).catch(() => ({pending: [], held: []}));
+  apState = {pending: p.pending || [], held: p.held || [], approval: p.approval || apState.approval};
   $('mtool').innerHTML = `<span class="ttl">待审批<small>批准要输审批口令；拒绝不用</small></span>${passLine()}`;
   const done = Object.values(apResults).filter(r => !apState.pending.some(x => x.id === r.id));
   const ids = [...apState.pending.map(x => x.id), ...apState.held.map(s => 'script:' + s.script), ...done.map(r => r.id)];
@@ -3140,21 +3190,33 @@ function paramType(p) {
   if (p.pattern) return `${esc({name: '名称', k8s_name: 'K8s 名', resource: '资源类型', date: '日期'}[p.pattern] || p.pattern)}<span class="rx">${esc(p.regex || '')}</span>`;
   return esc([p.type, p.format].filter(Boolean).join(' · ') || '文本');
 }
-function nopassHtml(cli) {
+function nopassHtml(cli, verb = '批准') {
   const ap = approvalInfo();
-  return `<div class="nopass"><b>🔒 还没有设置审批口令，页面上不能批准</b>审批口令和网页登录密码不同，只能由管理员在宿主机上设置（交互输入两次，不回显，至少 12 个字符）：
-    <div class="cli">$ ${esc(ap.command || 'python3 /opt/ops/ops_readonly.py set-approval-passphrase')}</div>
-    设置之前，照常可以在宿主机上批准：<div class="cli">$ ${esc(cli)}</div></div>`;
+  const why = ap.problem
+    ? `<b>🔒 页面审批现在不可用</b>${esc(ap.problem)}。<br>设置或重置审批口令（交互输入两次，不回显，至少 12 个字符）：`
+    : '<b>🔒 还没有设置审批口令，页面上不能批准</b>审批口令和网页登录密码不同，只能由管理员在宿主机上设置（交互输入两次，不回显，至少 12 个字符）：';
+  return `<div class="nopass">${why}<div class="cli">$ ${esc(setCmd(ap))}</div>
+    在这之前，照常可以在宿主机上${verb}：<div class="cli">$ ${esc(cli)}</div></div>`;
 }
+const lockedHtml = ap => `<div class="nopass"><b>🔒 页面审批锁定中，${unlockIn(ap)}</b>审批口令连续输错 ${ap.max_failures || 5} 次。宿主机上的命令行审批不受影响。</div>`;
+// 脚本的自动检测：行数、用到的命令、联网、写操作。只是辅助，逐行看内容才算数
+function scriptFacts(s) {
+  const list = (xs, cls) => (xs || []).length ? xs.map(x => `<span class="pill ${cls}">${esc(x)}</span>`).join('') : '<span style="color:var(--muted)">没有检测到</span>';
+  return `<dl class="where facts"><dt>行数</dt><dd>${s.lines} 行（去掉空行和注释 ${s.code_lines} 行）</dd>
+    <dt>用到的命令</dt><dd>${(s.commands || []).length ? s.commands.map(c => `<code>${esc(c)}</code>`).join(' ') : '<span style="color:var(--muted)">没有识别出</span>'}</dd>
+    <dt>联网</dt><dd>${list(s.network, 'warn')}</dd><dt>写操作</dt><dd>${list(s.writes, 'bad')}</dd></dl>`;
+}
+const tooLongHtml = s => s.too_long ? '<div class="pb-warn" style="padding:6px 0 0">⚠ 脚本超过 64 KB，上面只显示了一部分：页面上不能批，请在宿主机上逐行看过后用命令行处理</div>' : '';
 function apDetail(it) {
   const t = it.tool || {}, d = it.detail || {}, ap = approvalInfo();
   const mcp = String(it.author || '').startsWith('mcp:');
-  const meta = [`<span class="kd ${esc(d.kind)}">${esc(d.kind_label || d.kind)}</span>`,
+  const meta = [`<span class="kd ${esc(d.kind)}">${esc(d.kind_label || d.kind || '申请')}</span>`,
     mcp ? `MCP server ${esc(it.author.slice(4))} 发现（${esc((it.review || {}).reason || '新发现')}）` : `${esc(it.author || '')} 在页面上申请`,
     esc(it.created_at || ''), `编号 ${esc(it.id)}`];
   let run = '';
+  if (!it.detail) run = '<div class="pb-warn">⚠ 工具服务没有给出这条申请的完整内容（版本较旧）：请在宿主机上用 pending 查看后用命令行批准</div>';
   if (d.kind === 'command') run = argvHtml(d.argv) + `<div class="note">不经过 shell，按格子原样执行。<span style="color:var(--accent)">蓝色</span>是模型填的参数，整个占一格，按下面的格式校验；<span style="color:#b45309">橙色</span>是写死的文件路径。</div>`;
-  if (d.kind === 'script') run = `<div class="note" style="margin:0 0 6px">脚本 <code>${esc(d.script.name)}</code> · ${d.script.lines} 行 · sha256 <code>${esc(d.script.sha256.slice(0, 16))}…</code>${d.script.commands.length ? ` · 用到 ${esc(d.script.commands.join('、'))}` : ''}</div><pre class="code">${esc(d.script.content)}</pre>`;
+  if (d.kind === 'script' && d.script) run = `<div class="note" style="margin:0 0 6px">脚本 <code>${esc(d.script.name)}</code> · sha256 <code>${esc(d.script.sha256.slice(0, 16))}…</code></div>${scriptFacts(d.script)}<pre class="code">${esc(d.script.content)}</pre>${tooLongHtml(d.script)}`;
   if (d.kind === 'sql') run = `<pre class="code">${esc(d.sql.query)}</pre><div class="note">连接 <code>${esc(d.sql.conn)}</code>（${esc(d.sql.db)}）· 最多返回 ${d.sql.max_rows} 行 · <code>:参数</code> 由数据库驱动绑定，不拼进 SQL</div>`;
   if (d.kind === 'http') run = `<pre class="code">${esc(d.display)}</pre>`;
   if (d.kind === 'mcp') run = `<dl class="where"><dt>server</dt><dd>${esc(d.mcp.server_label)}（${d.mcp.transport === 'http' ? '远程' : '本机子进程'}）</dd>
@@ -3169,24 +3231,25 @@ function apDetail(it) {
     ${(d.groups || []).length ? `<dt>适用分组</dt><dd>${d.groups.map(g => `<span class="pill">${esc(g)}</span>`).join('')}</dd>` : ''}
     ${(d.hosts || []).length ? `<dt>批准后在</dt><dd>${d.hosts.map(h => `<span class="pill ${h.ok ? (h.push ? 'warn' : 'ok') : 'off'}" title="${esc(h.ok ? (h.push ? '受控模式：要等管理员 push 白名单后才能跑' : '能跑') : h.reason)}">${h.ok ? '✓' : '✗'} ${esc(h.name)}${h.push ? '（要 push）' : ''}</span>`).join('')}</dd>` : ''}
     <dt>内部/外部</dt><dd>${d.external ? `<span class="pill warn">外部</span><span style="color:var(--muted)">${esc(d.external_why || '')}</span>` : '<span class="pill ok">内部</span>'}</dd></dl>`;
-  const risks = (d.risks || []).length ? `<div class="risks">${d.risks.map(r => `<div class="risk ${esc(r.level)}"><span>${r.level === 'high' ? '⛔' : r.level === 'warn' ? '⚠️' : 'ℹ️'}</span><div><b>${esc(r.title)}</b>${esc(r.text)}</div></div>`).join('')}</div>`
-    : '<div class="note" style="margin:0">没有风险提示。</div>';
+  const risks = (d.risks || []).length ? `<div class="risks">${d.risks.map(riskHtml).join('')}</div>`
+    : '<div class="note" style="margin:0">没有检测到风险。自动检测只是辅助，批准前请看完上面的内容。</div>';
   const undeclared = d.kind === 'mcp' && !d.mcp.readonly_declared;
   const cli = (d.cli || '') + (undeclared ? ' --attest-readonly' : '');
+  const blocked = !it.detail || d.invalid || ap.locked || d.script?.too_long;
   const bar = !ap.configured ? `<div class="ap-bar">${nopassHtml(cli)}<div class="row"><span class="grow"></span>
-        <button class="btn danger" data-apreject="${esc(it.id)}">拒绝</button><button class="btn" disabled title="还没有设置审批口令">批准</button></div></div>`
+        <button class="btn danger" data-apreject="${esc(it.id)}">拒绝</button><button class="btn" disabled title="审批口令还不能用">批准</button></div></div>`
     : `<div class="ap-bar">${undeclared ? `<label class="attest"><input type="checkbox" id="apAttest"><span><b>我确认这个工具只读</b>：看过它的说明和参数，它不会改任何东西（等同于命令行的 --attest-readonly）</span></label>` : ''}
-        ${ap.locked ? `<div class="nopass"><b>🔒 页面审批已锁定到 ${esc(ap.locked_until)}</b>审批口令连续输错 ${ap.max_failures} 次。宿主机上的命令行审批不受影响。</div>` : ''}
+        ${ap.locked ? lockedHtml(ap) : ''}
         <div class="row"><span class="grow">批准后写进工具服务的主配置（自动备份），下一次提问就能用${d.kind === 'script' ? '；批准的是上面这份内容' : ''}</span>
         <button class="btn danger" data-apreject="${esc(it.id)}">拒绝</button>
-        <button class="btn warn" data-approve="${esc(it.id)}" ${d.invalid || ap.locked ? 'disabled' : ''}>批准…</button></div></div>`;
+        <button class="btn warn" data-approve="${esc(it.id)}" ${blocked ? 'disabled' : ''}>批准…</button></div></div>`;
   return `<div class="ap">
     <div class="ap-hd"><div class="nm">${esc(t.label || t.name)}<code>${esc(t.name)}</code></div>
       <div class="meta">${meta.join('<span>·</span>')}</div>${t.desc ? `<div class="desc">${esc(t.desc)}</div>` : ''}</div>
     <div class="ap-sec"><h4>${KIND_RUN[d.kind] || '内容'}</h4>${run}</div>
     <div class="ap-sec"><h4>参数 <small>模型只能按这些格式填值，填错直接拒绝执行</small></h4>${params}</div>
     <div class="ap-sec"><h4>在哪里跑</h4>${where}</div>
-    <div class="ap-sec"><h4>风险提示 ${(d.risks || []).length ? `<small>${d.risks.length} 条</small>` : ''}</h4>${risks}</div>
+    <div class="ap-sec"><h4>风险提示 <small>${(d.risks || []).length ? `${d.risks.length} 条 · ` : ''}自动检测，只是辅助</small></h4>${risks}</div>
     <div class="ap-sec"><h4>也可以在宿主机上批准</h4><div class="cli">$ ${esc(cli)}</div></div>
     ${bar}</div>`;
 }
@@ -3194,11 +3257,11 @@ function heldDetail(s) {
   const ap = approvalInfo();
   return `<div class="ap"><div class="ap-hd"><div class="nm">${esc(s.label || s.tool)}<code>${esc(s.tool)}</code></div>
       <div class="meta"><span class="kd script">脚本型</span>${s.state === 'changed' ? '脚本内容和登记的哈希对不上，工具已暂停' : '脚本还没确认过，工具暂不生效'}</div></div>
-    <div class="ap-sec"><h4>现在的内容 <small>sha256 ${esc(s.sha256.slice(0, 16))}…${s.trusted_sha256 ? `，登记的是 ${esc(s.trusted_sha256.slice(0, 16))}…` : ''}</small></h4><pre class="code">${esc(s.content)}</pre></div>
-    <div class="ap-sec"><h4>风险提示</h4><div class="risks"><div class="risk warn"><span>⚠️</span><div><b>内容变了</b>可能是有人按计划改了脚本，也可能是被人偷换。逐行看过、确认是预期的改动再重新确认；认不出这个改动就先去宿主机上查。</div></div></div></div>
+    <div class="ap-sec"><h4>现在的内容 <small>sha256 ${esc(s.sha256.slice(0, 16))}…${s.trusted_sha256 ? `，登记的是 ${esc(s.trusted_sha256.slice(0, 16))}…` : ''}</small></h4>${scriptFacts(s)}<pre class="code">${esc(s.content)}</pre>${tooLongHtml(s)}</div>
+    <div class="ap-sec"><h4>风险提示 <small>${(s.risks || []).length} 条 · 自动检测，只是辅助</small></h4><div class="risks">${(s.risks || []).map(riskHtml).join('')}</div></div>
     <div class="ap-sec"><h4>也可以在宿主机上确认</h4><div class="cli">$ ${esc(s.cli)}</div></div>
-    <div class="ap-bar">${ap.configured ? '' : nopassHtml(s.cli)}<div class="row"><span class="grow">确认后登记这份内容的哈希，引用它的工具恢复可用</span>
-      <button class="btn warn" data-trust="${esc(s.script)}" ${ap.configured && !ap.locked ? '' : 'disabled'}>重新确认…</button></div></div></div>`;
+    <div class="ap-bar">${ap.configured ? '' : nopassHtml(s.cli, '确认')}${ap.configured && ap.locked ? lockedHtml(ap) : ''}<div class="row"><span class="grow">确认后登记这份内容的哈希，引用它的工具恢复可用</span>
+      <button class="btn warn" data-trust="${esc(s.script)}" ${ap.configured && !ap.locked && !s.too_long ? '' : 'disabled'}>重新确认…</button></div></div></div>`;
 }
 function apDoneHtml(r) {
   const w = r.written;
@@ -3218,11 +3281,13 @@ function approveSummary(d) {
   return `批准后，工具服务${['command', 'script'].includes(d.kind) ? '以 root 身份' : ''}按下面执行，模型下一次提问就能用：${what}${
     high ? `<div style="color:var(--danger);margin-top:6px">⛔ 有 ${high} 条高风险提示，确认看过再批。</div>` : ''}`;
 }
-function proposalSummary(p) {
+function proposalSummary(p, script) {
   const im = p.impl || {};
-  const what = p.argv ? argvHtml(p.argv) : p.script ? `<pre>scripts/${esc(p.script)}</pre>`
+  const what = p.argv ? argvHtml(p.argv)
+    : p.script ? `<pre>scripts/${esc(p.script)}${script?.sha256 ? `（sha256 ${esc(script.sha256.slice(0, 16))}…）` : ''}</pre>`
     : im.type === 'sql' ? `<pre>${esc(im.query)}</pre>` : `<pre>GET ${esc((p.http || {}).url || '')}</pre>`;
-  return `先提交申请，再用口令批准；批准后工具服务按下面执行：${what}`;
+  return `口令核对通过才提交，提交后马上批准；批准后工具服务按下面执行：${what}${p.script
+    ? '<div style="color:#b45309;margin-top:6px">⚠ 脚本可以执行任意命令：确认逐行看过表单里的脚本内容。批准的是此刻这一份。</div>' : ''}`;
 }
 
 /* 口令对话框：输错留在框里重输（还能试几次由工具服务回），锁定、脚本被改这类错误按钮变灰。
@@ -3283,6 +3348,7 @@ async function postJson(path, body) {
   if (!r.ok) {
     const err = new Error(typeof d.detail === 'string' ? d.detail : `请求失败（${r.status}）`);
     err.status = r.status;
+    err.pending = d.pending || null;
     throw err;
   }
   return d;
@@ -3345,22 +3411,28 @@ function renderProposalDetail() {
 
 /* ---------- 工具页「主机与数据源」：只读，写清在宿主机上怎么做 ----------
    主机、连接、MCP server、对外开放（export）、审批口令都只能由管理员在宿主机上配：页面能定义的东西，网页密码一泄露就能被人改。 */
+// 主机连不上的原因：去掉开头重复的「主机 名字：」「主机 名字 的」，主机名已经单独写了
+function hostReason(name, text) {
+  let s = String(text || '').trim();
+  for (const p of [`主机 ${name}：`, `主机 ${name}:`, `主机 ${name} 的`]) while (s.startsWith(p)) s = s.slice(p.length).trim();
+  return s || '连不上';
+}
 async function renderInfra() {
   $('msettings').innerHTML = '<div class="sf"><div class="empty">加载中…</div></div>';
-  const [t, s, h] = await Promise.all([
+  const [t, s, p] = await Promise.all([
     fetch('/api/tools').then(r => r.json()).catch(() => ({})),
     fetch('/api/tools/scripts').then(r => r.json()).catch(() => ({scripts: []})),
-    fetch('/api/tools/held').then(r => r.ok ? r.json() : {scripts: []}).catch(() => ({scripts: []}))]);
-  await refreshApproval();
+    fetch('/api/tools/pending').then(r => r.ok ? r.json() : {}).catch(() => ({}))]);
+  if (p.approval) apState.approval = p.approval;
   if (page !== 'tools' || tlTab !== 'infra') return;
   const o = overview || {}, src = o.tools?.sources || {}, ap = approvalInfo();
   const hosts = t.hosts || {configured: false}, conns = t.connections || {}, servers = t.mcp_servers || {};
-  const held = new Set((h.scripts || []).map(x => x.script));
+  const held = Object.fromEntries((p.held || []).map(x => [x.script, x.state]));
   const hostRows = Object.entries(hosts.list || {}).map(([name, x]) => {
     const st = x.via === 'local' ? '<span class="pill ok">本机</span>' : !x.status ? '<span class="pill">还没检查</span>'
       : x.status.reachable && !x.status.error ? '<span class="pill ok">在线</span>' : `<span class="pill bad" title="${esc(x.status.error || '')}">离线</span>`;
     return `<tr><td><b>${esc(name)}</b>${name === hosts.default ? ' <span class="pill">默认</span>' : ''}</td><td>${x.via === 'local' ? '—' : `<code>${esc(x.user + '@' + x.address)}</code>`}</td>
-      <td>${x.via === 'local' ? '本机' : x.mode === 'direct' ? '直连（只读靠账号权限）' : '受控（强制命令 + 白名单）'}</td><td>${st}${x.status?.error ? `<div class="note">${esc(x.status.error)}</div>` : ''}</td>
+      <td>${x.via === 'local' ? '本机' : x.mode === 'direct' ? '直连（只读靠账号权限）' : '受控（强制命令 + 白名单）'}</td><td>${st}${x.status?.error ? `<div class="note">${esc(hostReason(name, x.status.error))}</div>` : ''}</td>
       <td>${(x.groups || []).map(g => `<span class="pill">${esc(g)}</span>`).join(' ') || '—'}</td></tr>`;
   }).join('');
   const connRows = Object.entries(conns).map(([name, c]) => `<tr><td><b>${esc(name)}</b>${c.label ? `<div class="note">${esc(c.label)}</div>` : ''}</td>
@@ -3372,7 +3444,7 @@ async function renderInfra() {
       <td>${x.online ? '<span class="pill ok">在线</span>' : `<span class="pill bad">离线</span>${x.reason ? `<div class="note">${esc(x.reason)}</div>` : ''}`}</td>
       <td>发现 ${x.discovered ?? '—'} · 已批准 ${x.approved ?? 0}</td></tr>`).join('');
   const scriptRows = (s.scripts || []).map(x => `<tr><td><code>${esc(x.name)}</code></td>
-      <td>${held.has(x.name) ? '<span class="pill warn">内容变了，要重新确认</span>' : x.trusted ? '<span class="pill ok">已确认</span>' : '<span class="pill">未确认</span>'}</td>
+      <td>${held[x.name] ? `<span class="pill warn">${held[x.name] === 'changed' ? '内容变了，要重新确认' : '还没确认过'}</span>` : x.trusted ? '<span class="pill ok">已确认</span>' : '<span class="pill">未确认</span>'}</td>
       <td>${esc(x.used_by || '—')}</td><td>${x.executable ? '可执行' : '<span style="color:var(--danger)">没有执行位</span>'}</td></tr>`).join('');
   const table = (head, rows, none) => rows ? `<table class="ax"><tr>${head.map(x => `<th>${x}</th>`).join('')}</tr>${rows}</table>` : `<div class="note">${none}</div>`;
   $('msettings').innerHTML = `<div class="sf">
@@ -3401,11 +3473,18 @@ async function renderInfra() {
     <div class="card"><h3>计算沙箱与联网</h3>
       <div class="chipset"><span class="pill ${src.sandbox ? 'ok' : 'off'}">${src.sandbox ? '✓' : '–'} 计算沙箱（python_exec）</span><span class="pill ${src.web ? 'ok' : 'off'}">${src.web ? '✓' : '–'} 联网搜索</span></div>
       <div class="howto"><b>在宿主机上：</b>沙箱是 <code>.env</code> 的 <code>SANDBOX_URL</code>、<code>SANDBOX_TOKEN</code>；联网是 <code>WEB_SEARCH_TOOL</code>。改完重新发版（docs/正式部署.md）。</div></div>
-    <div class="card"><h3>审批口令 <small>在页面上批准工具时要输</small><span class="ro">只读</span></h3>
-      <div class="chipset">${ap.locked ? `<span class="pill bad">锁定到 ${esc(ap.locked_until)}</span>` : ap.configured ? '<span class="pill ok">已设置</span>' : '<span class="pill warn">还没有设置</span>'}</div>
-      <div class="howto"><b>在宿主机上设置或重置：</b><code>${esc(ap.command || 'python3 /opt/ops/ops_readonly.py set-approval-passphrase')}</code>（交互输入两次，不回显，至少 12 个字符）。
-        它和网页登录密码不同，只以哈希存在工具服务上（root 才能读）；连续输错 ${ap.max_failures || 5} 次锁定 ${ap.lock_minutes || 15} 分钟，锁定期间命令行审批照常可用。忘了就用同一个命令重设。</div></div>
+    <div class="card"><h3>审批口令 <small>在页面上批准工具时要输</small><span class="ro">只读</span></h3>${passCard(ap)}</div>
   </div>`;
+}
+// 审批口令的状态（主机与数据源、设置两处共用）：设没设、锁没锁；口令文件不满足要求时写明原因
+function passCard(ap) {
+  const chip = ap.locked ? `<span class="pill bad">锁定中，${unlockIn(ap)}</span>` : ap.configured ? '<span class="pill ok">已设置</span>'
+    : ap.problem ? '<span class="pill bad">不可用</span>' : '<span class="pill warn">还没有设置</span>';
+  return `<div class="chipset" style="margin-bottom:8px">${chip}</div>
+    ${ap.problem ? `<div class="pb-warn" style="padding:0 0 8px">⚠ ${esc(ap.problem)}</div>` : ''}
+    审批口令和网页登录密码不同：只以加盐的慢哈希存在工具服务上（root 才能读），由工具服务核对；网页密码泄露了也批不了工具。
+    <div class="howto"><b>在宿主机上设置或重置：</b><code>${esc(setCmd(ap))}</code>（交互输入两次，不回显，至少 12 个字符）。
+      连续输错 ${ap.max_failures || 5} 次，页面审批锁定 ${ap.lock_minutes || 15} 分钟，锁定期间命令行审批照常可用；想马上解锁就重启工具服务。忘了就用同一个命令重设。</div>`;
 }
 /* ---------- 模型设置页 ---------- */
 let stTest = null, stPoll = null;
@@ -3448,11 +3527,7 @@ async function renderSettings() {
   </div>`;
   paintPacks();
   refreshApproval().then(() => {
-    const ap = approvalInfo(), box = $('stPass'); if (!box) return;
-    box.innerHTML = `<div class="chipset" style="margin-bottom:8px">${ap.locked ? `<span class="pill bad">锁定到 ${esc(ap.locked_until)}</span>` : ap.configured ? '<span class="pill ok">已设置</span>' : '<span class="pill warn">还没有设置</span>'}</div>
-      审批口令和网页登录密码不同：只以哈希存在工具服务上，由工具服务核对；网页密码泄露了也批不了工具。
-      <div class="howto"><b>在宿主机上设置或重置：</b><code>${esc(ap.command || 'python3 /opt/ops/ops_readonly.py set-approval-passphrase')}</code>（交互输入两次，不回显，至少 12 个字符）。
-        连续输错 ${ap.max_failures || 5} 次锁定 ${ap.lock_minutes || 15} 分钟，锁定期间命令行审批照常可用。</div>`;
+    const box = $('stPass'); if (box) box.innerHTML = passCard(approvalInfo());
   });
   if (job && (job.status === 'queued' || job.status === 'running')) pollReindex(s.reindex_job);
 }

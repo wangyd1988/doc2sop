@@ -7,7 +7,7 @@
    按「1280@12 → 1280@10 → 960@12 → 960@10 → 960@10/128 色」的阶梯保证每个 GIF ≤ 4 MB。
 
    用法  node deploy/demo/record.js [--scene sop|grow|all] [--out docs/media] [--sidebar] [--reuse]
-         --sidebar  录进左侧文档栏（默认用注入的 CSS 隐藏它，让对话区在 720p 里更大）
+         --sidebar  录进左侧导航（默认用注入的 CSS 隐藏它，让对话区在 720p 里更大）
          --reuse    不重录，用 <out>/raw/ 里上次的素材和时刻记录只重做剪辑与 GIF（调时长 / 体积参数用）
    环境  DEMO_URL / DEMO_USER / DEMO_PASSWORD   演示站地址与 Basic 登录；只从环境变量读，不进日志
          PWCORE                                 可选，playwright-core 的安装目录；不设就 require('playwright-core')
@@ -111,7 +111,7 @@ async function checkGrowReady() {
   const d = await api('/api/playbooks');
   const practice = (d.origins || {}).practice || 0;
   if (practice) throw new PreflightError(`第二幕要从没有「从实践沉淀」SOP 的状态开始，现在已有 ${practice} 个：先重置演示数据再录`);
-  if (d.pending) log(`提示：还有 ${d.pending} 条待确认提议，SOP 面板里会多出一个「待确认提议」折叠区`);
+  if (d.pending) log(`提示：还有 ${d.pending} 条待确认提议，SOP 页的「待确认提议」里会多出几条`);
 }
 
 /* ---------- 注进页面的字幕层 / 侧栏隐藏 / 收尾裁剪 ---------- */
@@ -122,7 +122,7 @@ const OVERLAY_CSS = `
 #__cap.on{opacity:1}
 #__cap b{color:#fbbf24}
 #chat{scroll-behavior:auto !important}`;   /* 平滑滚动的每一帧都是整幅重绘，GIF 里最费字节；录制时改成瞬时滚动 */
-const HIDE_ASIDE_CSS = `aside,#asideSplit{display:none !important}`;
+const HIDE_ASIDE_CSS = `#side,#scrim{display:none !important}`;
 
 function initScript({ css, zoom }) {
   const ensure = () => {
@@ -274,8 +274,9 @@ function opening(m) {
 }
 
 async function openAndAsk(h, chipText, caption) {
-  await h.page.goto(BASE + '/');
-  const chip = h.page.locator('.chip', { hasText: chipText }).first();
+  // 「对话」页的欢迎语下面就是按用途分组的示例问题（和工作台同一份），点一个就问
+  await h.page.goto(BASE + '/chat');
+  const chip = h.page.locator('.welcome .ex button', { hasText: chipText }).first();
   await chip.waitFor({ timeout: 60000 });
   await sleep(900);
   await h.cap(caption);
@@ -339,15 +340,15 @@ async function sceneGrow(h) {
   await prop.locator('.hd', { hasText: '已保存' }).waitFor({ timeout: 20000 });
   h.mark('saved');
   await sleep(1400);
-  await page.click('#pbBtn');
-  const grp = page.locator('#pbPanel details.grp[data-name="从实践沉淀"]');
+  await page.evaluate(() => window.go('sop'));   // 左侧导航默认被隐藏了，直接切到 SOP 页
+  const grp = page.locator('#mgroups .mg[data-mgroup="从实践沉淀"]');
   await grp.waitFor({ timeout: 15000 });
-  await grp.locator('summary').first().click();
-  await grp.locator('.pb').first().waitFor({ timeout: 15000 });
+  await grp.click();
+  await page.locator('#mrows .mrow').first().waitFor({ timeout: 15000 });
   h.mark('panel');
-  const head = await page.locator('#pbPanel .pb-head small').innerText();
-  if (!/实践\s*1/.test(head)) throw new RecordError('第二幕：SOP 面板标题没有「实践 1」：' + head.replace(/\s+/g, ' '));
-  await h.cap('SOP 面板：来源 文档 1 / 实践 1 —— 默认停用，人核对后再启用');
+  const head = await page.locator('#topSub').innerText();
+  if (!/实践\s*1/.test(head)) throw new RecordError('第二幕：SOP 页顶栏没有「实践 1」：' + head.replace(/\s+/g, ' '));
+  await h.cap('SOP 页：来源 文档 1 / 实践 1 —— 默认停用，人核对后再启用');
   await sleep(1600);
   h.mark('end');
 }
