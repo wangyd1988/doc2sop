@@ -44,6 +44,16 @@ check('只有注意', riskMark([{level: 'warn'}, {level: 'info'}]), ['warn', '�
 check('没检测到问题不说成没有风险', riskMark([{level: 'info'}]), ['', '没有检测到风险']);
 check('页面里没有「无风险」的说法', html.includes('无风险'), false);
 
+// 参数的类型和范围：min / max 可能来自 MCP server 的 schema，必须转义后再进 HTML
+const escLine = scripts.join('\n').match(/^const esc = .*$/m)[0];
+const {paramType} = new Function(`${escLine}\n${extract('paramType')}\nreturn {paramType};`)();
+const evil = '<img src=x onerror=alert(1)>';
+const shown = paramType({type: 'integer', min: evil, max: `${evil}"'`});
+check('min/max 里的 < 被转义', shown.includes('<img'), false);
+check('转义后的文字照常显示', shown.includes('&lt;img src=x onerror=alert(1)&gt;'), true);
+check('正常的整数范围不变', paramType({type: 'int', min: 1, max: 10000}), '整数，1–10000');
+check('只有一头的范围', paramType({type: 'integer', min: 0}), '整数，0–…');
+
 // 左侧导航：七个页面，对话下面常驻最近 5 条
 for (const path of ['/', '/chat', '/tools', '/sop', '/docs', '/access', '/settings']) {
   check(`导航有 ${path}`, html.includes(`<a href="${path}" data-page=`), true);

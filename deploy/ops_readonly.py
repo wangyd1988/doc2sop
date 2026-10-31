@@ -3299,10 +3299,12 @@ def _schema_params_view(schema):
             continue
         kind = prop.get("type")
         scalar = lambda value: value if isinstance(value, (str, int, float, bool)) else None
+        # 范围只认数字：server 写成字符串（甚至一段 HTML）的 minimum / maximum 不往页面上带
+        number = lambda value: value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
         out.append({"name": str(key), "type": "/".join(map(str, kind)) if isinstance(kind, list) else str(kind or ""),
                     "format": str(prop.get("format") or ""), "required": str(key) in required,
                     "desc": str(prop.get("description") or prop.get("title") or "")[:300],
-                    "min": scalar(prop.get("minimum")), "max": scalar(prop.get("maximum")),
+                    "min": number(prop.get("minimum")), "max": number(prop.get("maximum")),
                     "default": scalar(prop.get("default")),
                     "enum": [v for v in prop["enum"] if scalar(v) is not None] if isinstance(prop.get("enum"), list) else None})
     return out

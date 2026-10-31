@@ -54,6 +54,28 @@ def quiet(fn, *args, **kwargs):
             return exc, out.getvalue()
 
 
+EVIL = "<img src=x onerror=alert(1)>"
+
+
+def queue_mcp_item(declared, properties=None):
+    """待审里放一条 MCP server 发现的工具（和 _reconcile_pending 写的一样）。properties 是它 inputSchema 的属性。"""
+    properties = properties or {"q": {"type": "string", "description": "关键词"}}
+    candidate = {"name": "srv__lookup", "label": "查", "group": "srv", "desc": "查东西",
+                 "mcp": {"server": "srv", "tool": "lookup"}, "schema_hash": "abc",
+                 "input_schema": {"type": "object", "properties": properties, "required": sorted(properties)[:1]},
+                 "readonly_declared": declared}
+    item = {"id": "m1", "created_at": "2026-10-01 09:00:00", "author": "mcp:srv", "tool": candidate,
+            "review": {"readonly": "declared" if declared else "undeclared", "suspicious_name": False,
+                       "reason": "新发现"}}
+    ops._write_yaml(ops._sibling("pending"), {"pending": [item]})
+    return item
+
+
+# server 在 schema 里塞 HTML：范围只认数字，字符串、布尔一律不往页面上带（页面那头也转义，见 tests/page.test.js）
+HOSTILE_PROPERTIES = {"n": {"type": "integer", "minimum": EVIL, "maximum": True, "description": "个数"},
+                      "m": {"type": "integer", "minimum": 0, "maximum": 2.5}}
+
+
 class _Page(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -328,16 +350,7 @@ class PageActionTests(_Page):
         self.assertEqual(ops._approval["failures"], 0)
 
     def mcp_item(self, declared):
-        candidate = {"name": "srv__lookup", "label": "查", "group": "srv", "desc": "查东西",
-                     "mcp": {"server": "srv", "tool": "lookup"}, "schema_hash": "abc",
-                     "input_schema": {"type": "object", "properties": {"q": {"type": "string", "description": "关键词"}},
-                                      "required": ["q"]},
-                     "readonly_declared": declared}
-        item = {"id": "m1", "created_at": "2026-10-01 09:00:00", "author": "mcp:srv", "tool": candidate,
-                "review": {"readonly": "declared" if declared else "undeclared", "suspicious_name": False,
-                           "reason": "新发现"}}
-        ops._write_yaml(ops._sibling("pending"), {"pending": [item]})
-        return item
+        return queue_mcp_item(declared)
 
     def test_mcp_tools_without_a_readonly_declaration_need_an_explicit_attest(self):
         self.mcp_item(declared=False)
@@ -578,6 +591,14 @@ class ReviewTests(_Page):
         self.assertFalse(hosts["db"]["ok"])
         self.assertIn("远程主机要 push", self.titles(detail, "info"))
 
+    def test_mcp_schema_ranges_are_numbers_only(self):
+        """MCP server 给的 schema 不可信：minimum / maximum 写成字符串（一段 HTML）、布尔时，范围不往页面上带。"""
+        item = queue_mcp_item(declared=False, properties=HOSTILE_PROPERTIES)
+        params = {p["name"]: p for p in ops.review_pending(item)["params"]}
+        self.assertEqual((params["n"]["min"], params["n"]["max"]), (None, None))
+        self.assertEqual((params["m"]["min"], params["m"]["max"]), (0, 2.5))
+        self.assertEqual(params["n"]["desc"], "个数")
+
     def test_a_broken_request_is_shown_as_invalid_instead_of_breaking_the_list(self):
         detail = ops._safe_review({"id": "x1", "tool": "not a dict"})
         self.assertIn("读不懂", detail["invalid"])
@@ -639,6 +660,16 @@ class HttpTests(_Page):
         self.assertIn("caller=web user=admin ip=10.1.2.3", log)
         self.assertNotIn(PASS, log)
         self.assertNotIn(WRONG, log)
+
+    def test_review_with_a_hostile_mcp_schema_still_answers(self):
+        """MCP server 在 schema 里塞 HTML：/tools/review 照常回 200，范围是 None，别的申请也都在。"""
+        queue_mcp_item(declared=False, properties=HOSTILE_PROPERTIES)
+        status, body = self.http("/tools/review")
+        self.assertEqual(status, 200, body)
+        params = {p["name"]: p for p in body["pending"][0]["detail"]["params"]}
+        self.assertEqual((params["n"]["min"], params["n"]["max"]), (None, None))
+        self.assertEqual(params["m"]["max"], 2.5)
+        self.assertNotIn(EVIL, json.dumps(body["pending"][0]["detail"]["params"], ensure_ascii=False))
 
     def test_locked_and_unset_states_have_their_own_status_codes(self):
         item = self.propose(COMMAND)

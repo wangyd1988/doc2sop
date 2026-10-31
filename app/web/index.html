@@ -3183,7 +3183,8 @@ function renderApDetail() {
 }
 function paramType(p) {
   if (p.type === 'int' || p.type === 'integer') {
-    const range = p.min != null || p.max != null ? `，${p.min ?? '…'}–${p.max ?? '…'}` : '';
+    // min / max 可能来自 MCP server 给的 schema：和别的字段一样转义后再进 HTML
+    const range = p.min != null || p.max != null ? `，${esc(p.min ?? '…')}–${esc(p.max ?? '…')}` : '';
     return `整数${range}`;
   }
   if (p.enum && p.enum.length) return `只能是 ${p.enum.map(esc).join(' / ')}`;
