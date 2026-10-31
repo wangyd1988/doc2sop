@@ -20,6 +20,10 @@ os.environ["SANDBOX_URL"] = ""
 os.environ["SANDBOX_TOKEN"] = ""
 # 场景包自动导入是后台线程，测试里必须关掉，要导入就在用例里显式调 packs.import_pack。
 os.environ["DEMO_PACKS"] = ""
+# 页面审批的口令文件指向临时目录（用例自己写），不读这台机器上真的 /etc/ops-readonly/approval.hash；
+# OPS_CLI（页面上给的宿主机命令前缀）按默认拼法。
+os.environ["OPS_APPROVAL_FILE"] = str(Path(_TEMP.name, "approval.hash"))
+os.environ.pop("OPS_CLI", None)
 
 Path(_TEMP.name, "files").mkdir(parents=True, exist_ok=True)
 

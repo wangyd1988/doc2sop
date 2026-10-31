@@ -30,10 +30,12 @@ to this file); a missing driver disables only the tools that need it.
 import argparse
 import atexit
 import base64
+import contextlib
 import datetime
 import glob
 import hashlib
 import importlib.util
+import io
 import ipaddress
 import json
 import os
@@ -198,6 +200,14 @@ def _hash_file(path):
 
 ConfigError = ops_exec.ConfigError
 _check_param = ops_exec.check_param
+
+
+class NotFound(ConfigError):
+    """要处理的东西不存在（待审申请、要重新确认的脚本）：页面审批的接口回 404。"""
+
+
+class Conflict(ConfigError):
+    """处理时发现东西变了（脚本内容、主配置），和审阅时看到的不一样：页面审批的接口回 409。"""
 
 
 def _check_script_tool(raw, name):
@@ -1493,9 +1503,14 @@ def load_trust():
     return data if isinstance(data, dict) else {}
 
 
-def trust_script(name):
-    """Record the current hash of a script as approved. Only called on the host."""
+def trust_script(name, expected=None):
+    """Record the current hash of a script as approved.
+
+    命令行（宿主机上）直接登记此刻的内容；页面审批带上审阅时看到的哈希（expected），现在的内容对不上就不登记：
+    审的和批的必须是同一份。"""
     digest = _hash_file(_scripts_dir() / name)
+    if expected is not None and digest != expected:
+        raise Conflict(f"脚本 {name} 的内容和你审阅的那一份不一样（刚被改过）：没有登记。刷新后重新看一遍")
     trusted = load_trust()
     trusted[name] = digest
     _write_yaml(_trust_file(), {"trusted": trusted})
@@ -1556,10 +1571,11 @@ def load_tools(path):
     return tools, problems
 
 
-def _load_all(path, text=None):
+def _load_all(path, text=None, held=None):
     """load_tools 的完整版：多返回主文件声明的 MCP server 配置、连接和主机清单。
 
     text：主文件的内容（不给就读 path）。批准申请时用它加载「插入之后」的内容，和服务是同一套逻辑。
+    held：给一个列表时，因为脚本还没确认过、或内容和登记的哈希对不上而没加载的脚本型工具记在里面（页面上重新确认用）。
 
     除了自己的 `tools:`，主文件还可以用顶层 `include:` 引入别的定义文件（例如一个场景包的
     tools.yaml）。被包含的文件和主文件同等可信——它们是管理员亲手写进主文件的路径，所以同样
@@ -1647,6 +1663,8 @@ def _load_all(path, text=None):
             reason = _script_untrusted_reason(spec)
             if reason:
                 problems.append(reason)
+                if held is not None:
+                    held.append({"tool": spec["name"], "label": spec["label"], "script": spec["script"]})
                 return None
         if spec.get("type") == "mcp":
             server = servers.get(spec["mcp"]["server"])
@@ -1869,7 +1887,7 @@ def _apply_overrides(tools, overrides):
 
 _state = {"path": DEFAULT_CONFIG, "mtime": None, "omtime": None, "tmtime": None, "imtime": None,
           "mmtime": None, "includes": [], "tools": {}, "problems": [], "mcp_servers": {},
-          "connections": {}, "hosts": None}
+          "connections": {}, "hosts": None, "held": []}
 
 
 def _mtimes():
@@ -1900,8 +1918,9 @@ def refresh(force=False):
             _state.get("mmtime")):
         return _state["tools"]
 
+    held = []
     try:
-        tools, problems, servers, connections, hosts = _load_all(_state["path"])
+        tools, problems, servers, connections, hosts = _load_all(_state["path"], held=held)
         includes = _include_patterns(_read_yaml(_state["path"]))
     except ConfigError as exc:
         _state["problems"] = [str(exc)]
@@ -1916,7 +1935,7 @@ def refresh(force=False):
     hosts_changed = hosts != _state.get("hosts")
     _state.update(mtime=mtime, omtime=omtime, tmtime=tmtime, mmtime=mmtime, includes=includes,
                   problems=problems, tools=_apply_overrides(tools, overrides), mcp_servers=servers,
-                  connections=connections, hosts=hosts)
+                  connections=connections, hosts=hosts, held=held)
     # 模式列表可能刚变，用它重新算一次被包含文件的印章，下一次请求才不会白白重载
     _state["imtime"] = _mtimes()[3]
     # server 配置变了就启停对应子进程；这里只换对象，真正拉进程的是后台线程或下一次调用
@@ -2356,7 +2375,8 @@ def list_pending():
     return entries if isinstance(entries, list) else []
 
 
-MAX_SCRIPT_VIEW = 8000
+# 页面上看脚本最多显示多少字：和页面审批的上限（PAGE_SCRIPT_MAX，64 KB）对齐，能在页面上批的脚本都能看全
+MAX_SCRIPT_VIEW = 64 * 1024
 
 
 def list_scripts():
@@ -2389,6 +2409,7 @@ def list_scripts():
                     "executable": os.access(path, os.X_OK),
                     "trusted": bool(trusted.get(script) and trusted[script] == current),
                     "used_by": used.get(script, ""),
+                    "sha256": current or "",
                     "content": body[:MAX_SCRIPT_VIEW] + ("\n…（已截断）" if truncated else "")})
     return out
 
@@ -2445,6 +2466,24 @@ def propose_tool(raw, author="web"):
     来自 server 的发现，都不能申请。措辞用表单上的栏目名，而不是配置文件里的字段名。
     """
     raw = raw if isinstance(raw, dict) else {}
+    spec = _check_proposal(raw)
+    with _pending_lock:
+        entries = list_pending()
+        if any((item.get("tool") or {}).get("name") == spec["name"] for item in entries):
+            raise ConfigError(f"已有同名待审申请：{spec['name']}")
+        if len(entries) >= 50:
+            raise ConfigError("待审队列已满，请先在宿主机上处理")
+
+        item = {"id": secrets.token_hex(4),
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "author": str(author)[:40], "tool": raw}
+        entries.append(item)
+        _write_yaml(_sibling("pending"), {"pending": entries})
+    return item
+
+
+def _check_proposal(raw):
+    """一条申请的全部校验（不入队）：通过返回 spec，不通过抛 ConfigError（措辞面向表单）。"""
     name = str(raw.get("name", "")).strip()
     if not TOOL_NAME.match(name):
         raise ConfigError(
@@ -2487,26 +2526,14 @@ def propose_tool(raw, author="web"):
         raise ConfigError(_form_wording(str(exc), name)) from None
     if spec["name"] in tools:
         raise ConfigError(f"已存在同名工具：{spec['name']}")
-    with _pending_lock:
-        entries = list_pending()
-        if any((item.get("tool") or {}).get("name") == spec["name"] for item in entries):
-            raise ConfigError(f"已有同名待审申请：{spec['name']}")
-        if len(entries) >= 50:
-            raise ConfigError("待审队列已满，请先在宿主机上处理")
-
-        item = {"id": secrets.token_hex(4),
-                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "author": str(author)[:40], "tool": raw}
-        entries.append(item)
-        _write_yaml(_sibling("pending"), {"pending": entries})
-    return item
+    return spec
 
 
 def _find_pending(ident):
     for item in list_pending():
         if item.get("id") == ident or (item.get("tool") or {}).get("name") == ident:
             return item
-    raise ConfigError(f"找不到待审申请：{ident}")
+    raise NotFound(f"找不到待审申请：{ident}")
 
 
 def drop_pending(ident):
@@ -2517,8 +2544,8 @@ def drop_pending(ident):
     return item
 
 
-def approve_pending(ident, attest_readonly=False):
-    """Approve a pending proposal. Only runs on the host.
+def approve_pending(ident, attest_readonly=False, script_sha256=None):
+    """Approve a pending proposal. 命令行和页面审批（核对过审批口令之后）都走这里。
 
     MCP 条目走另一条路：写进 ops_tools.mcp.yaml（同名替换），并且必须有只读依据——
     server 声明了 readOnlyHint，或者审批人加 --attest-readonly 亲口确认。
@@ -2527,6 +2554,8 @@ def approve_pending(ident, attest_readonly=False):
     其余内容一个字节都不动。写之前用和服务同一套加载逻辑加载插入后的内容，必须正好多出这一个工具、
     别的都不变（见 _check_insertion）；认不出写法或验证不过就不写，申请留在待审。写入是原子的，
     保留属主和权限，写之前在同一目录留一份带时间戳的备份（见 _replace_config）。写成了才删待审。
+
+    script_sha256：页面审批时审阅的那一份脚本的哈希；现在的内容对不上就不批（Conflict）。命令行不给，登记此刻的内容。
     """
     item = _find_pending(ident)
     spec = _check_tool(item.get("tool") or {})  # 再校验一次，文件可能被改过
@@ -2551,7 +2580,7 @@ def approve_pending(ident, attest_readonly=False):
     try:
         if script:
             # 批准脚本 = 认可此刻的脚本内容，把它的哈希登记为可信（没写成主配置就恢复原来的登记）。
-            trust_script(spec["script"])
+            trust_script(spec["script"], expected=script_sha256)
         _check_insertion(path, new_text, before, spec["name"])
         backup = _replace_config(path, original, new_text.encode("utf-8"))
     except BaseException:
@@ -2691,7 +2720,7 @@ def _replace_config(path, original, data):
     real = os.path.realpath(path)
     with open(real, "rb") as handle:
         if handle.read() != original:
-            raise ConfigError("主配置在批准过程中被改过：没有改主配置，申请仍在待审，请重新执行")
+            raise Conflict("主配置在批准过程中被改过：没有改主配置，申请仍在待审，请重新执行")
     info = os.stat(real)
     stamp = time.strftime("%Y%m%d%H%M%S")
     backup, serial = f"{real}.bak-{stamp}", 1
@@ -2775,6 +2804,729 @@ def _approve_mcp(item, spec, attest_readonly):
     drop_pending(item["id"])
     refresh(force=True)
     return _check_tool(raw)
+
+
+# ---- 页面审批：审批口令 ----------------------------------------------------------------------------------------
+# 页面上批准工具申请、重新确认脚本，都要另输一个审批口令。它和网页登录密码无关：只能由宿主机 root 用命令行设置
+# （set-approval-passphrase），只以加盐的慢哈希存在 root 才能读的文件里，只在这里核对——应用只转交口令，
+# 不保存、不记录，也判断不了对错。网页密码泄露、应用被攻破，都加不了工具。
+# 连续输错 APPROVAL_FAILURES 次锁定 APPROVAL_LOCK 秒，所有要口令的入口（批准、重新确认脚本、提交并立即批准）共用一个计数；
+# 锁在内存里，重启工具服务清零。命令行审批不经过口令，也不受锁定影响：能在宿主机上跑命令的本来就是 root。
+
+APPROVAL_FILE = "/etc/ops-readonly/approval.hash"
+APPROVAL_OWNER = 0                       # 口令文件必须属于这个 uid（root）
+APPROVAL_MIN, APPROVAL_MAX = 12, 1024    # 口令的长度（字符）
+APPROVAL_FAILURES = 5
+APPROVAL_LOCK = 15 * 60
+# 慢哈希：scrypt 取 OWASP 建议的组合之一（N=2^14、r=8、p=5，约 16 MB 内存）；没有 scrypt 的 Python 退回 PBKDF2
+SCRYPT_PARAMS = {"n": 2 ** 14, "r": 8, "p": 5}
+PBKDF2_ITERATIONS = 600000
+_approval = {"failures": 0, "locked_until": 0.0, "logged": None}
+_approval_lock = threading.Lock()        # 核对串行：并发的请求也只能一个一个试，锁定前最多试 APPROVAL_FAILURES 次
+
+
+def _approval_path():
+    return os.environ.get("OPS_APPROVAL_FILE") or APPROVAL_FILE
+
+
+def _cli_command(*words):
+    """页面上给的宿主机命令。容器里跑的部署在 OPS_CLI 里写好前缀（docker exec -it <容器> python …）；
+    不写就按本文件的位置拼，配置文件不在默认位置时带上 --config。"""
+    prefix = " ".join(os.environ.get("OPS_CLI", "").split())
+    if not prefix:
+        prefix = f"python3 {Path(__file__).resolve()}"
+        config = Path(_state["path"]).resolve()
+        if config != DEFAULT_CONFIG:
+            prefix += f" --config {shlex.quote(str(config))}"
+    return " ".join([prefix] + [shlex.quote(str(word)) for word in words])
+
+
+def _approval_record(data):
+    """口令文件的内容 → 记录。认不出的写法、超出范围的参数（一个文件就能让核对吃光内存或算上几分钟）抛 ValueError。"""
+    if len(data) > 4096:
+        raise ValueError("文件太大")
+    record = json.loads(data.decode("utf-8"))
+    if not isinstance(record, dict):
+        raise ValueError("不是 JSON 对象")
+    salt, digest = bytes.fromhex(str(record.get("salt", ""))), bytes.fromhex(str(record.get("hash", "")))
+    if not 16 <= len(salt) <= 64 or len(digest) != 32:
+        raise ValueError("salt 或 hash 的长度不对")
+    numbers = lambda *keys: all(isinstance(record.get(k), int) and not isinstance(record.get(k), bool) for k in keys)
+    algo = record.get("algo")
+    if algo == "scrypt":
+        if not numbers("n", "r", "p"):
+            raise ValueError("scrypt 的参数不是整数")
+        n, r, p = record["n"], record["r"], record["p"]
+        if not (2 ** 14 <= n <= 2 ** 20 and n & (n - 1) == 0 and 1 <= r <= 16 and 1 <= p <= 16
+                and 128 * r * n <= 256 * 1024 * 1024):
+            raise ValueError("scrypt 的参数超出范围")
+        return {"algo": algo, "n": n, "r": r, "p": p, "salt": salt, "hash": digest}
+    if algo == "pbkdf2_sha256":
+        if not numbers("iterations") or not 100000 <= record["iterations"] <= 10000000:
+            raise ValueError("PBKDF2 的迭代次数超出范围")
+        return {"algo": algo, "iterations": record["iterations"], "salt": salt, "hash": digest}
+    raise ValueError(f"不认识的算法 {str(algo)[:20]}")
+
+
+def _read_approval():
+    """(记录, 问题)。没设口令：(None, "")；文件不满足要求：(None, 原因)——当作没设口令，原因写日志、给页面看。
+
+    和 vendor/、白名单一样把关：必须是普通文件（不能是符号链接）、属于 root、组和其他用户不能读写。
+    不然别人能换掉它（等于自己设一个口令），或者读到哈希拿去离线猜。"""
+    path = _approval_path()
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None, ""
+    except OSError as exc:
+        return None, f"口令文件 {path} 读不了（{exc.strerror or exc}）：页面审批不可用，命令行审批照常"
+    problem = ""
+    if not stat.S_ISREG(info.st_mode):
+        problem = "不是普通文件（也不能是符号链接）"
+    elif os.name == "posix" and info.st_uid != APPROVAL_OWNER:
+        problem = "不属于 root"
+    elif os.name == "posix" and info.st_mode & 0o077:
+        problem = f"组或其他用户可以读写（{oct(info.st_mode & 0o777)}），要 chmod 600"
+    else:
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+            with os.fdopen(os.open(path, flags), "rb") as handle:
+                opened = os.fstat(handle.fileno())
+                data = handle.read(4097)
+            if os.name == "posix" and (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                problem = "在检查之后被换掉了"
+            else:
+                return _approval_record(data), ""
+        except OSError as exc:
+            problem = f"读不了（{exc.strerror or exc}）"
+        except ValueError as exc:     # 含 JSON、UTF-8 解码错误
+            problem = f"的内容不是有效的口令记录（{exc}），用 set-approval-passphrase 重新设置"
+    return None, f"口令文件 {path} {problem}：页面审批不可用，命令行审批照常"
+
+
+def _approval_state():
+    record, problem = _read_approval()
+    if problem != _approval["logged"]:
+        _approval["logged"] = problem
+        if problem:
+            print(f"[approval] {problem}", flush=True)
+    return record, problem
+
+
+def _lock_minutes_left():
+    left = _approval["locked_until"] - time.time()
+    return max(1, int((left + 59) // 60)) if left > 0 else 0
+
+
+def approval_status():
+    """页面要的：设没设、锁没锁、还有几分钟解锁，文件不满足要求时的原因。不含哈希、盐和算法参数。"""
+    record, problem = _approval_state()
+    minutes = _lock_minutes_left()
+    return {"configured": record is not None, "locked": minutes > 0, "unlock_minutes": minutes,
+            "problem": problem, "max_failures": APPROVAL_FAILURES, "lock_minutes": APPROVAL_LOCK // 60,
+            "command": _cli_command("set-approval-passphrase")}
+
+
+def _derive(record, passphrase):
+    secret = passphrase.encode("utf-8")
+    if record["algo"] == "scrypt":
+        n, r, p = record["n"], record["r"], record["p"]
+        return hashlib.scrypt(secret, salt=record["salt"], n=n, r=r, p=p, dklen=32,
+                              maxmem=128 * r * (n + p + 2) + (1 << 20))
+    return hashlib.pbkdf2_hmac("sha256", secret, record["salt"], record["iterations"], dklen=32)
+
+
+def new_approval_record(passphrase):
+    salt = secrets.token_bytes(16)
+    params = {"algo": "scrypt", **SCRYPT_PARAMS} if hasattr(hashlib, "scrypt") else \
+        {"algo": "pbkdf2_sha256", "iterations": PBKDF2_ITERATIONS}
+    digest = _derive({**params, "salt": salt}, passphrase)
+    return {**params, "salt": salt.hex(), "hash": digest.hex(), "set_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+
+
+class ApprovalRefused(Exception):
+    """页面审批没过口令这一关（没设口令、锁定中、口令不对）：status 是给页面的 HTTP 状态码。"""
+
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+
+
+def _approval_log(action, target, result, caller):
+    print(f"[approval] {action} {target}：{result} caller={_caller(caller) or '-'}", flush=True)
+
+
+def check_passphrase(passphrase, action, target, caller=""):
+    """页面审批的口令核对：对了返回，不对抛 ApprovalRefused。每次尝试记一行日志，只记结果和来源，不记口令。"""
+    if not isinstance(passphrase, str) or not passphrase:
+        raise ApprovalRefused(400, "没有输入审批口令")
+    record, problem = _approval_state()
+    if record is None:
+        reason = problem or "还没有设置审批口令"
+        _approval_log(action, target, f"没有核对（{reason}）", caller)
+        raise ApprovalRefused(409, f"{reason}。在宿主机上执行 {_cli_command('set-approval-passphrase')} 设置；"
+                                   f"设置之前命令行审批照常可用")
+    with _approval_lock:
+        minutes = _lock_minutes_left()
+        if minutes:
+            _approval_log(action, target, f"没有核对（锁定中，{minutes} 分钟后解锁）", caller)
+            raise ApprovalRefused(423, f"审批口令连续输错 {APPROVAL_FAILURES} 次，页面审批已锁定，{minutes} 分钟后解锁；"
+                                       f"宿主机上的命令行审批不受影响")
+        try:
+            ok = len(passphrase) <= APPROVAL_MAX and secrets.compare_digest(_derive(record, passphrase), record["hash"])
+        except UnicodeEncodeError:
+            ok = False
+        except (ValueError, MemoryError, AttributeError) as exc:
+            _approval_log(action, target, f"没有核对（{exc.__class__.__name__}）", caller)
+            raise ApprovalRefused(409, f"这台机器核对不了审批口令（{exc.__class__.__name__}: {exc}）：用 "
+                                       f"set-approval-passphrase 重新设置；命令行审批照常可用") from None
+        if ok:
+            _approval.update(failures=0, locked_until=0.0)
+            _approval_log(action, target, "口令正确", caller)
+            return
+        _approval["failures"] += 1
+        failures = _approval["failures"]
+        if failures >= APPROVAL_FAILURES:
+            _approval.update(failures=0, locked_until=time.time() + APPROVAL_LOCK)
+            _approval_log(action, target, f"口令错误（连续第 {failures} 次），页面审批锁定 {APPROVAL_LOCK // 60} 分钟", caller)
+            raise ApprovalRefused(423, f"审批口令连续输错 {APPROVAL_FAILURES} 次，页面审批锁定 {APPROVAL_LOCK // 60} 分钟；"
+                                       f"宿主机上的命令行审批不受影响")
+        _approval_log(action, target, f"口令错误（连续第 {failures} 次）", caller)
+        raise ApprovalRefused(403, f"审批口令不对，还能再试 {APPROVAL_FAILURES - failures} 次")
+
+
+def _write_private(path, text):
+    """原子写一个只有属主能读写的文件（0600）：先写同目录的临时文件，再 rename 过去（盖掉同名的符号链接本身，不跟随）。"""
+    folder = os.path.dirname(os.path.abspath(path))
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    temporary = os.path.join(folder, f".{os.path.basename(path)}.{secrets.token_hex(3)}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def set_approval_passphrase():
+    """命令行：设置或重置审批口令。终端里交互输两次、不回显；stdin 不是终端时读一行（方便脚本化）。"""
+    path = _approval_path()
+    if os.name == "posix" and os.geteuid() != APPROVAL_OWNER:
+        print("失败：要用 root 执行——口令文件必须属于 root，工具服务才认", file=sys.stderr)
+        return 1
+    if sys.stdin is not None and sys.stdin.isatty():
+        import getpass
+        first = getpass.getpass(f"新的审批口令（至少 {APPROVAL_MIN} 个字符，不回显）：")
+        if getpass.getpass("再输一次：") != first:
+            print("失败：两次输入不一致，没有改动", file=sys.stderr)
+            return 1
+    else:
+        first = (sys.stdin.readline() if sys.stdin is not None else "").rstrip("\r\n")
+    if len(first) < APPROVAL_MIN:
+        print(f"失败：审批口令至少 {APPROVAL_MIN} 个字符，没有改动", file=sys.stderr)
+        return 1
+    if len(first) > APPROVAL_MAX:
+        print(f"失败：审批口令最多 {APPROVAL_MAX} 个字符，没有改动", file=sys.stderr)
+        return 1
+    _write_private(path, json.dumps(new_approval_record(first)) + "\n")
+    print(f"已设置审批口令：{path}（只存加盐的慢哈希" + ("，属主 root、权限 0600）" if os.name == "posix" else "）"))
+    print(f"页面上批准工具、重新确认脚本时输入它；连续输错 {APPROVAL_FAILURES} 次，页面审批锁定 {APPROVAL_LOCK // 60} 分钟。")
+    print("正在运行的工具服务不用重启：下一次批准就用新口令。不要和网页登录密码相同。")
+    return 0
+
+
+# ---- 页面审批：待审申请的完整内容和风险提示 --------------------------------------------------------------------
+# 给审批人看的：会执行什么（argv、脚本全文、SQL、接口、MCP 工具）、参数的格式、批准后在哪些主机上可用、内部还是外部，
+# 以及自动检测出的风险。风险提示只是提醒，拦截仍是校验器的事；没检测出问题不等于没有风险，页面上说「没有检测到风险」。
+
+KIND_LABELS = {"command": "命令型", "script": "脚本型", "http": "接口型", "sql": "SQL", "mcp": "MCP", "builtin": "内置"}
+# 读这些位置等于把凭据交给模型：模型 key、k8s 管理员凭据、私钥、工具服务自己的环境文件和审批口令
+SENSITIVE_PATH = re.compile(
+    r"(^|/)(shadow|gshadow|sudoers|\.ssh|id_rsa|id_ecdsa|id_ed25519|authorized_keys|\.kube|kubeconfig|k3s\.yaml|"
+    r"admin\.conf|\.env|[^/]*\.pem|[^/]*\.key|ops-readonly[^/]*|credentials?|secrets?|environ|\.netrc|\.pgpass|"
+    r"\.docker|approval\.hash)($|/)|^/root(/|$)|^/etc/(rancher|kubernetes|ssh)(/|$)|^/var/lib/(rancher|kubelet)(/|$)")
+ROOT_ONLY_PATHS = ("/var/log/", "/etc/", "/root", "/var/lib/", "/proc/", "/opt/", "/srv/", "/home/")
+READ_BINARIES = {"cat", "head", "tail", "less", "more", "zcat", "strings", "xxd", "od", "hexdump", "base64", "ls",
+                 "stat", "file", "wc", "sort", "uniq", "tac", "nl", "cut", "md5sum", "sha256sum"}
+SCRIPT_NET = {"curl", "wget", "nc", "ncat", "netcat", "socat", "ssh", "scp", "sftp", "rsync", "ftp", "telnet",
+              "aria2c", "http", "openssl"}
+SCRIPT_WRITE = {"rm", "rmdir", "mv", "cp", "dd", "tee", "chmod", "chown", "chgrp", "kill", "pkill", "killall",
+                "reboot", "shutdown", "poweroff", "halt", "truncate", "shred", "mkfs", "fdisk", "parted", "useradd",
+                "userdel", "usermod", "groupadd", "passwd", "chpasswd", "crontab", "mkdir", "touch", "ln", "install",
+                "systemctl", "service", "iptables", "nft", "mount", "umount", "apt", "apt-get", "yum", "dnf", "pip",
+                "pip3", "npm"}
+SCRIPT_EVAL = {"python", "python2", "python3", "perl", "ruby", "node", "php", "lua", "bash", "sh", "dash", "zsh",
+               "eval", "source", ".", "exec"}
+SHELL_WORDS = {"if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "in",
+               "function", "return", "local", "export", "readonly", "declare", "set", "unset", "shift", "true",
+               "false", "break", "continue", "exit", "echo", "printf", "read", "test", "[", "[[", "{", "}", "!",
+               "time", "trap", "wait", "cd", "pwd", "sleep"}
+# 显示和执行可能不一样的字符：双向文本控制符（Trojan Source）、零宽字符、除 \t \n \r 以外的控制字符
+HIDDEN_CHARS = re.compile("[\u202a-\u202e\u2066-\u2069\u200b-\u200f\ufeff\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_SCRIPT_SPLIT = re.compile(r"\|\||&&|\$\(|[|;&`()]")
+_REDIRECT = re.compile(r"(?:^|[^<>&\d])\d?&?>>?\s*([^\s;&|<>()]+)")
+PAGE_SCRIPT_MAX = 64 * 1024      # 页面上能审的脚本最大多少字节：再大就显示不全，只能在宿主机上看着批
+
+
+def _risk(level, title, text):
+    return {"level": level, "title": title, "text": text}
+
+
+def _service_account():
+    if os.name == "posix":
+        try:
+            import pwd
+            return pwd.getpwuid(os.geteuid()).pw_name
+        except (ImportError, KeyError):
+            return f"uid {os.geteuid()}"
+    return os.environ.get("USERNAME") or "当前账号"
+
+
+def _path_risks(paths, risks, quiet=False):
+    """写死的文件路径：通常放凭据的位置是高风险；root 才能读的目录要注意；别的提醒一句。
+    quiet（脚本）只报放凭据的位置：脚本里路径太多，「能做任何事」那条已经提醒过了。"""
+    for path in dict.fromkeys(paths):
+        if SENSITIVE_PATH.search(path):
+            risks.append(_risk("high", "读的位置通常放着凭据",
+                               f"{path}：这类位置放着模型 key、k8s 管理员凭据、私钥之类的东西。工具服务以 {_service_account()} "
+                               f"运行，批准后模型随时能把它读出来。"))
+        elif quiet:
+            continue
+        elif path.startswith(ROOT_ONLY_PATHS):
+            risks.append(_risk("warn", "写死了文件路径",
+                               f"{path}：工具服务以 {_service_account()} 运行，普通账号未必读得到这里，批准后模型能随时读它的全部内容。"))
+        else:
+            risks.append(_risk("info", "写死了文件路径", f"{path}：确认这个文件里没有不该给模型看的内容。"))
+
+
+def _argv_paths(argv):
+    out = []
+    for arg in argv:
+        for piece in [arg] + ([arg.split("=", 1)[1]] if "=" in arg else []):
+            if piece.startswith(("/", "~")) or re.match(r"^[A-Za-z]:[\\/]", piece):
+                out.append(piece)
+    return out
+
+
+def _command_risks(spec, risks):
+    argv, binary = spec["argv"], os.path.basename(spec["binary"]).lower()
+    _path_risks(_argv_paths(argv[1:]), risks)
+    holes = {}
+    for index, arg in enumerate(argv):
+        found = PLACEHOLDER.match(arg)
+        if found:
+            holes[index] = found.group(1)
+    if binary in READ_BINARIES:
+        for index, name in holes.items():
+            param = spec["params"].get(name) or {}
+            if param.get("pattern") in ("name", "k8s_name", "resource") and not argv[index - 1].startswith("-"):
+                risks.append(_risk("warn", "参数会被当成文件名",
+                                   f"{binary} 的参数 {{{name}}} 由模型填写：它能用这个参数读工具服务工作目录下"
+                                   f"任何名字符合格式的文件。"))
+    if binary == "printenv":
+        risks.append(_risk("high", "会输出工具服务的环境变量",
+                           "工具服务的环境变量里有 OPS_TOKEN 和各个 OPS_SECRET_* 凭据，批准后模型能把它们读出来。"))
+    if binary == "docker" and "inspect" in argv:
+        risks.append(_risk("warn", "docker inspect 会输出容器的环境变量",
+                           "容器的环境变量里常放着密钥和数据库密码，结果会原样给模型看。"))
+    if binary == "kubectl":
+        if any(arg in ("secret", "secrets") or arg.startswith(("secret/", "secrets/")) for arg in argv):
+            risks.append(_risk("high", "会读 k8s 的 secret", "secret 里是密钥和证书，批准后模型能把它们读出来。"))
+        for index, name in holes.items():
+            if index > 0 and argv[index - 1] in ("get", "describe"):
+                risks.append(_risk("high", "模型能决定查哪类资源",
+                                   f"{{{name}}} 跟在 {argv[index - 1]} 后面：模型可以填 secrets，读出 k8s 里的密钥。"
+                                   f"把资源类型写死在命令里。"))
+
+
+def _script_commands(code_lines):
+    """脚本里用到的命令（每段管道、每个 ; && || $( 之后的第一个词），按第一次出现的顺序。只是辅助，不是解析器。"""
+    found = []
+    for line in code_lines:
+        for segment in _SCRIPT_SPLIT.split(line):
+            words = segment.split()
+            while words and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0])
+                             or words[0] in ("then", "do", "else", "elif", "if", "while", "until", "!", "time",
+                                             "{", "sudo", "nohup", "command", "builtin")):
+                words = words[1:]
+            if words:
+                word = os.path.basename(words[0].strip("\"'"))
+                if word and word not in found:
+                    found.append(word)
+    return found
+
+
+def _script_review(content, size):
+    """脚本型的摘要和风险：行数、用到的命令、联网和写操作的检测。脚本以工具服务的账号运行、能做任何事，所以总有一条注意。"""
+    lines = content.splitlines()
+    code = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            code.append(re.sub(r"(^|\s)#.*$", "", line))
+    commands = _script_commands(code)
+    used = set(commands)
+    joined = "\n".join(code)
+    net = sorted(used & SCRIPT_NET) + (["/dev/tcp"] if re.search(r"/dev/(tcp|udp)/", joined) else [])
+    writes = sorted(used & SCRIPT_WRITE)
+    if re.search(r"\bsed\s+(-[A-Za-z]*i|--in-place)", joined):
+        writes.append("sed -i")
+    for tool in ("kubectl", "docker", "helm", "crictl"):
+        if tool in used and re.search(rf"\b{tool}\b[^\n|;&]*\b({'|'.join(map(re.escape, sorted(FORBIDDEN)))})\b", joined):
+            writes.append(f"{tool} 的写操作")
+    targets = [m.group(1) for line in code for m in _REDIRECT.finditer(line)
+               if not m.group(1).startswith("&") and m.group(1) not in ("/dev/null", "/dev/stdout", "/dev/stderr")]
+    if targets:
+        writes.append("重定向写文件 " + "、".join(dict.fromkeys(targets[:3])))
+    evals = sorted(used & SCRIPT_EVAL)
+    summary = {"lines": len(lines), "code_lines": len(code), "commands": [c for c in commands if c not in SHELL_WORDS][:20],
+               "network": net, "writes": writes}
+    risks = [_risk("warn", "注意：脚本可以执行任意命令，请逐行看内容",
+                   f"脚本以工具服务的账号（{_service_account()}）执行，不受命令型工具的限制：能用 shell、管道和解释器，"
+                   f"能做这个账号能做的任何事。下面的检测只是辅助，可能漏报。")]
+    risks.append(_risk("info", "脚本摘要",
+                       f"{len(lines)} 行（去掉空行和注释 {len(code)} 行）；用到的命令："
+                       f"{'、'.join(summary['commands']) or '没有识别出'}；"
+                       + (f"联网：{'、'.join(net)}" if net else "没有检测到联网的命令") + "；"
+                       + (f"写操作：{'、'.join(writes)}" if writes else "没有检测到写操作")))
+    if HIDDEN_CHARS.search(content):
+        risks.append(_risk("high", "脚本里有不可见的控制字符",
+                           "双向文本控制符、零宽字符这类字符能让显示出来的内容和实际执行的不一样。用宿主机上的编辑器查清楚再批。"))
+    if size > PAGE_SCRIPT_MAX:
+        risks.append(_risk("high", "脚本太长，页面上显示不全",
+                           f"脚本有 {size} 字节，页面只显示前 {PAGE_SCRIPT_MAX} 字节：页面上不能批准，请在宿主机上逐行看过后用命令行批准。"))
+    if writes:
+        risks.append(_risk("high", "脚本里有写操作", f"检测到 {'、'.join(writes)}：工具只该读，确认它不会改任何东西。"))
+    if net:
+        risks.append(_risk("warn", "脚本会访问网络", f"检测到 {'、'.join(net)}：确认它连的是哪里、会不会把数据发出去。"))
+    if evals:
+        risks.append(_risk("warn", "脚本里调用了解释器或 eval",
+                           f"用到了 {'、'.join(evals)}：这一部分实际执行什么，要单独看清楚。"))
+    paths = re.findall(r"(?<![\w$/.-])((?:/|~/)[\w.@+-]+(?:/[\w.@*+-]+)*)", joined)
+    _path_risks(paths, risks, quiet=True)
+    return summary, risks
+
+
+def _read_script(path):
+    """(内容, 字节数, sha256)。页面最多看 PAGE_SCRIPT_MAX 字节；哈希按整个文件算。"""
+    size = os.path.getsize(path)
+    with open(path, "rb") as handle:
+        head = handle.read(PAGE_SCRIPT_MAX)
+    return head.decode("utf-8", errors="replace"), size, _hash_file(path)
+
+
+def _sql_risks(spec, risks):
+    query = spec["sql"]["query"]
+    if re.search(r"\bselect\s+(\w+\.)?\*", query, re.I):
+        risks.append(_risk("warn", "SELECT *", "会返回表里的所有列，包括以后新加的列。"))
+    if re.search(r"\b(users?|accounts?|passwords?|passwd|tokens?|secrets?|credentials?|api_?keys?|sessions?)\b", query, re.I):
+        risks.append(_risk("warn", "查询涉及账号或凭据", "确认结果里不会带出密码、令牌这类字段。"))
+    risks.append(_risk("info", "只读的三层保护",
+                       "连接应当用只读账号；工具服务用只读事务执行，限制超时和行数；参数由数据库驱动绑定，不拼进 SQL。"))
+
+
+def _http_risks(spec, risks, external):
+    connection = spec.get("connection") or {}
+    if connection and (connection.get("bearer") or connection.get("bearer_file") or connection.get("headers")):
+        risks.append(_risk("info", f"会带上连接 {connection['name']} 的凭据",
+                           "请求发往这个连接的地址，带着管理员配好的凭据；凭据的值不经过页面，也不会给模型看。"))
+    base = str(connection.get("base") or spec["http"].get("url") or "")
+    if external and base.startswith("http://"):
+        risks.append(_risk("warn", "明文 HTTP", "请求经公网明文传输，参数和返回都可能被途中看到。"))
+
+
+def _mcp_risks(item, spec, server, risks):
+    review = item.get("review") or {}
+    if not spec["readonly_declared"]:
+        risks.append(_risk("high", "server 没有声明只读",
+                           "这个工具没有 readOnlyHint。批准就表示你确认过它不改任何东西：页面上要勾选确认，命令行要加 --attest-readonly。"))
+    if review.get("suspicious_name"):
+        risks.append(_risk("warn", "名字像写操作", f"{spec['mcp']['tool']} 的名字里有写操作的词。"))
+    if review.get("reason") and review["reason"] != "新发现":
+        risks.append(_risk("warn", review["reason"], "server 改了这个工具的参数形状，要重新看一遍。"))
+    if server and not server.get("url"):
+        risks.append(_risk("info", "本机子进程", f"MCP server {spec['mcp']['server']} 是工具服务在本机拉起的子进程，"
+                                                 f"以工具服务的账号运行。"))
+
+
+def _params_view(spec):
+    out = []
+    for key, param in (spec.get("params") or {}).items():
+        regex = PATTERNS.get(param.get("pattern"))
+        out.append({"name": key, "type": param.get("type", "str"), "pattern": param.get("pattern", ""),
+                    "regex": regex.pattern if regex else "", "required": bool(param.get("required")),
+                    "default": param.get("default"), "min": param.get("min"), "max": param.get("max"),
+                    "desc": param.get("desc", ""), "enum": param.get("enum")})
+    return out
+
+
+def _schema_params_view(schema):
+    required = set(str(key) for key in (schema.get("required") or []))
+    out = []
+    for key, prop in (schema.get("properties") or {}).items():
+        if not isinstance(prop, dict):
+            continue
+        kind = prop.get("type")
+        scalar = lambda value: value if isinstance(value, (str, int, float, bool)) else None
+        out.append({"name": str(key), "type": "/".join(map(str, kind)) if isinstance(kind, list) else str(kind or ""),
+                    "format": str(prop.get("format") or ""), "required": str(key) in required,
+                    "desc": str(prop.get("description") or prop.get("title") or "")[:300],
+                    "min": scalar(prop.get("minimum")), "max": scalar(prop.get("maximum")),
+                    "default": scalar(prop.get("default")),
+                    "enum": [v for v in prop["enum"] if scalar(v) is not None] if isinstance(prop.get("enum"), list) else None})
+    return out
+
+
+def _review_hosts(spec, kind):
+    """批准后在哪些主机上可用（只看配置，不连主机）。没配主机清单时就是本机。"""
+    cfg = _hosts()
+    local_ok = kind == "script" or bool(shutil.which(spec["binary"]))
+    if cfg is None:
+        reason = _not_here(spec) or ("" if local_ok else f"本机没有 {spec['binary']}")
+        return [{"name": "本机", "via": "local", "mode": "", "ok": not reason, "reason": reason, "push": False}]
+    out = []
+    for name, host in cfg["hosts"].items():
+        ok, reason = _applicable(spec, host)
+        if ok and kind == "script" and host["via"] != "local":
+            ok, reason = False, "脚本型工具只在本机跑"
+        if ok and host["via"] == "local" and not local_ok:
+            ok, reason = False, f"本机没有 {spec['binary']}"
+        push = ok and host["via"] == "ssh" and host.get("mode", "guarded") == "guarded"
+        out.append({"name": name, "via": host["via"], "mode": host.get("mode", ""), "ok": ok, "reason": reason,
+                    "push": push})
+    return out
+
+
+LEVELS = {"high": 0, "warn": 1, "info": 2}
+
+
+def _safe_review(item):
+    """review_pending，但一条手改坏了的申请不能让整个列表出不来。"""
+    try:
+        return review_pending(item)
+    except Exception as exc:
+        reason = f"这条申请读不懂（{exc.__class__.__name__}: {exc}）"
+        return {"kind": "", "kind_label": "未知", "invalid": reason, "params": [], "os": [], "groups": [],
+                "hosts": [], "external": False, "external_why": "", "source": "web",
+                "cli": _cli_command("reject", item.get("id", "")) if isinstance(item, dict) else "",
+                "risks": [_risk("high", "现在批不了", reason)]}
+
+
+def review_pending(item):
+    """一条待审申请给审批人看的全部内容：会执行什么、参数、在哪里跑、内部还是外部、风险提示。"""
+    tool = item.get("tool") or {}
+    kind = _proposal_kind(tool)
+    out = {"kind": kind, "kind_label": KIND_LABELS.get(kind, kind or "未知"), "risks": [], "params": [], "os": [],
+           "groups": [], "hosts": [], "external": False, "external_why": "",
+           "source": "mcp" if str(item.get("author", "")).startswith("mcp:") else "web",
+           "cli": _cli_command("approve", item.get("id", ""))}
+    risks = out["risks"]
+    try:
+        spec = _bind_connection(_check_tool(tool), _state.get("connections", {}))
+    except ConfigError as exc:
+        out["invalid"] = str(exc)
+        risks.append(_risk("high", "现在批不了", str(exc)))
+        return out
+    kind = out["kind"] = spec["type"]
+    out["kind_label"] = KIND_LABELS.get(kind, kind)
+    out["os"], out["groups"] = list(spec.get("os") or []), list(spec.get("groups") or [])
+    servers = _state.get("mcp_servers") or {}
+    external, why = _tool_external(spec, servers)
+    out["external"], out["external_why"] = bool(external), why
+    if kind == "command":
+        out["argv"], out["binary"] = list(spec["argv"]), spec["binary"]
+        _command_risks(spec, risks)
+    elif kind == "script":
+        try:
+            content, size, digest = _read_script(_scripts_dir() / spec["script"])
+        except OSError as exc:
+            out["invalid"] = f"读不了脚本 {spec['script']}（{exc.strerror or exc}）"
+            risks.append(_risk("high", "现在批不了", out["invalid"]))
+            return out
+        summary, found = _script_review(content, size)
+        out["script"] = {"name": spec["script"], "path": str(_scripts_dir() / spec["script"]), "sha256": digest,
+                         "size": size, "content": content, "too_long": size > PAGE_SCRIPT_MAX, **summary}
+        risks.extend(found)
+        risks.append(_risk("info", "批准的是这一份内容",
+                           f"批准时登记脚本此刻的哈希 sha256:{digest[:12]}…；之后内容一变，工具自动停用，要重新确认。"))
+    elif kind == "http":
+        out["display"] = _http_display(spec)
+        _http_risks(spec, risks, external)
+    elif kind == "sql":
+        out["sql"] = {"query": spec["sql"]["query"], "conn": spec["sql"]["conn"], "max_rows": spec["sql"]["max_rows"],
+                      "db": (spec.get("connection") or {}).get("type", "")}
+        _sql_risks(spec, risks)
+    elif kind == "mcp":
+        server = servers.get(spec["mcp"]["server"]) or {}
+        out["mcp"] = {"server": spec["mcp"]["server"], "tool": spec["mcp"]["tool"],
+                      "server_label": server.get("label") or spec["mcp"]["server"],
+                      "transport": "http" if server.get("url") else "stdio",
+                      "input_schema": spec["input_schema"], "readonly_declared": spec["readonly_declared"],
+                      "reason": (item.get("review") or {}).get("reason", "")}
+        _mcp_risks(item, spec, server, risks)
+    out["params"] = _schema_params_view(spec["input_schema"]) if kind == "mcp" else _params_view(spec)
+    if external:
+        risks.append(_risk("warn", "外部", f"{why}：调用时参数会发到组织外面，返回标成外部资料。"))
+    if kind in ("command", "script"):
+        out["hosts"] = _review_hosts(spec, kind)
+        if not any(host["ok"] for host in out["hosts"]):
+            risks.append(_risk("info", "暂时没有能跑它的主机", "批准后不会出现在可用工具里，要先调整主机清单或适用系统。"))
+        if any(host["push"] for host in out["hosts"]):
+            risks.append(_risk("info", "远程主机要 push",
+                               f"受控模式的主机要等管理员在宿主机上 push 白名单后才能跑：{_cli_command('push', '--target', '<主机>')}"))
+    risks.sort(key=lambda risk: LEVELS[risk["level"]])
+    return out
+
+
+def list_held():
+    """引用了脚本、但脚本还没确认过或者内容和登记的哈希对不上的工具：页面上可以重新确认（要审批口令）。
+
+    加载时就被挡下的记在 _state["held"]；加载之后脚本才被改的，工具还在列表里（执行时会被拦），这里按现在的内容再算一遍。"""
+    tools = all_tools()
+    trusted = load_trust()
+    candidates = list(_state.get("held") or [])
+    candidates += [{"tool": name, "label": spec.get("label", ""), "script": spec["script"]}
+                   for name, spec in tools.items() if spec.get("type") == "script"]
+    out, seen = [], set()
+    for entry in candidates:
+        if (entry["tool"], entry["script"]) in seen:
+            continue
+        seen.add((entry["tool"], entry["script"]))
+        try:
+            content, size, digest = _read_script(_scripts_dir() / entry["script"])
+        except OSError:
+            continue   # 脚本没了：工具本来就加载不了，页面上也没有可确认的内容
+        expected = trusted.get(entry["script"])
+        if expected == digest:
+            continue
+        summary, risks = _script_review(content, size)
+        risks.insert(1, _risk("warn", "内容和登记的不一样" if expected else "还没确认过",
+                              "可能是有人按计划改了脚本，也可能是被人偷换：逐行看过、确认是预期的改动再重新确认；"
+                              "认不出这个改动就先去宿主机上查。" if expected else
+                              "这个脚本还没登记过哈希，引用它的工具暂不生效。"))
+        out.append({**entry, "state": "changed" if expected else "untrusted", "sha256": digest,
+                    "trusted_sha256": expected or "", "size": size, "content": content,
+                    "too_long": size > PAGE_SCRIPT_MAX, **summary,
+                    "risks": sorted(risks, key=lambda risk: LEVELS[risk["level"]]),
+                    "cli": _cli_command("trust", entry["script"])})
+    return out
+
+
+# ---- 页面审批：批准、拒绝、重新确认脚本、提交并立即批准 ----------------------------------------------------------
+# 都由应用转交（X-Ops-Token 之后），caller 是应用带来的「谁、从哪里」，只进日志。顺序固定：先查请求本身（申请在不在、
+# MCP 有没有确认只读、脚本是不是审阅的那一份），再核对口令，最后走和命令行同一个 approve_pending / trust_script。
+# 请求本身不对时不消耗口令的尝试次数。
+
+_page_lock = threading.Lock()
+
+
+def _check_page_script(script, sha256):
+    """页面审批脚本：带着审阅时看到的哈希，现在的内容要一致；太长的页面上看不全，不在页面上批。"""
+    if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise ConfigError("缺少审阅时看到的脚本哈希（script_sha256）：刷新后重新看一遍脚本内容再批")
+    path = _scripts_dir() / script
+    try:
+        size, digest = os.path.getsize(path), _hash_file(path)
+    except OSError as exc:
+        raise Conflict(f"读不了脚本 {script}（{exc.strerror or exc}）") from None
+    if size > PAGE_SCRIPT_MAX:
+        raise Conflict(f"脚本 {script} 超过 {PAGE_SCRIPT_MAX} 字节，页面上显示不全，不能在页面上批：请在宿主机上逐行看过后用命令行批准")
+    if digest != sha256:
+        raise Conflict(f"脚本 {script} 的内容和你审阅的那一份不一样（刚被改过）：没有批准。刷新后重新看一遍再批")
+
+
+def _approved(spec, kind):
+    return {"tool": {"name": spec["name"], "label": spec.get("label", "")}, "kind": kind,
+            "written": spec.get("written"), "mcp_file": str(_mcp_file()) if kind == "mcp" else "",
+            "total": len(_state["tools"])}
+
+
+def page_approve(payload, caller=""):
+    ident = str(payload.get("id") or "")
+    attest = payload.get("attest_readonly") is True
+    with _page_lock:
+        item = _find_pending(ident)
+        tool = item.get("tool") or {}
+        kind = _proposal_kind(tool)
+        name = str(tool.get("name", ""))
+        sha256 = None
+        if kind == "mcp" and tool.get("readonly_declared") is not True and not attest:
+            raise ConfigError(f"{name} 没有被 server 声明为只读：要明确确认它只读（勾选「我确认这个工具只读」）才能批准")
+        if kind == "script":
+            sha256 = payload.get("script_sha256")
+            _check_page_script(str(_check_tool(tool)["script"]), sha256)
+        check_passphrase(payload.get("passphrase"), "批准", f"{name}（{item['id']}）", caller)
+        try:
+            spec = approve_pending(item["id"], attest_readonly=attest, script_sha256=sha256)
+        except ConfigError as exc:
+            print(f"[approval] 批准 {name}（{item['id']}）没写成：{exc}", flush=True)
+            raise
+    print(f"[approval] 已批准 {name}（{item['id']}）"
+          + (f"，写在 {spec['written']['path']} 第 {spec['written']['line']} 行起" if spec.get("written") else "")
+          + f" caller={_caller(caller) or '-'}", flush=True)
+    return _approved(spec, kind)
+
+
+def page_reject(payload, caller=""):
+    """拒绝不用口令：只是删掉一条申请，什么都不会写进配置。"""
+    with _page_lock:
+        item = drop_pending(str(payload.get("id") or ""))
+    name = (item.get("tool") or {}).get("name")
+    print(f"[approval] 已拒绝 {name}（{item['id']}） caller={_caller(caller) or '-'}", flush=True)
+    return {"rejected": name, "id": item["id"]}
+
+
+def page_trust(payload, caller=""):
+    """重新确认脚本：只能确认被工具引用、正被挡着的脚本（list_held 里的），确认的是审阅时看到的那一份。"""
+    script = str(payload.get("script") or "")
+    with _page_lock:
+        held = [entry for entry in list_held() if entry["script"] == script]
+        if not held:
+            raise NotFound(f"没有要重新确认的脚本 {script[:80]}：它可能已经确认过了")
+        sha256 = payload.get("sha256")
+        _check_page_script(script, sha256)
+        check_passphrase(payload.get("passphrase"), "重新确认脚本", script, caller)
+        digest = trust_script(script, expected=sha256)
+        refresh(force=True)
+    tools = [entry["tool"] for entry in held]
+    print(f"[approval] 已重新确认脚本 {script}（sha256:{digest[:12]}…），引用它的工具：{'、'.join(tools)} "
+          f"caller={_caller(caller) or '-'}", flush=True)
+    return {"script": script, "sha256": digest, "tools": tools,
+            "usable": [name for name in tools if name in _state["tools"]]}
+
+
+def page_propose_approve(payload, caller=""):
+    """提交并立即批准：同一个人申请、同一个人审批。先校验申请、核对口令，都过了才入队并批准；
+    批准没写成时申请留在待审（报错里带着它的编号）。"""
+    raw = payload.get("tool") if isinstance(payload.get("tool"), dict) else {}
+    author = str(payload.get("author") or "web")
+    with _page_lock:
+        spec = _check_proposal(raw)
+        sha256 = None
+        if spec["type"] == "script":
+            sha256 = payload.get("script_sha256")
+            _check_page_script(spec["script"], sha256)
+        check_passphrase(payload.get("passphrase"), "提交并批准", spec["name"], caller)
+        item = propose_tool(raw, author=author)
+        try:
+            approved = approve_pending(item["id"], script_sha256=sha256)
+        except ConfigError as exc:
+            print(f"[approval] 提交并批准 {spec['name']}：已入队 {item['id']}，批准没写成：{exc}", flush=True)
+            error = type(exc)(f"申请已提交（编号 {item['id']}），但没能批准：{exc}")
+            error.pending = item["id"]
+            raise error from None
+    print(f"[approval] 已提交并批准 {spec['name']}（{item['id']}）"
+          + (f"，写在 {approved['written']['path']} 第 {approved['written']['line']} 行起" if approved.get("written") else "")
+          + f" caller={_caller(caller) or '-'}", flush=True)
+    return {**_approved(approved, spec["type"]), "id": item["id"]}
 
 
 def _mcp_tool_name(server_id, raw_name):
@@ -5252,10 +6004,21 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/tools/scripts":
             return self._send(200, {"scripts": list_scripts(),
                                     "directory": str(_scripts_dir())})
+        if self.path == "/tools/approval":
+            return self._send(200, {"approval": approval_status()})
+        if self.path == "/tools/review":
+            # 页面审批要看的全部：待审申请（带完整内容和风险提示）、要重新确认的脚本、审批口令的状态
+            held = list_held()
+            return self._send(200, {"pending": [{**item, "detail": _safe_review(item)} for item in list_pending()],
+                                    "held": held, "approval": approval_status()})
         self._send(404, {"error": "Not found"})
 
+    # 页面审批的写操作：批准、重新确认脚本、提交并立即批准要审批口令（工具服务核对），拒绝不要
+    PAGE_ACTIONS = {"/tools/approve": page_approve, "/tools/reject": page_reject,
+                    "/tools/trust": page_trust, "/tools/propose-approve": page_propose_approve}
+
     def do_POST(self):
-        if self.path not in ("/exec", "/tools/override", "/tools/propose"):
+        if self.path not in ("/exec", "/tools/override", "/tools/propose") and self.path not in self.PAGE_ACTIONS:
             return self._send(404, {"error": "Not found"})
         if not self._authorised():
             return self._send(401, {"error": "令牌无效"})
@@ -5271,6 +6034,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._override(payload)
         if self.path == "/tools/propose":
             return self._propose(payload)
+        if self.path in self.PAGE_ACTIONS:
+            return self._page(self.PAGE_ACTIONS[self.path], payload)
 
         name = payload.get("tool")
         try:
@@ -5301,15 +6066,29 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, {"tool": tool})
 
     def _propose(self, payload):
-        """Queue a proposal. It stays inert until a human approves it on the host."""
+        """Queue a proposal. It stays inert until approved: in the page (approval passphrase) or on the host."""
         try:
             item = propose_tool(payload.get("tool") or {},
                                 author=str(payload.get("author", "web")))
         except ConfigError as exc:
             return self._send(400, {"error": str(exc)})
         print(f"[propose] 收到新工具申请 {item['id']} "
-              f"{(item.get('tool') or {}).get('name')}，待宿主机批准", flush=True)
+              f"{(item.get('tool') or {}).get('name')}，待批准（页面「待审批」或宿主机命令行）", flush=True)
         return self._send(200, {"pending": item, "total": len(list_pending())})
+
+    def _page(self, action, payload):
+        """页面审批的一个动作。错误一律只回人话：口令不会出现在回复和日志里（这里不打印 payload）。"""
+        try:
+            return self._send(200, action(payload, self.headers.get(CALLER_HEADER, "")))
+        except ApprovalRefused as exc:
+            return self._send(exc.status, {"error": str(exc)})
+        except ConfigError as exc:
+            status = 404 if isinstance(exc, NotFound) else 409 if isinstance(exc, Conflict) else 400
+            extra = {"pending": exc.pending} if getattr(exc, "pending", None) else {}
+            return self._send(status, {"error": str(exc), **extra})
+        except Exception as exc:   # 写文件失败之类：回一句话，别把连接直接掐断
+            print(f"[approval] 处理失败：{exc.__class__.__name__}: {exc}", flush=True)
+            return self._send(500, {"error": f"处理失败：{exc.__class__.__name__}: {exc}"})
 
     def log_message(self, *args):
         pass
@@ -5337,6 +6116,8 @@ def _print_pending():
     if not items:
         print("没有待审申请")
         return 0
+    with contextlib.redirect_stdout(io.StringIO()):
+        all_tools()   # 风险提示要用到连接和主机清单；加载时的 [config] 提示这里不打印
     print(f"待审申请 {len(items)} 条：\n")
     for item in items:
         tool = _legacy_view(item.get("tool") or {})
@@ -5378,6 +6159,9 @@ def _print_pending():
             print(f"      参数：{', '.join(params)}")
         if item.get("reason"):
             print(f"      理由：{item['reason']}")
+        for risk in _safe_review(item)["risks"]:
+            if risk["level"] != "info":
+                print(f"      {'[高风险]' if risk['level'] == 'high' else '[注意]'} {risk['title']}：{risk['text']}")
         print()
     print("批准：ops_readonly.py approve <id>     拒绝：ops_readonly.py reject <id>")
     print("批准前请逐字读一遍「命令」、SQL 或脚本内容——这是它唯一会执行的东西。")
@@ -5687,9 +6471,11 @@ def status(group=None, target=None):
 
 
 def _cli(command, ident, config, attest_readonly=False, options=None):
-    """Review proposals from the host. Approving is deliberately not an API."""
+    """宿主机上的命令行。审批不要口令、不受页面审批的锁定影响：能在宿主机上执行它的本来就是 root。"""
     _state["path"] = Path(config)
     options = options or {}
+    if command == "set-approval-passphrase":
+        return set_approval_passphrase()
     if command == "pending":
         return _print_pending()
     if command == "scripts":
@@ -5755,9 +6541,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", nargs="?", default="serve",
                         choices=["serve", "pending", "approve", "reject",
-                                 "scripts", "trust", "enroll", "push", "status"],
+                                 "scripts", "trust", "enroll", "push", "status", "set-approval-passphrase"],
                         help="serve 起服务；pending/approve/reject/scripts/trust 审批工具与脚本；"
-                             "enroll/push/status 接入和检查远程主机")
+                             "enroll/push/status 接入和检查远程主机；"
+                             "set-approval-passphrase 设置或重置页面审批的口令（root 执行）")
     parser.add_argument("ident", nargs="?", help="待审申请的 id、工具名、脚本名；enroll 时是主机名")
     parser.add_argument("--port", type=int, default=8799)
     parser.add_argument("--config", default=str(DEFAULT_CONFIG),
@@ -5808,6 +6595,11 @@ def main():
     waiting = len(list_pending())
     if waiting:
         print(f"（有 {waiting} 条新工具申请待审：ops_readonly.py pending）")
+    record, problem = _approval_state()
+    if record is not None:
+        print(f"页面审批：已设置审批口令（{_approval_path()}）")
+    elif not problem:
+        print(f"页面审批：还没有设置审批口令，页面上只能看、能拒绝；设置：{_cli_command('set-approval-passphrase')}")
     if _state["mcp_servers"]:
         print(f"MCP server {len(_state['mcp_servers'])} 个：{', '.join(sorted(_state['mcp_servers']))}，"
               f"后台连接中；发现的工具会进入待审列表")
