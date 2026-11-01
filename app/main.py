@@ -22,11 +22,12 @@ from starlette.concurrency import run_in_threadpool
 from app import catalog, conversations, graph, jobs, models, packs, playbooks, settings, workbench
 from app.agent import grow
 from app.agent import loop as agent_loop
+from app.agent import modes as answer_modes
 from app.agent import ops_client, registry, web_search
 from app.agent.extract import extract as extract_playbooks
 from app.config import (AGENT_MODE, ALLOWED_SUFFIXES, CATEGORY_MAX, BOT_NAME, DATA_DIR, EVAL_TOKEN,
                         FILES_DIR, IMAGE_SUFFIXES, KB_RETRIEVAL_MODE, KB_TOOLS, MAX_FILE_BYTES, MCP_ENABLED,
-                        PLAN_TOOL, WEB_NOTE_CATEGORY, WEB_PASSWORD, WEB_USER, log)
+                        PLAN_TOOL, SMART_MODE, WEB_NOTE_CATEGORY, WEB_PASSWORD, WEB_USER, log)
 from app.ingest.extract import ExtractionError, extract_pages
 from app.ingest.vision import ImageCollector
 from app.rag import store
@@ -165,6 +166,22 @@ def tool_specs() -> dict:
     return registry.sop_specs()
 
 
+def smart_status() -> dict:
+    """页面上的智能模式能不能用；不能用时给出原因（页面把这个 tab 灰掉，写明原因）。
+
+    要 SMART_MODE 打开：管理员可以整体关掉（有的组织不允许出现没有依据的回答）。还要知识类工具和 Agent：
+    智能模式靠模型自己调 kb_search 查知识库。"""
+    if not SMART_MODE:
+        reason = "管理员没有打开智能模式（SMART_MODE）"
+    elif AGENT_MODE == "off":
+        reason = "智能模式要用 Agent，这个部署设了 AGENT_MODE=off"
+    elif not KB_TOOLS:
+        reason = "智能模式要用知识库工具，这个部署没有打开 KB_TOOLS"
+    else:
+        reason = ""
+    return {"available": not reason, "reason": reason}
+
+
 @app.get("/api/documents")
 def documents():
     tools = usable_tools()
@@ -174,6 +191,7 @@ def documents():
             "tools": sorted(tools),
             "web_search": AGENT_MODE != "off" and web_search.enabled(),
             "sop_growth": AGENT_MODE != "off" and grow.enabled(),
+            "smart_mode": smart_status(),
             "playbooks": len(playbooks.list_all(only_enabled=True)),
             # 欢迎页：已导入场景包的示例问题当 chips；自动导入进行中时引导卡显示进度
             "examples": packs.examples(),
@@ -272,6 +290,8 @@ class WebNote(BaseModel):
 def web_note_markdown(note: WebNote, saved_by: str, today: str) -> str:
     # 知识库片段的 [1][2] 指向的是别的文档，存进来就成了悬空引用，去掉；网络来源 [W1] 保留并列出链接。
     answer = WEB_PREAMBLE.sub("", CITE_KB.sub("", note.answer)).strip()
+    # 智能模式标的通用知识 [💡] 换成写明的一句：存进知识库以后它仍是未经核实的，不能变成看不出来历的「知识库内容」
+    answer = answer_modes.GENERAL_MARK.sub(answer_modes.GENERAL_NOTE, answer)
     refs = "\n".join(f"- [{s.index}] {s.location or s.url} — {s.url}" for s in note.sources)
     return (f"# {note.title}\n\n"
             f"> 来源：网络搜索，{today} 由 {saved_by} 确认后存入知识库。"
@@ -968,6 +988,9 @@ class Question(BaseModel):
     model: str | None = Field(default=None, max_length=120)
     # 「▶ 执行」发起的提问带上 SOP 的 id：这一轮在图谱里就记为一次 SOP 执行，而不只是一次提问。
     playbook_id: str | None = Field(default=None, max_length=64)
+    # 页面上的回答模式：kb 知识库模式（默认，就是原来的行为）；smart 智能模式（SMART_MODE 打开才能用，见 smart_status）。
+    # 普通用户可用，不要评测令牌；评测脚本的 --answer-mode 也用它。
+    answer_mode: Literal["kb", "smart"] = "kb"
     # 只供评测（eval/run_eval.py --mode）：按请求覆盖检索模式和 KB_TOOLS。要带 X-Eval-Token，见 retrieval_switches。
     retrieval_mode: Literal["prefetch", "forced", "agentic"] | None = None
     kb_tools: bool | None = None
@@ -1082,7 +1105,19 @@ def ask(payload: Question, x_eval_token: str | None = Header(default=None)):
         raise HTTPException(400, str(exc))
     if payload.playbook_id and not playbooks.get(payload.playbook_id):
         raise HTTPException(404, "SOP 不存在")
+    # 回答模式。智能模式要管理员打开、部署有知识类工具和 Agent；不能用就直接拒绝，不悄悄按知识库模式答
+    answer_mode = payload.answer_mode
+    modes_on = smart_status()["available"]
+    if answer_mode == "smart":
+        if not modes_on:
+            raise HTTPException(409, smart_status()["reason"])
+        if payload.retrieval_mode is not None or payload.kb_tools is not None:
+            raise HTTPException(400, "智能模式由模型决定查不查知识库，不能再按请求指定检索模式或知识类工具")
     kb_on, mode = retrieval_switches(payload, x_eval_token)
+    # 「▶ 执行」沿用知识库模式的规则：结论只依据数据和知识库。这一轮仍记成用户当时选的模式
+    smart = answer_mode == "smart" and not payload.playbook_id
+    if smart:
+        mode = "agentic"   # 查不查、查几次知识库由模型决定
 
     history = conversations.recent_history(conversation_id) if conversation_id else []
     # Create the conversation first so the trace carries its real id from the very first turn.
@@ -1140,6 +1175,9 @@ def ask(payload: Question, x_eval_token: str | None = Header(default=None)):
             first = {"conversation": conversation, "model": model_name, "execution_id": execution_id}
             if kb_on:
                 first["retrieval_mode"] = mode
+            # 智能模式打开了才带上这一轮的回答模式（页面、评测据此核对）；没打开时首行和以前一样
+            if modes_on:
+                first["answer_mode"] = answer_mode
             yield line(**first)
             try:
                 with traced_under(root):
@@ -1157,7 +1195,7 @@ def ask(payload: Question, x_eval_token: str | None = Header(default=None)):
                 return
             retrieved_at = time.monotonic()
             yield line(sources=hits)
-            conversations.add_message(conversation_id, "user", question)
+            conversations.add_message(conversation_id, "user", question, mode=answer_mode)
             context = (catalog_context() if overview
                        else (CONTINUATION_KB if kb_on else CONTINUATION) if continuation
                        else as_context(hits, ids=kb_on) if prefetching
@@ -1177,7 +1215,7 @@ def ask(payload: Question, x_eval_token: str | None = Header(default=None)):
                                                             kb_tools=kb_on, plan=plan_on, hits=hits,
                                                             force_search=force,
                                                             prefetch=fallback if force else None,
-                                                            playbook=playbook):
+                                                            playbook=playbook, smart=smart):
                             if kind == "delta":
                                 answer += payload
                                 first_token_at = first_token_at or time.monotonic()
@@ -1224,7 +1262,7 @@ def ask(payload: Question, x_eval_token: str | None = Header(default=None)):
                 # 补查到的片段和预检索片段一起存进来源，回放对话照常显示
                 message_id = conversations.add_message(conversation_id, "assistant", answer,
                                                        hits + kb_hits + web_hits, model=model_name,
-                                                       tools=tool_calls)
+                                                       tools=tool_calls, mode=answer_mode)
         finally:
             try:
                 graph.finish_execution(execution_id, answer, failed=failure is not None,
@@ -1239,18 +1277,21 @@ def ask(payload: Question, x_eval_token: str | None = Header(default=None)):
             if started_new and message_id is None:
                 conversations.delete(conversation_id)
             now = time.monotonic()
-            log.info("ask %s: retrieve=%s first_token=%s total=%.1fs tools=%d model=%s%s%s",
+            log.info("ask %s: retrieve=%s first_token=%s total=%.1fs tools=%d model=%s%s%s%s",
                      conversation_id[:8],
                      f"{retrieved_at - started:.1f}s" if retrieved_at else "-",
                      f"{first_token_at - started:.1f}s" if first_token_at else "-",
                      now - started, len(tool_calls), model_name,
                      f" kb={mode}+{len(kb_hits)}" if kb_on else "",
+                     f" answer={answer_mode}" if modes_on else "",
                      f" failure={failure}" if failure else "")
             outputs = {"answer": answer, "search_query": search_query,
                        "sources": len(hits), "web_sources": len(web_hits),
                        "model": model_name, "tools_used": [c["tool"] for c in tool_calls]}
             if kb_on:
                 outputs.update(retrieval_mode=mode, kb_sources=len(kb_hits))
+            if modes_on:
+                outputs["answer_mode"] = answer_mode
             finish_root_run(root, outputs=outputs, error=failure)
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")

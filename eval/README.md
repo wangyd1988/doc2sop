@@ -2,12 +2,13 @@
 
 把「这套系统效果怎么样」变成可复现的数字，而不是凭感觉。
 
-## 两套评测集
+## 评测集
 
 | | 文件 | 对应语料 | 是否进仓库 |
 |---|---|---|---|
 | 公开 | `dataset.jsonl` | `sample_kb/` 下的示例文档 | 是，任何人 clone 都能复现 |
 | 私有 | `dataset.local.jsonl` | 你自己的真实文档 | 否，已在 `.gitignore` 中 |
+| 回答模式 | `modes.jsonl` | `sample_kb/` 里的休假制度、网关说明、巡检规范（生产库里也有这三篇） | 是 |
 
 公开这套不依赖任何私有数据：上传 `sample_kb/` 下的文档即可跑出相同结果。
 如果你的知识库装的是工作资料，把题目写进 `dataset.local.jsonl`，它不会被提交。
@@ -67,6 +68,30 @@ done
 | 补查后命中率 | 补查过的题里，最终来源（预检索 + 补查）命中期望文档的比例；同时给出这些题补查前的命中率 |
 | 平均模型轮次 | 每题调用模型的次数（服务端在回答末尾的 `stats` 事件里给出） |
 
+### 对比知识库模式和智能模式
+
+`--answer-mode kb|smart` 和页面上的两个 tab 一样，请求里带 `answer_mode`，不要评测令牌；`smart` 要服务端打开 `SMART_MODE`
+（没打开时 409）。不能和 `--mode` 一起用：智能模式查不查知识库由模型决定。配专门的小题集 `modes.jsonl`：
+
+```bash
+for mode in kb smart; do
+  python eval/run_eval.py --dataset eval/modes.jsonl --answer-mode $mode --out eval/result.modes-$mode.json
+done
+```
+
+`modes.jsonl` 的 `type` 有四类：
+
+| 类型 | 条数 | 期望 |
+|---|---|---|
+| `internal` | 6 | 公司规定、流程、内部系统：两种模式都要查知识库并引用期望文档，智能模式不能凭常识答 |
+| `both` | 4 | 知识库里有、模型也知道的：两种模式都以知识库为准 |
+| `general` | 4 | 知识库里没有的通用概念：知识库模式说没有；智能模式用通用知识回答并标 `[💡]` |
+| `realtime` | 3 | 天气、价格、版本：联网关着时两种模式都不能编；加 `--web` 时智能模式应该去搜 |
+
+多出的指标：查了知识库的比例（预检索过或调过知识类工具）和该查没查的题；通用知识标注（智能模式下 `general` 题该标的标了没有，
+知识库模式一律不该出现 `[💡]`，智能模式下 `internal`、`both` 题没引用知识库却标了算乱标，引用了又标的列出来人工复核）；
+错误引用（`[n]`、`[Wn]` 指向本轮没有的来源，或引用了知识库却一篇期望文档都没引）；逐类通过率。首字、总耗时的 P50 照常给出。
+
 ## 数据格式
 
 一行一条 JSON：
@@ -77,7 +102,7 @@ done
 | `question` | 提问原文 |
 | `expected_points` | 答案里应当出现的关键信息点 |
 | `expected_sources` | 期望命中的来源文件名；空数组表示「知识库里本就没有」 |
-| `type` | `fact` / `concept` / `multi_hop` / `rephrase` / `context` / `refusal` |
+| `type` | `fact` / `concept` / `multi_hop` / `rephrase` / `context` / `refusal`；`modes.jsonl` 用 `internal` / `both` / `general` / `realtime` |
 
 ## 题目构成
 

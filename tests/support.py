@@ -18,6 +18,8 @@ os.environ["OPS_URL"] = ""
 os.environ["OPS_TOKEN"] = ""
 os.environ["SANDBOX_URL"] = ""
 os.environ["SANDBOX_TOKEN"] = ""
+# 智能模式按代码默认关着测；要测它的用例自己 patch app.main.SMART_MODE。
+os.environ["SMART_MODE"] = "false"
 # 场景包自动导入是后台线程，测试里必须关掉，要导入就在用例里显式调 packs.import_pack。
 os.environ["DEMO_PACKS"] = ""
 # 页面审批的口令文件指向临时目录（用例自己写），不读这台机器上真的 /etc/ops-readonly/approval.hash；

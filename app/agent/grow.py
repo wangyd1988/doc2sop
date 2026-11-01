@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from langsmith import traceable
 
 from app import config, graph, playbooks
-from app.agent import registry
+from app.agent import modes, registry
 from app.agent.extract import _clean_args, _listing, _parse, _spec
 from app.agent.loop import _clip, _condense
 from app.clients import chat_model
@@ -249,9 +249,14 @@ def propose(execution_id, answer, known_tools):
     execution = graph.execution(execution_id)
     if not execution:
         return None
+    # 智能模式里标了 💡 的是模型自身的通用知识，没有数据或文档依据：不能当 SOP 的结论和检查点。
+    # 判断有没有结论、喂给模型的轨迹，都只用去掉这些内容之后的回答
+    general = modes.uses_general(answer)
+    answer = modes.strip_general(answer)
     wanted, reason = should_propose(execution, answer, playbooks.list_all(only_enabled=True))
     if not wanted:
-        log.info("no SOP proposal for %s: %s", execution_id, reason)
+        log.info("no SOP proposal for %s: %s%s", execution_id, reason,
+                 "（已去掉标了通用知识的内容）" if general else "")
         return None
     candidate = generate(execution, answer, known_tools)
     if not candidate:

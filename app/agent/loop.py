@@ -33,6 +33,7 @@ from app import graph as org_graph
 from app import playbooks
 from app.agent import egress
 from app.agent import kb_tools as kb
+from app.agent import modes
 from app.agent import ops_client, registry, sandbox, sop_tools, web_fetch, web_search  # noqa: F401  ops_client：测试按 loop.ops_client 打桩
 from app.agent import plan as plan_tool
 from app.agent.tools import TOOL_LIMIT, build_tools, schema_tool, select_tools
@@ -211,6 +212,104 @@ NO_PREFETCH = ("知识库片段：（本轮没有预先检索知识库。除了�
                "规则、方法、原理、概念类问题和通用技术问题同样要查，知识库里也有这类资料；"
                "「不要调用工具」说的是查实际数据的工具，不含知识库工具。"
                "没检索过，不要说知识库里没有，调用之前也不要先下结论。问知识库里有什么时用 kb_catalog）\n\n")
+
+
+# --- 两种回答模式（docs/工具.md「知识库模式与智能模式」）----------------------------------------
+#
+# 提示词只有一套。知识库模式用上面原样的几段，一字不差；智能模式把其中「回答依据」的几句（不许用训练知识补充的那几句）
+# 和随之变化的检索方式换掉，再接上 SMART_RULES。换之前核对原句各出现一次：上面的提示词改了这里没跟上，导入时就报错。
+
+def _swap(text, pairs):
+    for old, new in pairs:
+        if text.count(old) != 1:
+            raise RuntimeError(f"智能模式要替换的原句没找到或不止一处：{old[:40]}")
+        text = text.replace(old, new)
+    return text
+
+
+GENERAL_TAG = modes.GENERAL_TAG
+
+# 智能模式要换掉的句子：(原句, 智能模式的句子)。原句来自上面的 AGENT_PROMPT、WEB_RULES、NO_WEB_RULES，一字不改
+SMART_SWAPS = {
+    "agent": (
+        ("知识库有就解释，没有就直说；",
+         f"先查知识库，有就按知识库解释；没有的话，通用术语用你自己的通用知识解释、句末标 {GENERAL_TAG}，"
+         "本组织特有的说法直说知识库里没有；"),
+        ("- 两边都没有足够信息时，直说没有，并指出还需要哪些信息，不要编造。",
+         "- 两边都没有足够信息时：本组织的规定、流程、系统和实际数据，直说没有，并指出还需要哪些信息，不要编造；"
+         f"通用的概念、原理和公开技术问题，可以用你自己的通用知识补充，补充的句子末尾标 {GENERAL_TAG}。"),
+    ),
+    "web": (
+        ("- 完全不相关或没有片段 → 调用 web_search。",
+         f"- 完全不相关或没有片段 → 调用 web_search；通用的概念、原理也可以直接用你自己的通用知识回答（句末标 {GENERAL_TAG}），"
+         "需要最新信息或确切出处时再搜。"),
+        ("- 如果完全没有用到知识库，开头先说一句「知识库里没有找到相关内容，以下内容来自网络搜索」。",
+         "- 如果完全没有用到知识库：查过知识库没找到的，开头先说一句「知识库里没有找到相关内容，以下内容来自网络搜索」；"
+         "没查过知识库的（实时信息、公开资料），开头说「以下内容来自网络搜索」，不要说知识库里没有。"),
+        ("- 只依据知识库和搜索结果作答，不要用你自己的训练知识补充事实。",
+         f"- 知识库和搜索结果不够时，可以用你自己的通用知识补充，补充的句子末尾标 {GENERAL_TAG}；"
+         "三者冲突时以知识库为准、其次是网络结果，并指出冲突。"),
+        ("- 网络也没有找到可靠答案时，直说没有，不要编造。",
+         "- 网络也没有找到可靠答案时：实时信息和本组织的事直说没有，不要编造；"
+         f"通用的概念、原理可以用你自己的通用知识回答，句末标 {GENERAL_TAG}。"),
+    ),
+    "no_web": (
+        ("""- 知识库和对话历史都答不了时：直接说明没有相关内容，不要拿不相干的片段凑答案；
+  **也不要用你自己的训练知识补答案**——它可能过时或不准确，用户无从核实；
+  如果是公开资料类问题，提示用户可以打开输入框旁的「🌐 联网」开关后再问。""",
+         f"""- 知识库和对话历史都答不了时：不要拿不相干的片段凑答案。
+  本组织的规定、流程、系统和实际数据：直说没有相关内容，不要用你自己的知识补；
+  通用的概念、原理和公开技术问题：可以用你自己的通用知识回答，补充的句子末尾标 {GENERAL_TAG}；
+  实时信息（天气、新闻、价格、版本）：说明本次联网关着、无法确定，提示用户可以打开输入框旁的「🌐 联网」开关后再问，
+  不要凭训练知识猜。"""),
+    ),
+}
+SMART_AGENT_PROMPT = _swap(AGENT_PROMPT, SMART_SWAPS["agent"])
+SMART_WEB_RULES = _swap(WEB_RULES, SMART_SWAPS["web"])
+SMART_NO_WEB_RULES = _swap(NO_WEB_RULES, SMART_SWAPS["no_web"])
+
+# 智能模式不预检索：提示词里的「知识库片段」一节换成这段（知识库模式不预检索时用 NO_PREFETCH）
+SMART_NO_PREFETCH = ("知识库片段：（本轮没有预先检索知识库，查不查、查几次由你按问题判断。"
+                     "涉及本组织的（公司规定、流程、内部系统、内部名词、知识库目录里出现的主题），必须先调用 kb_search "
+                     "查知识库，不能只靠你自己的知识回答；"
+                     f"通用概念、公开技术问题，可以直接用你自己的通用知识回答，但要在句末标 {GENERAL_TAG}；"
+                     "实时信息（天气、新闻、价格、版本），联网开着就搜，关着就说明无法确定，不要凭训练知识猜；"
+                     "拿不准是不是本组织的问题，先查知识库。"
+                     "没检索过，不要说知识库里没有。问知识库里有什么时用 kb_catalog）\n\n")
+
+# 智能模式接在 KB_RULES 后面
+SMART_RULES = f"""
+
+**回答依据（智能模式）**：知识库、联网结果和你自己的通用知识可以组合使用，查什么、查几次由你判断。
+- 本组织的规定、流程、内部系统、内部名词，只能按知识库和查到的实际数据回答：没查过先查，查不到就直说没有，
+  不能拿常识顶上——公司的规定常常和常识不一样（比如调休怎么算、报销走什么流程）。拿不准是不是本组织的问题，先查知识库。
+- 通用的概念、原理和公开技术问题，可以直接用你自己的通用知识回答；实时信息（天气、新闻、价格、版本号）不能凭训练知识回答。
+- 来源要分得清：知识库用 [1]、网络用 [W1]，**用了你自己的通用知识的句子，句末标 {GENERAL_TAG}**（整段都是就标在段末）。
+  {GENERAL_TAG} 的意思是「通用知识，未经核实」：有知识库或网络依据的句子不要标，没有依据的也不能漏标。
+- 知识库、网络结果和你的通用知识冲突时，以知识库为准、其次是网络结果，并指出冲突。
+- 按 SOP 执行时（用户说「执行 SOP《某某》」「按某某 SOP 做一遍」），结论只依据工具数据和知识库，不用通用知识。
+- 前几轮标了 {GENERAL_TAG} 的内容仍是通用知识：再用到时照样标，不能当成知识库依据。"""
+
+# 知识库模式下，前几轮里有智能模式标了通用知识的回答时，系统提示词末尾接上这段（没有时提示词和原来一字不差）
+GENERAL_HISTORY_RULES = f"""
+
+**前几轮的通用知识**：前几轮有的回答里标了 {GENERAL_TAG}，那是模型自身的通用知识，未经核实。本轮只依据知识库、
+工具查到的实际数据（和联网结果）作答：标了 {GENERAL_TAG} 的内容不能当依据，也不要沿用这个标记；
+要用就重新查，查不到就说没有依据。"""
+
+
+@dataclass(frozen=True)
+class Basis:
+    """回答依据：两种模式在系统提示词和本轮提问里不一样的那几段。"""
+    agent: str          # 基础提示词
+    rules: str          # 接在 KB_RULES 后面的一段（知识库模式没有）
+    web: str            # 联网开着时
+    no_web: str         # 联网关着时
+    no_prefetch: str    # 本轮没有预检索时，提问里「知识库片段」一节
+
+
+KNOWLEDGE = Basis(AGENT_PROMPT, "", WEB_RULES, NO_WEB_RULES, NO_PREFETCH)
+SMART = Basis(SMART_AGENT_PROMPT, SMART_RULES, SMART_WEB_RULES, SMART_NO_WEB_RULES, SMART_NO_PREFETCH)
 
 
 def _today():
@@ -710,7 +809,7 @@ def _rebinder(client, bindable, tool, outputs, bound):
 def run(question: str, context: str | None, history, allow_web: bool = False,
         thread_id: str | None = None, model: str | None = None,
         execution_id: str | None = None, *, kb_tools: bool = False, plan: bool = False,
-        hits=None, force_search: bool = False, prefetch=None, playbook=None):
+        hits=None, force_search: bool = False, prefetch=None, playbook=None, smart: bool = False):
     """跑一轮对话，边跑边产出事件。
 
     产出 (kind, payload)：
@@ -733,6 +832,10 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
     kb_tools / plan 打开时绑上知识类 / 流程类工具；hits 是预检索的片段，补查的编号接着它往下编。
     force_search（forced 模式）：第一轮用 tool_choice 强制调 kb_search；模型不支持就退回 prefetch，
     由 prefetch(emit) 当场检索。playbook：「▶ 执行」的 SOP，plan 打开时按它的步骤预填清单。
+
+    smart：智能模式（调用方保证知识类工具绑上、不预检索）。提示词换掉「回答依据」那几段（SMART），
+    允许用模型自身的通用知识补充、句末标 [💡]。不给是知识库模式，提示词和原来一字不差；
+    只有对话历史里有标了 [💡] 的回答时，末尾多一段 GENERAL_HISTORY_RULES。
 
     thread_id 一般就是会话 ID；记忆里还没有这个会话时（例如升级前的老会话），
     用 history 里的文字历史补种，之后就以完整记忆为准。
@@ -775,10 +878,12 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
                                        schema=binding.schema if binding else None)
 
     external = sorted(name for name, binding in by_name.items() if binding.external)
-    system = (AGENT_PROMPT + (KB_RULES if kb_on else "") + (PLAN_RULES if plan_on else "")
+    basis = SMART if smart else KNOWLEDGE
+    system = (basis.agent + (KB_RULES if kb_on else "") + basis.rules + (PLAN_RULES if plan_on else "")
               + (EXEC_RULES if exec_on else "")
-              + ((WEB_RULES + (WEB_FETCH_RULES if fetch_on else "")) if allow_web else NO_WEB_RULES)
-              + (EXTERNAL_RULES.format(names="、".join(external)) if external else ""))
+              + ((basis.web + (WEB_FETCH_RULES if fetch_on else "")) if allow_web else basis.no_web)
+              + (EXTERNAL_RULES.format(names="、".join(external)) if external else "")
+              + (GENERAL_HISTORY_RULES if not smart and modes.history_uses_general(history) else ""))
     # SOP 只在确实有能进 SOP 的工具时注入，否则模型会照着 SOP 去调不存在的工具。
     steps = {name for name, binding in by_name.items() if registry.POLICIES[binding.category].sop}
     book = playbooks.as_prompt(steps, brief=brief) if steps else ""
@@ -792,7 +897,7 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
         if ctx is not None:
             prompt += f"知识库片段：\n{ctx}\n\n"
         elif kb_on:
-            prompt += NO_PREFETCH
+            prompt += basis.no_prefetch
         else:
             prompt += f"知识库片段：\n{as_context([])}\n\n"
         if book and brief:

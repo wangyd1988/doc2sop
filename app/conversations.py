@@ -32,8 +32,9 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_by_conversation ON messages(conversation_id, id);
 """)
-# 老库没有这些列；加列失败说明已经有了。
-for column in ("model TEXT", "tools TEXT"):
+# 老库没有这些列；加列失败说明已经有了。mode 是这一轮的回答模式（kb / smart），老消息是空的（当时只有知识库模式）。
+# 老代码按列名读写，不认识的列留空，回滚到旧镜像不受影响。
+for column in ("model TEXT", "tools TEXT", "mode TEXT"):
     try:
         db.execute(f"ALTER TABLE messages ADD COLUMN {column}")
     except sqlite3.OperationalError:
@@ -65,16 +66,16 @@ def create(title: str) -> dict:
     return conversation
 
 
-def add_message(conversation_id: str, role: str, content: str, sources=None, model=None, tools=None):
-    """写一条消息，返回它的 id——图谱里的执行记录靠它指回这条回答。"""
+def add_message(conversation_id: str, role: str, content: str, sources=None, model=None, tools=None, mode=None):
+    """写一条消息，返回它的 id——图谱里的执行记录靠它指回这条回答。mode 是这一轮的回答模式（kb / smart）。"""
     timestamp = now_iso()
     with lock:
         cur = db.execute(
-            "INSERT INTO messages (conversation_id, role, content, sources, model, tools, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages (conversation_id, role, content, sources, model, tools, mode, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (conversation_id, role, content,
              json.dumps(sources, ensure_ascii=False) if sources else None, model,
-             json.dumps(tools, ensure_ascii=False) if tools else None, timestamp))
+             json.dumps(tools, ensure_ascii=False) if tools else None, mode, timestamp))
         db.execute("UPDATE conversations SET updated_at = ? WHERE id = ?",
                    (timestamp, conversation_id))
         db.commit()
@@ -90,6 +91,14 @@ def recent_history(conversation_id: str):
     return [(row["role"], row["content"]) for row in reversed(rows)]
 
 
+def modes_used(conversation_id: str) -> list:
+    """这个对话里回答用过哪些模式（加 mode 列之前的老消息按知识库模式算）。"""
+    with lock:
+        rows = db.execute("SELECT DISTINCT COALESCE(mode, 'kb') AS mode FROM messages"
+                          " WHERE conversation_id = ? AND role = 'assistant'", (conversation_id,)).fetchall()
+    return sorted(row["mode"] for row in rows)
+
+
 def list_conversations(limit: int = 100):
     with lock:
         rows = db.execute(
@@ -102,11 +111,13 @@ def list_conversations(limit: int = 100):
 def messages_of(conversation_id: str):
     with lock:
         rows = db.execute(
-            "SELECT id, role, content, sources, model, tools FROM messages WHERE conversation_id = ?"
+            "SELECT id, role, content, sources, model, tools, mode FROM messages WHERE conversation_id = ?"
             " ORDER BY id", (conversation_id,)).fetchall()
     return [{"id": row["id"], "role": row["role"], "content": row["content"], "model": row["model"],
              "sources": json.loads(row["sources"]) if row["sources"] else [],
-             "tools": json.loads(row["tools"]) if row["tools"] else []}
+             "tools": json.loads(row["tools"]) if row["tools"] else [],
+             # 加这一列之前的老消息是空的：那时只有知识库模式
+             "mode": row["mode"] or "kb"}
             for row in rows]
 
 

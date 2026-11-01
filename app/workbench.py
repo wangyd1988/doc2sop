@@ -81,14 +81,15 @@ def _access():
 
 
 def _recent():
-    """最近的对话：按哪个 SOP 执行的、调了几次数据类工具（工作台上一眼看出这一轮用了什么）。"""
+    """最近的对话：按哪个 SOP 执行的、调了几次数据类工具、用没用智能模式（工作台上一眼看出这一轮用了什么）。"""
     out = []
     for conv in conversations.list_conversations(RECENT):
         runs = list(graph.executions_by_message(conv["id"]).values())
         book = next((run["playbook_id"] for run in runs if run.get("playbook_id")), None)
         names = graph.tool_names_by_execution(run["execution_id"] for run in runs)
         calls = sum(1 for tools in names.values() for tool in tools if registry.category_of(tool) == "data")
-        out.append({**conv, "playbook": (playbooks.get(book) or {}).get("name") if book else None, "calls": calls})
+        out.append({**conv, "playbook": (playbooks.get(book) or {}).get("name") if book else None, "calls": calls,
+                    "smart": "smart" in conversations.modes_used(conv["id"])})
     return out
 
 

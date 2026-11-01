@@ -92,6 +92,9 @@ RETRIEVAL_MODES = ("prefetch", "forced", "agentic")
 KB_RETRIEVAL_MODE = os.environ.get("KB_RETRIEVAL_MODE", "prefetch").strip().lower()
 # 待办清单工具 plan：长 SOP 不漏步，「▶ 执行」时按 SOP 步骤预填
 PLAN_TOOL = os.environ.get("PLAN_TOOL", "").strip().lower() in _TRUE
+# 页面上的「智能模式」（docs/工具.md「知识库模式与智能模式」）：查不查知识库由模型决定，知识库和联网都不够时可以用模型
+# 自身的通用知识补充（标 💡）。要 KB_TOOLS 打开、AGENT_MODE 不是 off。默认关：关着时页面只有知识库模式，行为和以前一样
+SMART_MODE = os.environ.get("SMART_MODE", "").strip().lower() in _TRUE
 # 评测按请求覆盖检索模式（eval/run_eval.py --mode）要带的令牌。留空时应用启动时生成一个，
 # 写在 DATA_DIR/eval_token（权限 600），只有能登录宿主机的人读得到。
 EVAL_TOKEN = os.environ.get("EVAL_TOKEN", "").strip()

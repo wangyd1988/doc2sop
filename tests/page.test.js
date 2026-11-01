@@ -109,6 +109,35 @@ check('没设口令算一项待处理', P.todoCounts({approval: {configured: fal
 check('口令文件有问题不算', P.passUnset({approval: {configured: false, problem: 'x'}}), false);
 check('已经设了不算', P.passUnset({approval: {configured: true}}), false);
 check('工具服务没给状态不算', P.passUnset({approval: {}}), false);
+// 回答模式：智能模式里的 [💡] 渲染成「💡 通用知识」标签；智能模式不可用时 tab 灰着、写明原因，发出去的是知识库模式
+const gk = new Function(`${escLine}\n${lineOf(/^const GK_MARK = .*$/m)}\n${lineOf(/^const GK_TIP = .*$/m)}\n`
+  + `${lineOf(/^const usesGeneral = .*$/m)}\n${lineOf(/^const GK_WITH_PUNCT = .*$/m)}\n${lineOf(/^const gkBadge = .*$/m)}\n`
+  + `${extract('inline')}\nreturn {inline, usesGeneral, GK_MARK};`)();
+check('[💡] 渲染成通用知识标签', gk.inline('调休按通用做法折算 [💡]').includes('<span class="gk"'), true);
+check('标签上写「💡 通用知识」', gk.inline('x [💡]').includes('>💡 通用知识</span>'), true);
+check('句号和标签连在一起，不单独折行', gk.inline('x [💡]。').includes('💡 通用知识</span>。</span>'), true);
+check('模型写成 [💡通用知识] 也认', gk.inline('x [💡通用知识]').includes('class="gk"'), true);
+check('全角括号【💡】也认', gk.usesGeneral('x 【💡】'), true);
+check('知识库引用不当成通用知识', gk.usesGeneral('年假 5 天 [1]，网上说法 [W2]'), false);
+check('[1] 照旧是引用', gk.inline('x [1]').includes('class="cite"'), true);
+check('标签不吞掉后面的句子', gk.inline('甲 [💡] 乙 [1]').includes('乙 <span class="cite"'), true);
+check('正则不带状态：连着判断两次结果一样', [gk.usesGeneral('a [💡]'), gk.usesGeneral('a [💡]')], [true, true]);
+const modeInfo = lineOf(/^const MODE_INFO = \{[\s\S]*?^\};$/m);
+const modes = (mode, info) => new Function(`${escLine}\n${modeInfo}\nlet answerMode = ${JSON.stringify(mode)};\n`
+  + `let smartInfo = ${JSON.stringify(info)};\n${lineOf(/^const sendMode = .*$/m)}\n${extract('modesHtml')}\n`
+  + 'return {html: modesHtml(), send: sendMode()};')();
+const off = modes('smart', {available: false, reason: '管理员没有打开智能模式（SMART_MODE）'});
+check('智能模式不可用时发知识库模式', off.send, 'kb');
+check('不可用时选中的是知识库模式', /data-amode="kb" class="on"/.test(off.html), true);
+check('不可用的 tab 灰着', /data-amode="smart" class=" off"/.test(off.html), true);
+check('写明原因', off.html.includes('智能模式不可用：管理员没有打开智能模式（SMART_MODE）'), true);
+const on = modes('smart', {available: true, reason: ''});
+check('可用时按选择发', on.send, 'smart');
+check('可用时选中智能模式', /data-amode="smart" class="on"/.test(on.html), true);
+check('原因里的 HTML 被转义', modes('kb', {available: false, reason: '<b>x</b>'}).html.includes('<b>x'), false);
+check('选择记在 localStorage', /localStorage\.setItem\('kb-answer-mode'/.test(html), true);
+check('请求里带 answer_mode', /answer_mode: mode/.test(html), true);
+check('工作台的输入框也有模式 tab', /<div class="ask-wrap"><div class="modes">\$\{modesHtml\(\)\}/.test(html), true);
 
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

@@ -1,0 +1,17 @@
+{"id": "m-int-01", "question": "调休补班的那天请了假，算不算请假天数？", "expected_points": ["补班日是工作日", "要计入请假天数"], "expected_sources": ["休假管理制度.md"], "type": "internal"}
+{"id": "m-int-02", "question": "年休假想和国庆连着休，最晚要提前多久申请？", "expected_points": ["至少提前 10 个工作日申请"], "expected_sources": ["休假管理制度.md"], "type": "internal"}
+{"id": "m-int-03", "question": "请 5 天假要走什么审批？", "expected_points": ["部门负责人审批", "报人力资源部备案"], "expected_sources": ["休假管理制度.md"], "type": "internal"}
+{"id": "m-int-04", "question": "我想要一把新的大模型网关 key，怎么申请？", "expected_points": ["在内部工单系统提交「模型网关」类工单", "注明用途和预计用量"], "expected_sources": ["大模型网关使用说明.md"], "type": "internal"}
+{"id": "m-int-05", "question": "调大模型网关时，模型名能直接写厂商的原始模型名吗？", "expected_points": ["不能", "必须用网关里登记的名字"], "expected_sources": ["大模型网关使用说明.md"], "type": "internal"}
+{"id": "m-int-06", "question": "日常巡检时，根分区使用率到多少算告警、多少算严重？", "expected_points": ["超过 80% 记为告警", "超过 90% 记为严重"], "expected_sources": ["日常巡检规范.md"], "type": "internal"}
+{"id": "m-both-01", "question": "工龄满 10 年不满 20 年，每年有几天年休假？", "expected_points": ["10 天"], "expected_sources": ["休假管理制度.md"], "type": "both"}
+{"id": "m-both-02", "question": "接口返回 429 Too Many Requests，一般是什么原因？该怎么办？", "expected_points": ["触发了限流（每分钟请求数或 token 数）", "降低并发或申请调高限额"], "expected_sources": ["大模型网关使用说明.md"], "type": "both"}
+{"id": "m-both-03", "question": "服务器 15 分钟平均负载持续高于多少，要当成告警？", "expected_points": ["持续高于 CPU 核数"], "expected_sources": ["日常巡检规范.md"], "type": "both"}
+{"id": "m-both-04", "question": "法定节假日前后的周末补班日，要正常上班吗？", "expected_points": ["要，补班日按正常工作日出勤"], "expected_sources": ["休假管理制度.md"], "type": "both"}
+{"id": "m-gen-01", "question": "Kafka 消费者组的再均衡（rebalance）是什么？什么时候会触发？", "expected_points": ["把分区在组内的消费者之间重新分配", "消费者加入或离开、订阅主题的分区数变化时触发"], "expected_sources": [], "type": "general"}
+{"id": "m-gen-02", "question": "MySQL 主从复制里的 GTID 是什么？", "expected_points": ["全局事务标识", "每个事务有唯一 ID，便于定位复制位置和主从切换"], "expected_sources": [], "type": "general"}
+{"id": "m-gen-03", "question": "Python 的 GIL 是什么？对多线程有什么影响？", "expected_points": ["全局解释器锁", "同一时刻只有一个线程执行 Python 字节码", "CPU 密集型任务用多线程无法并行加速"], "expected_sources": [], "type": "general"}
+{"id": "m-gen-04", "question": "分布式系统里的 CAP 定理说的是什么？", "expected_points": ["一致性、可用性、分区容错性", "出现网络分区时一致性和可用性只能二选一"], "expected_sources": [], "type": "general"}
+{"id": "m-rt-01", "question": "今天北京天气怎么样？", "expected_points": [], "expected_sources": [], "type": "realtime"}
+{"id": "m-rt-02", "question": "现在国际金价每盎司多少美元？", "expected_points": [], "expected_sources": [], "type": "realtime"}
+{"id": "m-rt-03", "question": "Kubernetes 现在最新的稳定版本是多少？", "expected_points": [], "expected_sources": [], "type": "realtime"}
