@@ -162,6 +162,13 @@ PACKS_DIR = Path(os.environ.get("PACKS_DIR", "") or Path(__file__).resolve().par
 # 模型配好、工具在线后自动导入的包 id，逗号分隔；留空不自动导入（接口手动导入不受影响）。
 DEMO_PACKS = [p.strip() for p in os.environ.get("DEMO_PACKS", "").split(",") if p.strip()]
 
+# --- SOP 自动执行（docs/自动执行.md）---------------------------------------------------
+# 邮件（SMTP、收件组）、告警入口的令牌、报告链接用的页面地址，都写在服务器上的这个文件里，页面上只能选收件组的名字。
+# 文件不在时邮件和告警入口都是关的（告警入口回 404）。改了不用重启：每次用到时看一眼修改时间，变了就重新读。
+AUTOMATION_FILE = Path(os.environ.get("AUTOMATION_FILE", "") or DATA_DIR / "automation.yaml")
+# 定时执行的后台线程。false 时计划照样能建、能「立即执行一次」，只是不按时间自动跑（告警触发不受影响）
+SCHEDULER = os.environ.get("SCHEDULER", "true").strip().lower() in _TRUE
+
 log = logging.getLogger("kb")
 # uvicorn 只配置自己的 logger，不配 root；不挂这个 handler，下面所有 log.info（检索计时、
 # 「rerank skipped」这类诊断）都会被静默丢掉，docker logs 里只剩 WARNING。

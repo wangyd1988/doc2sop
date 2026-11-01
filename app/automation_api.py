@@ -1,0 +1,334 @@
+"""SOP 执行记录、自动执行（定时、告警）、邮件、知识库缺口看板的页面接口（docs/自动执行.md）。
+
+都在网页的 Basic 认证后面（FastAPI 的全局依赖），写请求照常过防跨站中间件。唯一的例外是告警入口 /api/alerts/hook：
+它挂在路由表上、不经 FastAPI（见 alerts.py），只认服务器上配置的告警令牌，没配时回 404。
+"""
+import html
+import threading
+import time
+from collections import deque
+from contextlib import asynccontextmanager
+from urllib.parse import quote
+
+from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi.responses import Response
+from starlette.routing import Route
+
+from app import alerts, automation_config, autorun, catalog, gaps, mailer, playbooks, runs, schedules
+from app.config import BOT_NAME, SCHEDULER, WEB_USER, log
+
+router = APIRouter()
+TEST_MAIL_GAP = 60          # 同一个收件组的测试邮件至少隔多少秒
+TEST_MAIL_PER_HOUR = 10
+
+
+def _groups() -> dict:
+    return automation_config.load().groups
+
+
+def _body(data) -> dict:
+    if not isinstance(data, dict):
+        raise HTTPException(400, "请求体必须是 JSON 对象")
+    return data
+
+
+# --- 执行记录 ---------------------------------------------------------------------------
+
+@router.get("/api/runs")
+def list_runs(playbook_id: str = "", trigger: str = "", level: str = "", offset: int = 0, limit: int = catalog.PAGE):
+    offset, limit = catalog.clamp(offset, limit)
+    items, total = runs.listing(playbook_id or None, trigger or None, level or None, offset, limit)
+    return {"runs": items, "total": total, "offset": offset, "limit": limit}
+
+
+@router.get("/api/runs/summary")
+def runs_summary():
+    """SOP 列表、SOP 详情上的小结：执行了几次、最近一次的结论、有几条计划和告警规则、下次什么时候。"""
+    out = runs.summary_by_playbook()
+    for item in schedules.overview():
+        entry = out.setdefault(item["playbook_id"], {"runs": 0, "last": None})
+        entry["schedules"] = entry.get("schedules", 0) + 1
+        if item["next_at"] and (not entry.get("next_at") or item["next_at"] < entry["next_at"]):
+            entry["next_at"] = item["next_at"]
+    for rule in alerts.rules():
+        entry = out.setdefault(rule["playbook_id"], {"runs": 0, "last": None})
+        entry["rules"] = entry.get("rules", 0) + 1
+    return {"playbooks": out}
+
+
+@router.get("/api/runs/{run_id}")
+def run_detail(run_id: str):
+    item = runs.detail(run_id)
+    if item is None:
+        raise HTTPException(404, "执行记录不存在")
+    return item
+
+
+@router.get("/api/runs/{run_id}/report.md")
+def run_markdown(run_id: str):
+    text = runs.markdown(run_id)
+    if text is None:
+        raise HTTPException(404, "执行记录不存在")
+    run = runs.get(run_id)
+    name = f"SOP执行报告-{run['playbook_name']}-{runs.local_time(run['started_at'])[:16].replace(':', '')}.md"
+    return Response(text, media_type="text/markdown; charset=utf-8", headers={
+        "Content-Disposition": f"attachment; filename=\"sop-run-{run_id[:8]}.md\"; filename*=UTF-8''{quote(name)}",
+        "Cache-Control": "private, no-store"})
+
+
+@router.delete("/api/runs/{run_id}")
+def delete_run(run_id: str):
+    run = runs.get(run_id)
+    if run is None:
+        raise HTTPException(404, "执行记录不存在")
+    if run["status"] in ("queued", "running"):
+        raise HTTPException(409, "还在执行，结束后再删")
+    runs.delete(run_id)
+    log.info("run record %s deleted (SOP %s)", run_id, run["playbook_name"])
+    return {"deleted": run_id}
+
+
+@router.post("/api/playbooks/{playbook_id}/run")
+def run_playbook_now(playbook_id: str, data: dict = Body(default_factory=dict)):
+    """SOP 页的「立即执行一次」：在后台按 SOP 跑一遍，不进对话，结果在执行记录里。留空的参数要在这里给。"""
+    playbook = playbooks.get(playbook_id)
+    if playbook is None:
+        raise HTTPException(404, "SOP 不存在")
+    problem = autorun.precheck(playbook)
+    if problem:
+        raise HTTPException(409, problem)
+    try:
+        params = schedules.clean_params(playbook, _body(data).get("params"))
+    except schedules.InvalidSchedule as exc:
+        raise HTTPException(400, str(exc)) from None
+    try:
+        run_id = autorun.enqueue(playbook, "web", note="立即执行一次", params=params)
+    except autorun.Busy as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"run": runs.get(run_id)}
+
+
+# --- 定时执行 ---------------------------------------------------------------------------
+
+def _limits() -> dict:
+    return {"min_every": schedules.MIN_EVERY, "max_every": schedules.MAX_EVERY, "max_schedules": schedules.MAX_SCHEDULES,
+            "max_per_sop": schedules.MAX_PER_SOP, "grace_minutes": int(schedules.GRACE.total_seconds() // 60),
+            "max_running": autorun.MAX_RUNNING, "max_queued": autorun.MAX_QUEUED, "per_hour": alerts.PER_HOUR,
+            "dedup_default": alerts.DEDUP_DEFAULT, "dedup_range": list(alerts.DEDUP_RANGE),
+            "stale_minutes": autorun.STALE_MINUTES, "keep_days": autorun.KEEP_DAYS}
+
+
+@router.get("/api/schedules")
+def list_schedules(playbook_id: str = ""):
+    return {"schedules": schedules.overview(playbook_id or None), "limits": _limits(), "scheduler": SCHEDULER}
+
+
+@router.post("/api/schedules")
+def create_schedule(data: dict = Body(...)):
+    try:
+        item = schedules.create(_body(data), _groups())
+    except schedules.InvalidSchedule as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"schedule": item}
+
+
+def _schedule(schedule_id):
+    item = schedules.get(schedule_id)
+    if item is None:
+        raise HTTPException(404, "计划不存在")
+    return item
+
+
+@router.put("/api/schedules/{schedule_id}")
+def update_schedule(schedule_id: str, data: dict = Body(...)):
+    _schedule(schedule_id)
+    try:
+        item = schedules.update(schedule_id, _body(data), _groups())
+    except schedules.InvalidSchedule as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"schedule": item}
+
+
+@router.post("/api/schedules/{schedule_id}/pause")
+def pause_schedule(schedule_id: str):
+    _schedule(schedule_id)
+    return {"schedule": schedules.set_enabled(schedule_id, False)}
+
+
+@router.post("/api/schedules/{schedule_id}/resume")
+def resume_schedule(schedule_id: str):
+    item = _schedule(schedule_id)
+    playbook = playbooks.get(item["playbook_id"])
+    if playbook is None or not playbook["enabled"]:
+        raise HTTPException(409, "SOP 已删除或停用：先启用 SOP 再恢复计划")
+    return {"schedule": schedules.set_enabled(schedule_id, True)}
+
+
+@router.post("/api/schedules/{schedule_id}/run")
+def run_schedule_now(schedule_id: str):
+    """计划上的「立即执行一次」：用这条计划的参数和邮件设置，马上在后台跑一次（不占计划时刻）。"""
+    item = _schedule(schedule_id)
+    playbook = playbooks.get(item["playbook_id"])
+    problem = autorun.precheck(playbook)
+    if problem:
+        raise HTTPException(409, problem)
+    try:
+        run_id = autorun.enqueue(playbook, "schedule", source_id=schedule_id,
+                                 note=f"{item['describe']}的计划，立即执行一次", params=item["params"])
+    except autorun.Busy as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"run": runs.get(run_id)}
+
+
+@router.delete("/api/schedules/{schedule_id}")
+def delete_schedule(schedule_id: str):
+    _schedule(schedule_id)
+    schedules.delete(schedule_id)
+    return {"deleted": schedule_id}
+
+
+# --- 告警规则 ---------------------------------------------------------------------------
+
+@router.get("/api/alert-rules")
+def list_alert_rules(playbook_id: str = ""):
+    return {"rules": alerts.overview(playbook_id or None), "limits": _limits()}
+
+
+@router.post("/api/alert-rules")
+def create_alert_rule(data: dict = Body(...)):
+    try:
+        rule = alerts.create_rule(_body(data), _groups())
+    except alerts.InvalidRule as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"rule": rule}
+
+
+def _rule(rule_id):
+    rule = alerts.get_rule(rule_id)
+    if rule is None:
+        raise HTTPException(404, "告警规则不存在")
+    return rule
+
+
+@router.put("/api/alert-rules/{rule_id}")
+def update_alert_rule(rule_id: str, data: dict = Body(...)):
+    _rule(rule_id)
+    try:
+        rule = alerts.update_rule(rule_id, _body(data), _groups())
+    except alerts.InvalidRule as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"rule": rule}
+
+
+@router.post("/api/alert-rules/{rule_id}/pause")
+def pause_alert_rule(rule_id: str):
+    _rule(rule_id)
+    return {"rule": alerts.set_rule_enabled(rule_id, False)}
+
+
+@router.post("/api/alert-rules/{rule_id}/resume")
+def resume_alert_rule(rule_id: str):
+    rule = _rule(rule_id)
+    playbook = playbooks.get(rule["playbook_id"])
+    if playbook is None or not playbook["enabled"]:
+        raise HTTPException(409, "SOP 已删除或停用：告警只能触发启用的 SOP")
+    return {"rule": alerts.set_rule_enabled(rule_id, True)}
+
+
+@router.delete("/api/alert-rules/{rule_id}")
+def delete_alert_rule(rule_id: str):
+    _rule(rule_id)
+    alerts.delete_rule(rule_id)
+    return {"deleted": rule_id}
+
+
+@router.get("/api/alerts/events")
+def alert_events(limit: int = 50):
+    return {"events": alerts.recent_events(max(1, min(200, limit)))}
+
+
+# --- 服务器配置的状态、测试邮件 ---------------------------------------------------------------
+
+@router.get("/api/automation")
+def automation_status():
+    """服务器上配了什么（不含任何地址、账号、授权码、令牌）、各种上限、告警入口的地址。"""
+    return {**automation_config.public(), "hook_path": alerts.PATH, "scheduler": SCHEDULER, "limits": _limits(),
+            "counts": {"schedules": len(schedules.listing()), "rules": len(alerts.rules())}}
+
+
+_test_mail = {"times": deque(), "by_group": {}}
+_test_mail_lock = threading.Lock()
+
+
+@router.post("/api/automation/test-mail")
+def test_mail(request: Request, data: dict = Body(...)):
+    """发一封测试邮件：只能发给服务器上配置好的收件组；同一个组每分钟一封、每小时一共最多 TEST_MAIL_PER_HOUR 封。"""
+    group = " ".join(str(_body(data).get("group") or "").split())
+    settings = automation_config.load()
+    if settings.mail is None:
+        raise HTTPException(409, "服务器上没有配置邮件（SMTP）")
+    if group not in settings.groups:
+        raise HTTPException(400, f"服务器上没有收件组「{group}」")
+    now = time.monotonic()
+    with _test_mail_lock:
+        times = _test_mail["times"]
+        while times and now - times[0] > 3600:
+            times.popleft()
+        if len(times) >= TEST_MAIL_PER_HOUR:
+            raise HTTPException(429, f"测试邮件每小时最多 {TEST_MAIL_PER_HOUR} 封，稍后再试")
+        if now - _test_mail["by_group"].get(group, -TEST_MAIL_GAP) < TEST_MAIL_GAP:
+            raise HTTPException(429, "同一个收件组的测试邮件每分钟最多一封")
+        times.append(now)
+        _test_mail["by_group"][group] = now
+    who = f"user={WEB_USER} ip={request.client.host if request.client else '-'}"
+    log.info("test mail to group %s requested (%s)", group, who)
+    subject = f"[{BOT_NAME}] 测试邮件：收件组「{group}」"
+    text = (f"这是 {BOT_NAME} 的测试邮件，发给收件组「{group}」。\n收到它说明服务器上的邮件配置能用："
+            "SOP 自动执行有异常、没跑成、没法判断时会发到这个组（按计划和告警规则上的设置）。\n")
+    html_body = "".join(f"<p>{html.escape(line)}</p>" for line in text.strip().split("\n"))
+    try:
+        result = mailer.send(group, subject, text, html_body, settings=settings, delays=())
+    except mailer.MailError as exc:
+        log.warning("test mail to group %s failed: %s", group, exc)
+        raise HTTPException(502, f"没发出去：{exc}") from None
+    log.info("test mail to group %s sent (%d recipients)", group, result["recipients"])
+    return {"sent": True, "group": group, "recipients": result["recipients"]}
+
+
+# --- 知识库缺口 ---------------------------------------------------------------------------
+
+@router.get("/api/gaps")
+def gap_board(limit: int = 0):
+    return gaps.board(limit=max(0, min(200, limit)) or None)
+
+
+@router.post("/api/gaps/ignore")
+def ignore_gaps(data: dict = Body(...)):
+    keys = _body(data).get("keys")
+    if not isinstance(keys, list) or not keys:
+        raise HTTPException(400, "要给出这一组问题的 keys")
+    return {"ignored": gaps.ignore(keys)}
+
+
+# --- 挂到应用上 ---------------------------------------------------------------------------
+
+def install(app):
+    """main 调用：页面接口、告警入口（不经 FastAPI 的 Basic 依赖）、定时执行的后台线程（SCHEDULER 打开时，随应用启停）。"""
+    app.include_router(router)
+    hook = alerts.Hook()
+    app.router.routes.append(Route(alerts.PATH, endpoint=hook))
+    app.router.routes.append(Route(alerts.PATH + "/", endpoint=hook))
+    previous = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(app_):
+        async with previous(app_) as state:
+            if SCHEDULER:
+                schedules.start()
+            try:
+                yield state
+            finally:
+                schedules.stop()
+                autorun.shutdown()
+
+    app.router.lifespan_context = lifespan

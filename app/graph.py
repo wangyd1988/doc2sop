@@ -27,7 +27,8 @@ from app.agent import registry
 from app.config import DATA_DIR
 
 OUTCOMES = ("ok", "anomaly", "failed", "unknown")
-VERDICTS = ("correct", "false_alarm", "wrong_threshold", "missing_step")
+# unhelpful：对话里的「👎 没答好」。知识库缺口看板把它当作「文档可能没写」的线索（gaps.py）
+VERDICTS = ("correct", "false_alarm", "wrong_threshold", "missing_step", "unhelpful")
 PROPOSAL_KINDS = ("new_sop", "extend_sop", "adjust_threshold", "update_doc", "retire_sop")
 # SOP 的这些来源值不是文档名，保存时不为它们建 doc 实体
 NON_DOC_SOURCES = ("", "手工创建", "从实践沉淀")
@@ -115,7 +116,8 @@ CREATE TABLE IF NOT EXISTS feedback (
 );
 """)
 db.commit()
-CHANNELS = ("web", "mcp")
+# web 页面（对话里的「▶ 执行」、SOP 页的「立即执行一次」）、mcp 对外出口、schedule 定时执行、alert 告警触发
+CHANNELS = ("web", "mcp", "schedule", "alert")
 
 
 def _migrate(conn):
@@ -128,6 +130,116 @@ def _migrate(conn):
 
 
 _migrate(db)
+
+# --- SOP 执行记录、自动执行、知识库缺口（docs/自动执行.md）------------------------------------------
+# 只加表、不动老表：回滚到旧镜像时这些表留着，旧代码不认识也不会去读。表由各自的模块读写（runs.py、schedules.py、
+# alerts.py、gaps.py），建表放在这里：graph.db 的结构在一处看全，测试清库也不用管那些模块导没导入。
+AUTOMATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS sop_runs (
+  id TEXT PRIMARY KEY,                       -- 执行过的就是 executions.id；错过、跳过的另起一个
+  execution_id TEXT,                         -- 错过、跳过的没有
+  playbook_id TEXT NOT NULL,
+  playbook_name TEXT NOT NULL DEFAULT '',
+  trigger TEXT NOT NULL,                     -- web 页面 / schedule 定时 / alert 告警
+  source_id TEXT NOT NULL DEFAULT '',        -- 计划 id、告警规则 id
+  note TEXT NOT NULL DEFAULT '',             -- 触发说明：「每天 09:00」「告警：磁盘使用率高」「立即执行一次」
+  params TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'queued',     -- queued / running / done / missed 错过 / skipped 跳过
+  level TEXT NOT NULL DEFAULT 'unknown',     -- ok 正常 / anomaly 有异常 / failed 没跑成 / unknown 没法判断
+  summary TEXT NOT NULL DEFAULT '',
+  report TEXT NOT NULL DEFAULT '{}',         -- 开始时 SOP 的步骤；解析出的逐步表格、异常项、需要跟进
+  answer TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT '',
+  mail TEXT NOT NULL DEFAULT '{}',
+  conversation_id TEXT,                      -- 对话里「▶ 执行」的那段对话
+  owner TEXT NOT NULL DEFAULT '',            -- 哪个进程在跑：部署切换时新旧两份可能同时在跑一小会儿
+  started_at TEXT NOT NULL,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS sop_runs_by_playbook ON sop_runs(playbook_id, started_at);
+CREATE INDEX IF NOT EXISTS sop_runs_by_time ON sop_runs(started_at);
+CREATE INDEX IF NOT EXISTS sop_runs_by_status ON sop_runs(status);
+
+CREATE TABLE IF NOT EXISTS sop_schedules (
+  id TEXT PRIMARY KEY,
+  playbook_id TEXT NOT NULL,
+  kind TEXT NOT NULL,                        -- daily / weekly / interval
+  at TEXT NOT NULL DEFAULT '',               -- 北京时间 HH:MM（daily、weekly）
+  weekdays TEXT NOT NULL DEFAULT '',         -- weekly：1–7，逗号分隔，1 是周一
+  every INTEGER NOT NULL DEFAULT 0,          -- interval：每隔多少分钟
+  anchor TEXT NOT NULL DEFAULT '',           -- interval 从哪个时刻起算（UTC）
+  params TEXT NOT NULL DEFAULT '{}',
+  notify TEXT NOT NULL DEFAULT '{}',         -- {group, when, repeat}：只存收件组的名字，地址在服务器上
+  notify_state TEXT NOT NULL DEFAULT '{}',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_slot TEXT,                            -- 处理到了哪个计划时刻（UTC）
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sop_slots (
+  schedule_id TEXT NOT NULL,
+  slot TEXT NOT NULL,                        -- 计划时刻（UTC）：同一个时刻只有一个进程占得到
+  status TEXT NOT NULL,                      -- run / missed / skipped
+  run_id TEXT,
+  claimed_at TEXT NOT NULL,
+  PRIMARY KEY (schedule_id, slot)
+);
+
+CREATE TABLE IF NOT EXISTS alert_rules (
+  id TEXT PRIMARY KEY,
+  playbook_id TEXT NOT NULL,
+  name_contains TEXT NOT NULL DEFAULT '',
+  labels TEXT NOT NULL DEFAULT '{}',
+  params TEXT NOT NULL DEFAULT '{}',
+  dedup_minutes INTEGER NOT NULL DEFAULT 30,
+  notify TEXT NOT NULL DEFAULT '{}',
+  notify_state TEXT NOT NULL DEFAULT '{}',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS alert_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  received_at TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  labels TEXT NOT NULL DEFAULT '{}',
+  rule_id TEXT,
+  playbook_id TEXT,
+  action TEXT NOT NULL,                      -- triggered / deduped / limited / busy / no_rule / resolved
+  run_id TEXT,
+  peer TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS alert_events_by_time ON alert_events(received_at);
+CREATE INDEX IF NOT EXISTS alert_events_by_rule ON alert_events(rule_id, fingerprint, received_at);
+
+CREATE TABLE IF NOT EXISTS kb_gaps (
+  key TEXT PRIMARY KEY,                      -- msg:<chat.db 里那条回答的 id>，或 run:<执行记录 id>（自动执行上的人工反馈）
+  conversation_id TEXT,
+  message_id INTEGER,
+  run_id TEXT,
+  question TEXT NOT NULL,
+  kinds TEXT NOT NULL DEFAULT '',            -- no_citation / kb_missing / smart_general / feedback，逗号分隔
+  detail TEXT NOT NULL DEFAULT '',
+  asked_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',       -- open / ignored
+  vector TEXT                                -- 问题的向量（JSON），后台限量补算
+);
+CREATE INDEX IF NOT EXISTS kb_gaps_by_status ON kb_gaps(status, asked_at);
+CREATE TABLE IF NOT EXISTS kb_gap_ignores (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  question TEXT NOT NULL,
+  vector TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS app_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+"""
+db.executescript(AUTOMATION_SCHEMA)
+db.commit()
 lock = threading.Lock()
 
 
@@ -240,11 +352,13 @@ def facts_of(kind, name, predicate=None, include_retracted=False):
 
 # --- 执行与工具调用 ----------------------------------------------------------
 
-def start_execution(conversation_id, question, playbook_id=None, channel="web"):
-    """一次 Agent 轮次（或「▶ 执行」发起的一次 SOP 执行）开始。对外 MCP 的一个会话也是一条执行（channel=mcp）。"""
+def start_execution(conversation_id, question, playbook_id=None, channel="web", execution_id=None):
+    """一次 Agent 轮次（或「▶ 执行」发起的一次 SOP 执行）开始。对外 MCP 的一个会话也是一条执行（channel=mcp）。
+
+    自动执行（定时、告警）的执行记录先排队、后执行：execution_id 用排队时就定好的那个，执行记录和图谱执行是同一个 id。"""
     if channel not in CHANNELS:
         raise ValueError(f"channel 只能是 {'、'.join(CHANNELS)} 之一")
-    execution_id = uuid.uuid4().hex
+    execution_id = execution_id or uuid.uuid4().hex
     with lock:
         db.execute("INSERT INTO executions (id, conversation_id, playbook_id, question, started_at, channel)"
                    " VALUES (?, ?, ?, ?, ?, ?)",
@@ -403,6 +517,34 @@ def executions_by_message(conversation_id):
                           (conversation_id,)).fetchall()
     return {r["message_id"]: {"execution_id": r["id"], "outcome": r["outcome"],
                               "playbook_id": r["playbook_id"]} for r in rows}
+
+
+def feedback_of(execution_ids):
+    """execution_id -> 人工反馈 [{verdict, note, created_at}]，按时间排。执行记录的详情、知识库缺口看板用。"""
+    ids = [i for i in execution_ids if i]
+    if not ids:
+        return {}
+    with lock:
+        rows = db.execute(f"SELECT * FROM feedback WHERE execution_id IN ({','.join('?' * len(ids))})"
+                          " ORDER BY created_at, id", ids).fetchall()
+    out = {}
+    for row in rows:
+        out.setdefault(row["execution_id"], []).append(
+            {"id": row["id"], "verdict": row["verdict"], "note": row["note"], "created_at": row["created_at"]})
+    return out
+
+
+def delete_execution(execution_id):
+    """删掉一条执行和它的工具调用、反馈（删执行记录时用）。这些调用播下的事实撤回——出处没了，事实不能再当依据；
+    撤回只改状态，时间线上照样看得到。提议里的 execution_id 置空（外键 ON DELETE SET NULL）。"""
+    with lock:
+        ids = [r[0] for r in db.execute("SELECT id FROM tool_calls WHERE execution_id = ?",
+                                        (execution_id,)).fetchall()]
+        for call_id in ids:
+            _retract(f"tool_call:{call_id}")
+        cur = db.execute("DELETE FROM executions WHERE id = ?", (execution_id,))
+        db.commit()
+    return cur.rowcount > 0
 
 
 # --- SOP 播种 ----------------------------------------------------------------

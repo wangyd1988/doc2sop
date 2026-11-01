@@ -126,3 +126,29 @@ def delete(conversation_id: str):
         db.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
         db.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
         db.commit()
+
+
+def answers_after(after_id: int, limit: int = 1000):
+    """id 大于 after_id 的助手回答，带上它前面那句提问（知识库缺口看板按顺序扫，只读）。"""
+    with lock:
+        rows = db.execute(
+            "SELECT a.id, a.conversation_id, a.content, a.tools, a.mode, a.created_at,"
+            " (SELECT u.content FROM messages u WHERE u.conversation_id = a.conversation_id AND u.role = 'user'"
+            "  AND u.id < a.id ORDER BY u.id DESC LIMIT 1) AS question"
+            " FROM messages a WHERE a.role = 'assistant' AND a.id > ? ORDER BY a.id LIMIT ?",
+            (after_id, limit)).fetchall()
+    return [{"id": row["id"], "conversation_id": row["conversation_id"], "answer": row["content"],
+             "tools": json.loads(row["tools"]) if row["tools"] else [], "mode": row["mode"] or "kb",
+             "created_at": row["created_at"], "question": row["question"] or ""} for row in rows]
+
+
+def existing(conversation_ids) -> set:
+    """这些对话里还在的（删掉的对话，知识库缺口看板里也不再列）。"""
+    ids = list(dict.fromkeys(i for i in conversation_ids if i))
+    found = set()
+    with lock:
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            found.update(row[0] for row in db.execute(
+                f"SELECT id FROM conversations WHERE id IN ({','.join('?' * len(chunk))})", chunk).fetchall())
+    return found

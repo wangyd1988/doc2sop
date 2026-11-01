@@ -26,15 +26,22 @@ os.environ["DEMO_PACKS"] = ""
 # OPS_CLI（页面上给的宿主机命令前缀）按默认拼法。
 os.environ["OPS_APPROVAL_FILE"] = str(Path(_TEMP.name, "approval.hash"))
 os.environ.pop("OPS_CLI", None)
+# 自动执行的服务器配置（SMTP、收件组、告警令牌）指向临时目录里一个不存在的文件：不会读到这台机器上真的配置、
+# 也就不会真的发邮件；要测的用例自己写这个文件。定时执行的后台线程也关掉，用例直接调 schedules.tick()。
+os.environ["AUTOMATION_FILE"] = str(Path(_TEMP.name, "automation.yaml"))
+os.environ["SCHEDULER"] = "false"
 
 Path(_TEMP.name, "files").mkdir(parents=True, exist_ok=True)
 
 
 def clear_graph():
-    """清空组织运行图谱（graph.db），让每个用例从空图开始。延迟导入：env 必须先设好。"""
+    """清空组织运行图谱（graph.db），让每个用例从空图开始。延迟导入：env 必须先设好。
+    SOP 执行记录、计划、告警规则、知识库缺口也在 graph.db 里，一起清。"""
     from app import graph
     with graph.lock:
-        for table in ("feedback", "proposals", "facts", "tool_calls", "executions", "entities"):
+        for table in ("feedback", "proposals", "facts", "tool_calls", "executions", "entities",
+                      "sop_runs", "sop_schedules", "sop_slots", "alert_rules", "alert_events",
+                      "kb_gaps", "kb_gap_ignores", "app_state"):
             graph.db.execute(f"DELETE FROM {table}")
         graph.db.commit()
 

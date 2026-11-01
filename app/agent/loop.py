@@ -818,7 +818,8 @@ def _rebinder(client, bindable, tool, outputs, bound):
 def run(question: str, context: str | None, history, allow_web: bool = False,
         thread_id: str | None = None, model: str | None = None,
         execution_id: str | None = None, *, kb_tools: bool = False, plan: bool = False,
-        hits=None, force_search: bool = False, prefetch=None, playbook=None, smart: bool = False):
+        hits=None, force_search: bool = False, prefetch=None, playbook=None, smart: bool = False,
+        material: str | None = None):
     """跑一轮对话，边跑边产出事件。
 
     产出 (kind, payload)：
@@ -851,6 +852,9 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
 
     execution_id 是图谱里这一轮的记录：给了就把每次工具调用的完整返回记进去
     （对外事件仍只带预览），不给则这一轮不进图谱。
+
+    material：告警触发的自动执行附上的告警内容（autorun 已写好说明和分隔线），放在本轮提问里「用户的问题」之前，
+    是资料不是指令。它不进出网规则的「用户本轮消息」：告警里出现的名字不能因此豁免污点拦截。不给时提问和以前一字不差。
     """
     options = registry.TurnOptions(allow_web=allow_web and web_search.enabled(), kb_tools=kb_tools, plan=plan)
     allow_web = options.allow_web
@@ -917,6 +921,8 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
         if plan_items:
             prompt += (f"待办清单（按 SOP《{playbook.get('name', '')}》的步骤预填，做完一步用 plan 更新一步）：\n"
                        f"{plan_tool.as_text(plan_items)}\n\n")
+        if material:
+            prompt += f"{material}\n\n"
         return prompt + f"用户的问题：{question}"
 
     model_key = str(model or getattr(client, "model_name", "") or "")

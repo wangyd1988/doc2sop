@@ -350,7 +350,7 @@ class OverviewTests(_WithOps):
         with patch.object(ops_client, "describe_tools", return_value={**described, "hosts": hosts}):
             data = self.client.get("/api/overview", auth=self.auth).json()
         self.assertEqual(set(data), {"knowledge", "tools", "sops", "access", "approval", "pending", "recent",
-                                     "examples", "tool_labels"})
+                                     "gaps", "examples", "tool_labels"})
         self.assertEqual([t["name"] for t in data["pending"]["tools"]], ["pod_list"])
         self.assertEqual(data["pending"]["tools"][0]["kind"], "command")
         self.assertEqual(data["pending"]["hosts"], [{"name": "gw", "error": "host key 还没登记"}])

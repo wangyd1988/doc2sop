@@ -3,13 +3,14 @@
 只读。哪一块取不到就降级（空列表、带上原因），不让首页整页出错。工具服务各取一次：/tools/full（工具、主机、
 MCP server、连接）和 /tools/review（待审申请、要重新确认的脚本、审批口令的状态）。
 """
-from app import catalog, conversations, graph, packs, playbooks
+from app import catalog, conversations, gaps, graph, packs, playbooks, runs
 from app.agent import ops_client, registry, sandbox, web_search
 from app.config import MCP_ENABLED, log
 from app.rag import store
 
 EXAMPLE_KINDS = packs.EXAMPLE_KINDS
 RECENT = 6
+GAPS_ON_HOME = 5
 EXAMPLES_PER_KIND = 3
 # 没有场景包时的兜底示例
 KNOWLEDGE_EXAMPLE = "总结一下知识库里有哪些主要内容"
@@ -81,16 +82,39 @@ def _access():
 
 
 def _recent():
-    """最近的对话：按哪个 SOP 执行的、调了几次数据类工具、用没用智能模式（工作台上一眼看出这一轮用了什么）。"""
+    """最近的对话：按哪个 SOP 执行的、调了几次数据类工具、用没用智能模式（工作台上一眼看出这一轮用了什么）。
+    不在对话里的 SOP 执行（定时、告警触发、SOP 页的「立即执行一次」）也排进来，带上结论（kind=run）。"""
     out = []
     for conv in conversations.list_conversations(RECENT):
-        runs = list(graph.executions_by_message(conv["id"]).values())
-        book = next((run["playbook_id"] for run in runs if run.get("playbook_id")), None)
-        names = graph.tool_names_by_execution(run["execution_id"] for run in runs)
+        runs_ = list(graph.executions_by_message(conv["id"]).values())
+        book = next((run["playbook_id"] for run in runs_ if run.get("playbook_id")), None)
+        names = graph.tool_names_by_execution(run["execution_id"] for run in runs_)
         calls = sum(1 for tools in names.values() for tool in tools if registry.category_of(tool) == "data")
         out.append({**conv, "playbook": (playbooks.get(book) or {}).get("name") if book else None, "calls": calls,
                     "smart": "smart" in conversations.modes_used(conv["id"])})
-    return out
+    try:
+        auto = runs.recent_auto(RECENT)
+    except Exception as exc:   # 执行记录出问题不影响首页别的部分
+        log.warning("overview: recent runs failed: %s", exc)
+        auto = []
+    for run in auto:
+        out.append({"kind": "run", "id": run["id"], "title": f"SOP《{run['playbook_name']}》",
+                    "updated_at": run["finished_at"] or run["started_at"], "trigger": run["trigger"],
+                    "trigger_name": run["trigger_name"], "note": run["note"], "status": run["status"],
+                    "level": run["level"], "summary": run["summary"], "playbook_id": run["playbook_id"]})
+    out.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
+    return out[:RECENT]
+
+
+def _gaps():
+    """知识库缺口看板的前几组（工作台卡片）。"""
+    try:
+        board = gaps.board(limit=GAPS_ON_HOME, embed=False)
+    except Exception as exc:
+        log.warning("overview: knowledge gaps failed: %s", exc)
+        return {"groups": [], "total": 0, "questions": 0, "error": True}
+    return {"groups": [{k: g[k] for k in ("id", "count", "last_at", "example", "link", "kinds")} for g in board["groups"]],
+            "total": board["total"], "questions": board["questions"]}
 
 
 def examples(knowledge, tools, live_sops, labels):
@@ -153,6 +177,7 @@ def overview(usable_tools) -> dict:
             "hosts": tools["hosts"]["offline"],
         },
         "recent": _recent(),
+        "gaps": _gaps(),
         "examples": examples(knowledge, usable_tools, live, labels),
         "tool_labels": labels,
     }

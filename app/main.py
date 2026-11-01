@@ -19,7 +19,8 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from app import catalog, conversations, graph, jobs, models, packs, playbooks, settings, workbench
+from app import catalog, conversations, graph, jobs, models, packs, playbooks, runs, settings, workbench
+from app import automation_api
 from app.agent import grow
 from app.agent import loop as agent_loop
 from app.agent import modes as answer_modes
@@ -833,10 +834,14 @@ def conversation_messages(conversation_id: str):
     # 助手消息挂上图谱里的执行身份，页面回放后仍能对这条回答打反馈；还没处理的沉淀提议也一起带回
     runs = graph.executions_by_message(conversation_id)
     pending = graph.pending_by_execution([run["execution_id"] for run in runs.values()])
+    feedback = graph.feedback_of([run["execution_id"] for run in runs.values()])
     for message in messages:
         run = runs.get(message["id"])
         if run:
             message["execution_id"] = run["execution_id"]
+            if feedback.get(run["execution_id"]):
+                # 已经打过的反馈（比如「👎 没答好」）：回放时按钮显示成已记下
+                message["feedback"] = [f["verdict"] for f in feedback[run["execution_id"]]]
             if run.get("playbook_id"):
                 # 「▶ 执行」的那一轮：回放时页面照样标出按哪个 SOP 执行的（SOP 删了就只剩 id）
                 book = playbooks.get(run["playbook_id"])
@@ -855,7 +860,8 @@ def delete_conversation(conversation_id: str):
 
 class FeedbackBody(BaseModel):
     execution_id: str = Field(min_length=1, max_length=64)
-    verdict: Literal["correct", "false_alarm", "wrong_threshold", "missing_step"]
+    # unhelpful：对话里的「👎 没答好」（知识库缺口看板的线索）；其余四种是对 SOP 执行结论的判断
+    verdict: Literal["correct", "false_alarm", "wrong_threshold", "missing_step", "unhelpful"]
     note: str = Field(default="", max_length=300)
 
 
@@ -1145,6 +1151,16 @@ def ask(payload: Question, x_eval_token: str | None = Header(default=None)):
     playbook = playbooks.get(payload.playbook_id) if plan_on and payload.playbook_id else None
     # 图谱里的这一轮：工具的完整返回、最终结论质量、人工反馈都挂在它下面
     execution_id = graph.start_execution(conversation_id, question, payload.playbook_id)
+    # 「▶ 执行」的这一轮另记一条 SOP 执行记录（同一个 id）：回答结束后按 SOP 输出格式解析结论（runs.py）。
+    # 旁路：记不下来不影响回答
+    run_id = None
+    if payload.playbook_id:
+        try:
+            book = playbooks.get(payload.playbook_id)
+            run_id = runs.create(book, "web", run_id=execution_id, execution_id=execution_id, status="running",
+                                 conversation_id=conversation_id, params=runs.params_from_question(book, question))
+        except Exception:
+            log.warning("failed to start the run record for %s", execution_id, exc_info=True)
 
     def stream():
         """NDJSON: conversation, stage…, sources, stage, tool activity, thinking, then answer fragments.
@@ -1273,6 +1289,11 @@ def ask(payload: Question, x_eval_token: str | None = Header(default=None)):
                     grow.schedule(execution_id, answer, tool_specs)
             except Exception:
                 log.warning("failed to finish execution %s", execution_id, exc_info=True)
+            if run_id:
+                try:
+                    runs.finish(run_id, answer, failure)
+                except Exception:
+                    log.warning("failed to finish the run record %s", run_id, exc_info=True)
             # 新对话这一轮什么都没答出来（检索或模型失败）：不在历史里留一个空对话。页面按同一规则忘掉它的 id。
             if started_new and message_id is None:
                 conversations.delete(conversation_id)
@@ -1299,6 +1320,10 @@ def ask(payload: Question, x_eval_token: str | None = Header(default=None)):
 
 # 演示场景包：DEMO_PACKS 非空时，模型一配好就在后台把文档和 SOP 导进来（docs/场景包.md）。
 packs.start_autoimport(ingest, lambda: set(usable_tools()))
+
+# SOP 执行记录、定时与告警触发的自动执行、邮件、知识库缺口看板（docs/自动执行.md）。什么都没配时：没有计划不会自动跑，
+# 告警入口 404，不发邮件；问答和发给模型的提示词和以前一样
+automation_api.install(app)
 
 # 对外 MCP 出口（docs/工具.md「对外 MCP 出口」）：关着时不导入 SDK、不挂 /mcp，应用和以前一模一样。
 if MCP_ENABLED:
