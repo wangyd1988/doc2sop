@@ -927,6 +927,119 @@ table.pt .rx { display: block; font-size: 11px; color: var(--muted); font-family
   .sf dl, .where { grid-template-columns: 76px 1fr; }
   .sf table.ax { display: block; overflow-x: auto; }
 }
+
+/* ---------- SOP 执行记录、自动执行、知识库缺口 ---------- */
+.mtool select { font: inherit; font-size: 13px; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--border);
+                background: var(--panel-2); color: var(--text); max-width: 190px; outline: none; }
+.mrow .st.run, .pill.run, .lv.run { background: var(--accent-soft); color: var(--accent); }
+.mrow .st.unk, .pill.unk { background: rgba(107,114,128,.14); color: #4b5563; }
+@media (prefers-color-scheme: dark) { .mrow .st.unk, .pill.unk { color: #cbd5e1; } }
+.lv { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 650; line-height: 22px; padding: 0 10px;
+      border-radius: 999px; background: var(--panel-2); color: var(--muted); white-space: nowrap; }
+.lv.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+.lv.warn { background: rgba(245,158,11,.16); color: #b45309; }
+.lv.bad { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+.lv.unk { background: rgba(107,114,128,.14); color: #4b5563; }
+.ap-hd .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.ap-hd .acts a.btn { text-decoration: none; }
+table.rt td.mk { white-space: nowrap; }
+table.rt tr.warn td { background: rgba(245,158,11,.08); }
+table.rt tr.bad td { background: color-mix(in srgb, var(--danger) 7%, transparent); }
+table.rt tr.unknown td.mk { color: var(--muted); }
+.cmp-hd { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cmp { display: flex; flex-direction: column; gap: 5px; }
+.cmp .c { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 8px; font-size: 12.5px; padding: 6px 9px; border-radius: 8px;
+          background: var(--panel-2); line-height: 1.5; }
+.cmp .c b { font-weight: 600; }
+.cmp .c.new b { color: var(--danger); } .cmp .c.still b { color: #b45309; } .cmp .c.rec b { color: var(--ok); }
+.cmp .c.chg b, .cmp .c.gone b { color: var(--muted); }
+details.rs { border: 1px solid var(--border); border-radius: 9px; margin-bottom: 6px; background: var(--panel); }
+details.rs > summary { cursor: pointer; padding: 7px 10px; font-size: 12.5px; display: flex; gap: 8px; align-items: baseline; list-style: none; }
+details.rs > summary::-webkit-details-marker { display: none; }
+details.rs > summary .i { color: var(--accent); font-weight: 700; flex-shrink: 0; }
+details.rs > summary .tl { font-weight: 600; flex-shrink: 0; }
+details.rs > summary .ck { color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details.rs[open] > summary .ck { white-space: normal; }
+details.rs .body { padding: 0 10px 8px; display: flex; flex-direction: column; gap: 6px; }
+details.rs .kv { font-size: 12px; color: var(--muted); line-height: 1.55; word-break: break-all; }
+details.rs .kv b { color: var(--text); font-weight: 600; }
+details.rs .call { border-top: 1px dashed var(--border); padding-top: 6px; }
+details.rs .call details > summary { cursor: pointer; font-size: 12px; color: var(--accent); }
+details.rs pre.code { margin: 4px 0 0; font: 12px/1.5 ui-monospace, Consolas, monospace; background: var(--panel-2); border: 1px solid var(--border);
+                      border-radius: 8px; padding: 8px 10px; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+.fb { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.fb input { flex: 1; min-width: 140px; font: inherit; font-size: 12.5px; padding: 5px 9px; border-radius: 8px; border: 1px solid var(--border);
+            background: var(--panel-2); color: var(--text); outline: none; }
+.mailst { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.run .answer { font-size: 13px; line-height: 1.65; }
+.run .answer table { border-collapse: collapse; font-size: 12.5px; margin: 6px 0; }
+.run .answer th, .run .answer td { border: 1px solid var(--border); padding: 4px 7px; text-align: left; }
+.pb-runs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 0 11px 9px; font-size: 12px; color: var(--muted); }
+.pb-runs button { font-size: 12px; color: var(--accent); padding: 2px 6px; border-radius: 6px; }
+.pb-runs button:hover { background: var(--accent-soft); }
+.pb-top button.now { color: #0369a1; }
+.sf .frow { display: grid; grid-template-columns: 110px 1fr; gap: 10px; align-items: center; margin-bottom: 10px; font-size: 13px; }
+.sf .frow > span { color: var(--muted); }
+.sf .frow > span i { display: block; font-style: normal; font-size: 11px; color: var(--muted); opacity: .8; }
+.sf .frow[hidden] { display: none; }
+.sf textarea { font: inherit; font-size: 13px; padding: 8px 11px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2);
+               color: var(--text); outline: none; min-height: 64px; resize: vertical; width: 100%; box-sizing: border-box; }
+.sf .autoform { border: 1px solid var(--accent); border-radius: 12px; padding: 14px 16px; margin-top: 12px; background: var(--panel); }
+.sf .autoform h4 { margin: 0 0 12px; font-size: 13.5px; }
+.sf table.ax td .note { margin-top: 2px; }
+.sf table.ax .ops { white-space: nowrap; display: flex; gap: 4px; flex-wrap: wrap; }
+.sf table.ax .ops button { color: var(--text); }
+.sf table.ax .ops button.del { color: var(--danger); }
+.sf table.ax .ops button.go { color: var(--accent); }
+.sf pre.cfg { background: var(--panel-2); border-radius: 9px; padding: 10px 12px; font: 12px/1.6 ui-monospace, Consolas, monospace;
+              white-space: pre; overflow-x: auto; margin: 8px 0 0; }
+.sf .filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 14px; font-size: 13px; }
+.sf .filter select { width: auto; }
+.gap-row { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border);
+           align-items: start; }
+.gap-row:first-child { border-top: 0; padding-top: 2px; }
+.gap-row .cnt { font-size: 20px; font-weight: 700; text-align: center; color: #b45309; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.gap-row .cnt small { display: block; font-size: 11px; font-weight: 400; color: var(--muted); }
+.gap-row .ex { font-size: 14px; font-weight: 600; line-height: 1.5; word-break: break-word; }
+.gap-row .meta { font-size: 12px; color: var(--muted); margin: 3px 0 5px; line-height: 1.5; }
+.gap-row details { font-size: 12.5px; margin-top: 4px; } .gap-row details summary { cursor: pointer; color: var(--accent); }
+.gap-row details ul { margin: 4px 0 0; padding-left: 18px; color: var(--muted); }
+.gap-row .acts { display: flex; flex-direction: column; gap: 6px; }
+.wb.gapcard .gp { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 0;
+                  border-top: 1px solid var(--border); cursor: pointer; }
+.wb.gapcard .gp:hover .t { color: var(--accent); }
+.wb.gapcard .gp .c { font-weight: 700; color: #b45309; text-align: center; font-variant-numeric: tabular-nums; }
+.wb.gapcard .gp .t { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb.gapcard .gp .w { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.wb > h3 .lnk { margin-left: auto; font-size: 12px; font-weight: 400; color: var(--muted); }
+.wb > h3 .lnk:hover { color: var(--accent); }
+.dlg .fld { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; }
+.dlg .fld input { font: inherit; font-size: 14px; font-weight: 400; padding: 9px 11px; border-radius: 10px; border: 1.5px solid var(--border);
+                  background: var(--panel-2); color: var(--text); outline: none; }
+.dlg .fld input:focus { border-color: var(--accent); }
+.tools button[data-thumb].on { color: var(--danger); }
+.tools button { white-space: nowrap; }
+.pb .tl-acts { flex-wrap: wrap; justify-content: flex-end; max-width: 100%; }
+@media (max-width: 820px) {
+  .home .gapcard { order: 7; }
+  .gap-row { grid-template-columns: 40px minmax(0, 1fr); }
+  .gap-row .acts { grid-column: 1 / 3; flex-direction: row; flex-wrap: wrap; }
+  .sf .frow { grid-template-columns: 1fr; gap: 4px; }
+  .mtool select { max-width: none; flex: 1; }
+  .cmp .c { grid-template-columns: 1fr; gap: 2px; }
+  /* 自动执行页：表格在手机上一行一张卡片，每格前面写上列名 */
+  .sf.auto .card h3 { flex-wrap: wrap; row-gap: 2px; }
+  .sf.auto dl { grid-template-columns: 64px minmax(0, 1fr); }
+  .sf.auto dd { min-width: 0; overflow-wrap: anywhere; }
+  .sf table.ax.stack, .sf table.ax.stack tbody, .sf table.ax.stack tr, .sf table.ax.stack td { display: block; overflow: visible; }
+  .sf table.ax.stack tr:first-child { display: none; }
+  .sf table.ax.stack tr { padding: 9px 0; border-bottom: 1px solid var(--border); }
+  .sf table.ax.stack td { border: 0; padding: 2px 0; overflow-wrap: anywhere; }
+  .sf table.ax.stack td[data-l] { position: relative; padding-left: 70px; }
+  .sf table.ax.stack td[data-l]::before { content: attr(data-l); position: absolute; left: 0; color: var(--muted); }
+  .sf table.ax.stack .ops { margin-top: 6px; white-space: normal; }
+  table.rt { font-size: 12px; } table.rt th, table.rt td { padding: 5px 6px; } table.rt td.mk { white-space: normal; }
+}
 </style>
 </head>
 <body data-page="home">
@@ -1023,8 +1136,10 @@ const PAGES = {home: ['/', '工作台'], chat: ['/chat', '对话'], tools: ['/to
                docs: ['/docs', '文档'], access: ['/access', '对外接入'], settings: ['/settings', '设置']};
 let page = 'home';
 let mTab = 'tools', mGroup = null, mItem = null, mSearch = '';
-// 工具页的页签：全部工具 / 待审批 / 主机与数据源；SOP 页：全部 SOP / 待确认提议
-let tlTab = 'all', pbTab = 'all', pbOrigins = null;
+// 工具页的页签：全部工具 / 待审批 / 主机与数据源；SOP 页：全部 SOP / 执行记录 / 自动执行 / 待确认提议；文档页：全部文档 / 知识库缺口
+let tlTab = 'all', pbTab = 'all', pbOrigins = null, docTab = 'all';
+// 执行记录的筛选、自动执行页只看哪个 SOP、正在填的计划或告警规则表单、SOP 的执行小结
+let runFilter = {sop: '', trigger: ''}, autoSop = '', autoForm = null, runSummary = {};
 const mCache = {};  // 列表里出现过的条目：id -> 数据，点开详情直接用
 // 工作台的汇总（/api/overview）：导航徽标、示例问题、工具的中文名都从这里取
 let overview = null;
@@ -1513,6 +1628,9 @@ function addTools(bot, text, question, sources) {
   bot.insertAdjacentHTML('beforeend',
     `<div class="tools"><button data-copy>⧉ 复制</button><button data-retry="${esc(question)}">↻ 重新回答</button>${
       web.length && text.trim() ? '<button data-savenote title="确认这段网络答案可信后，存为知识库文档，下次直接从知识库回答">📥 存入知识库</button>' : ''}${
+      bot.dataset.exec && bot.dataset.playbookId && text.trim() ? '<button data-runrec title="这次按 SOP 执行的记录：结论、异常项、和上次比">📋 执行记录</button>' : ''}${
+      bot.dataset.exec && text.trim() ? (bot.dataset.thumbed ? '<button data-thumb class="on" title="已记下：知识库缺口看板会把这个问题算进去">👎 已记下</button>'
+        : '<button data-thumb title="这条回答没帮上忙：记下来，知识库缺口看板会把这个问题算进「文档没写的」">👎</button>') : ''}${
       (bot.dataset.model || bot.dataset.took) ? (() => {
         const d = bot.dataset, parts = [];
         if (d.retr) parts.push(`检索 ${d.retr}s`);
@@ -1668,6 +1786,15 @@ $('thread').addEventListener('click', e => {
   if (save) { const bot = save.closest('.bot'); if (!bot.querySelector('.note-edit')) noteEditor(bot); return; }
   if (e.target.closest('[data-notecancel]')) { e.target.closest('.note-edit').remove(); return; }
   if (e.target.closest('[data-notego]')) { const box = e.target.closest('.note-edit'); saveNote(box.closest('.bot'), box); }
+  const rec = e.target.closest('[data-runrec]');
+  if (rec) { runFilter = {sop: '', trigger: ''}; go('sop', {tab: 'runs', item: rec.closest('.bot').dataset.exec}); return; }
+  const thumb = e.target.closest('[data-thumb]');
+  if (thumb && !thumb.classList.contains('on')) {
+    thumb.disabled = true;
+    postJson('/api/feedback', {execution_id: thumb.closest('.bot').dataset.exec, verdict: 'unhelpful'})
+      .then(() => { thumb.classList.add('on'); thumb.textContent = '👎 已记下'; thumb.title = '已记下：知识库缺口看板会把这个问题算进去'; })
+      .catch(err => { thumb.disabled = false; toast('没记下：' + err.message, 'err'); });
+  }
 });
 const nearBottom = () => { const c = $('chat'); return c.scrollHeight - c.scrollTop - c.clientHeight < 120; };
 const toBottom = () => { $('chat').scrollTop = $('chat').scrollHeight; };
@@ -1701,6 +1828,8 @@ async function openConv(id) {
   for (const m of d.messages) {
     if (m.role === 'user') { addUser(m.content); lastQuestion = m.content; continue; }
     const bot = addBot(`<div class="answer">${md(m.content)}</div>`);
+    bot.dataset.mid = m.id;
+    if ((m.feedback || []).includes('unhelpful')) bot.dataset.thumbed = '1';
     if (m.model) bot.dataset.model = m.model;
     if (m.execution_id) bot.dataset.exec = m.execution_id;
     // 回答模式：加这一字段之前的老消息服务端按知识库模式回（那时只有这一种）
@@ -1869,14 +1998,16 @@ function pbCard(p) {
   const live = p.enabled && !bad;
   return `<div class="pb${p.enabled ? '' : ' off'}${bad ? ' bad' : ''}" data-id="${p.id}"
        data-search="${searchable(p.name, p.source, p.trigger, p.steps.map(s => [s.tool, s.checkpoint, s.evidence]))}">
-    <div class="pb-top">
+    <div class="pb-top tl-top">
       <span class="nm" title="${esc(p.name)}">${esc(p.name)}</span>
-      ${live ? `<button class="run" data-run="${p.id}" title="按这个 SOP 的步骤调用工具并给出结论">▶ 执行</button>` : ''}
+      <span class="tl-acts">${live ? `<button class="run" data-run="${p.id}" title="按这个 SOP 的步骤调用工具并给出结论">▶ 执行</button>
+        <button class="now" data-runnow="${p.id}" title="在后台按这个 SOP 跑一次，不进对话；结果在「执行记录」里">⏱ 立即执行一次</button>` : ''}
       <button data-toggle="${p.id}">${p.enabled ? '已启用' : '已停用'}</button>
       <button data-edit="${p.id}">编辑</button>
-      <button data-del="${p.id}">删除</button>
+      <button data-del="${p.id}">删除</button></span>
     </div>
     ${bad ? `<div class="pb-warn">⚠ 引用了当前不可用的工具：${esc(p.missing_tools.join('、'))}，该 SOP 不会生效</div>` : ''}
+    ${p.id ? pbRunsHtml(p) : ''}
     <div class="pb-body">
       ${p.trigger ? `<div class="pb-trig">适用：${esc(p.trigger)}</div>` : ''}
       ${steps}
@@ -2065,6 +2196,12 @@ $('pbPanel').addEventListener('click', async e => {
     if (p) runPlaybook(p);
     return;
   }
+  const nowId = id('runnow');
+  if (nowId) return runNowFlow(nowId);
+  const runsId = id('goruns');
+  if (runsId) { runFilter = {sop: runsId, trigger: ''}; return go('sop', {tab: 'runs', item: null}); }
+  const autoId = id('goauto');
+  if (autoId) { autoSop = autoId; autoForm = null; return go('sop', {tab: 'auto', item: null}); }
   const toggleId = id('toggle');
   if (toggleId) {
     const p = await pbGet(toggleId);
@@ -2804,7 +2941,7 @@ $('scrim').onclick = () => document.body.classList.remove('menu');
    左侧导航 → go(页名)。工具页、SOP 页的页签和选中的条目放在查询串里（/tools?tab=pending&item=…），
    工作台「待处理」里的「审批」「去确认」直接链过去；对话页把当前对话放在 ?c=…，刷新后还在这个对话。 */
 function tabBtn(kind, key, label, n, cls) {
-  const on = (kind === 'tl' ? tlTab : pbTab) === key;
+  const on = (kind === 'tl' ? tlTab : kind === 'doc' ? docTab : pbTab) === key;
   return `<button class="${on ? 'on' : ''}" data-tab="${kind}:${key}">${label}${n ? `<span class="nb ${cls}">${n}</span>` : ''}</button>`;
 }
 function paintTop() {
@@ -2818,9 +2955,13 @@ function paintTop() {
   if (page === 'sop') {
     sub = (o ? `${o.sops.live} 个生效 · 共 ${o.sops.total} 个` : '')
       + (pbOrigins && o?.sops.total ? ` · 来源：文档 ${pbOrigins.doc || 0} / 实践 ${pbOrigins.practice || 0}${pbOrigins.manual ? ` / 手工 ${pbOrigins.manual}` : ''}` : '');
-    tabs = tabBtn('pb', 'all', '全部 SOP') + tabBtn('pb', 'proposals', '待确认提议', c.sops, 'purple');
+    tabs = tabBtn('pb', 'all', '全部 SOP') + tabBtn('pb', 'runs', '执行记录') + tabBtn('pb', 'auto', '自动执行')
+         + tabBtn('pb', 'proposals', '待确认提议', c.sops, 'purple');
   }
-  if (page === 'docs') sub = o ? `${o.knowledge.documents} 个文档 · ${o.knowledge.chunks} 个片段` : '';
+  if (page === 'docs') {
+    sub = o ? `${o.knowledge.documents} 个文档 · ${o.knowledge.chunks} 个片段` : '';
+    tabs = tabBtn('doc', 'all', '全部文档') + tabBtn('doc', 'gaps', '知识库缺口', o?.gaps?.total, '');
+  }
   if (page === 'access') sub = o ? (o.access.enabled ? '已开启' : '没有打开') : '';
   $('topTitle').textContent = PAGES[page][1];
   $('topSub').textContent = sub;
@@ -2829,8 +2970,8 @@ function paintTop() {
 $('topTabs').addEventListener('click', e => {
   const b = e.target.closest('[data-tab]'); if (!b) return;
   const [kind, key] = b.dataset.tab.split(':');
-  if (kind === 'tl') tlTab = key; else pbTab = key;
-  mGroup = null; mItem = null; mSearch = ''; tlEditing = null; tlProposing = false; pbEditing = null; pbPicking = false;
+  if (kind === 'tl') tlTab = key; else if (kind === 'doc') docTab = key; else pbTab = key;
+  mGroup = null; mItem = null; mSearch = ''; tlEditing = null; tlProposing = false; pbEditing = null; pbPicking = false; autoForm = null;
   document.body.classList.remove('detail');
   syncUrl(true);
   renderManage();
@@ -2839,6 +2980,9 @@ function urlFor() {
   const qs = new URLSearchParams();
   if (page === 'tools' && tlTab !== 'all') qs.set('tab', tlTab);
   if (page === 'sop' && pbTab !== 'all') qs.set('tab', pbTab);
+  if (page === 'docs' && docTab !== 'all') qs.set('tab', docTab);
+  if (page === 'sop' && pbTab === 'runs' && runFilter.sop) qs.set('sop', runFilter.sop);
+  if (page === 'sop' && pbTab === 'auto' && autoSop) qs.set('sop', autoSop);
   if (['tools', 'sop', 'docs'].includes(page) && mItem) qs.set('item', mItem);
   if (page === 'chat' && convId) qs.set('c', convId);
   return PAGES[page][0] + (qs.toString() ? '?' + qs : '');
@@ -2859,11 +3003,11 @@ function go(name, opts = {}) {
   $('pg-chat').classList.toggle('on', name === 'chat');
   $('pg-manage').classList.toggle('on', !['home', 'chat'].includes(name));
   if (!['home', 'chat'].includes(name)) {
-    if (changed) { mGroup = null; mSearch = ''; tlEditing = null; tlProposing = false; pbEditing = null; pbPicking = false; mItem = null; axIssued = null; }
+    if (changed) { mGroup = null; mSearch = ''; tlEditing = null; tlProposing = false; pbEditing = null; pbPicking = false; mItem = null; axIssued = null; autoForm = null; }
     mTab = name;
     localStorage.setItem('kb-mtab', name);
   }
-  if (opts.tab) { if (name === 'tools') tlTab = opts.tab; if (name === 'sop') pbTab = opts.tab; }
+  if (opts.tab) { if (name === 'tools') tlTab = opts.tab; if (name === 'sop') pbTab = opts.tab; if (name === 'docs') docTab = opts.tab; }
   if (opts.item !== undefined) mItem = opts.item;
   applyBrand();
   paintTop();
@@ -2886,6 +3030,7 @@ document.querySelector('#side .nav').addEventListener('click', e => {
   e.preventDefault();
   if (a.dataset.page === 'tools') tlTab = 'all';
   if (a.dataset.page === 'sop') pbTab = 'all';
+  if (a.dataset.page === 'docs') docTab = 'all';
   go(a.dataset.page);
 });
 /* 当前地址 → 页面。兼容老地址：/manage（#settings、#access，或上次的页签）、
@@ -2910,7 +3055,12 @@ function route() {
   }
   const name = Object.keys(PAGES).find(k => PAGES[k][0] === path) || 'home';
   if (name === 'tools') tlTab = ['pending', 'infra'].includes(qs.get('tab')) ? qs.get('tab') : 'all';
-  if (name === 'sop') pbTab = qs.get('tab') === 'proposals' ? 'proposals' : 'all';
+  if (name === 'sop') {
+    pbTab = ['proposals', 'runs', 'auto'].includes(qs.get('tab')) ? qs.get('tab') : 'all';
+    if (pbTab === 'runs') runFilter = {sop: qs.get('sop') || '', trigger: ''};
+    if (pbTab === 'auto') autoSop = qs.get('sop') || '';
+  }
+  if (name === 'docs') docTab = qs.get('tab') === 'gaps' ? 'gaps' : 'all';
   go(name, {push: false, item: qs.get('item') || null});
   if (name === 'chat' && qs.get('c') && qs.get('c') !== convId) openConv(qs.get('c'));
 }
@@ -2970,13 +3120,24 @@ function todoHtml(o) {
   return rows.join('') || '<div class="all-done">✓ 没有待处理的事</div>';
 }
 function recentHtml(list) {
-  return (list || []).slice(0, 5).map(c => `<div class="rc-item" data-conv="${esc(c.id)}"><span class="t">${esc(c.title)}</span>
+  return (list || []).slice(0, 5).map(c => c.kind === 'run'
+    ? `<div class="rc-item" data-run="${esc(c.id)}" title="${esc(c.summary || '')}"><span class="t">${esc(c.title)}</span>
+      <span class="w">${esc(ago(c.updated_at))}</span><div class="chipset"><span class="pill">${triggerLabel(c)}${c.note ? ' · ' + esc(c.note) : ''}</span>${levelPill(c)}</div></div>`
+    : `<div class="rc-item" data-conv="${esc(c.id)}"><span class="t">${esc(c.title)}</span>
       <span class="w">${esc(ago(c.updated_at))}</span><div class="chipset">${
       c.playbook ? `<span class="pill purple">📋 按 SOP《${esc(c.playbook)}》</span>` : ''}${
       c.calls ? `<span class="pill acc">🔧 ${c.calls} 次工具调用</span>` : ''}${
       c.smart ? '<span class="pill" title="这个对话里有智能模式的回答：可能用了模型的通用知识">✨ 智能模式</span>' : ''}${
       !c.playbook && !c.calls && !c.smart ? '<span class="pill">📚 只查了知识库</span>' : ''}</div></div>`).join('')
     || '<div class="all-done" style="color:var(--muted)">还没有对话，在上面问一句试试</div>';
+}
+function gapCardHtml(gp) {
+  gp = gp || {groups: []};
+  return `<div class="wb gapcard"><h3>知识库缺口 ${gp.total ? `<span class="nb">${gp.total}</span>` : ''}<small>大家常问、文档里没写的</small>
+      <button class="lnk" data-gogaps>全部 →</button></h3>
+    ${(gp.groups || []).map(g => `<div class="gp" data-gogaps title="${esc(g.example)}"><span class="c">${g.count}</span><span class="t">${esc(g.example)}</span>
+      <span class="w">${esc(ago(g.last_at))}</span></div>`).join('')
+      || '<div class="all-done" style="color:var(--muted)">✓ 暂时没有发现缺口：没答上来、被点了 👎 的问题会出现在这里</div>'}</div>`;
 }
 function setupHtml() {
   const o = onboard;
@@ -3035,7 +3196,8 @@ function paintHome() {
     <div class="duo">
       <div class="wb todo"><h3>待处理 ${c.all ? `<span class="nb alert">${c.all}</span>` : ''}<small>审批、确认都在页面上直接做</small></h3>${todoHtml(o)}</div>
       <div class="wb recent"><h3>最近 <small>对话和 SOP 执行</small></h3>${recentHtml(o.recent)}</div>
-    </div>`;
+    </div>
+    ${gapCardHtml(o.gaps)}`;
 }
 function askFromHome(text) {
   text = (text || '').trim(); if (!text) return;
@@ -3049,6 +3211,9 @@ const homePlaceholder = () => NARROW.matches ? '问点什么…' : '问点什么
 NARROW.addEventListener('change', () => { const q = $('homeQ'); if (q) q.placeholder = homePlaceholder(); });
 $('home').addEventListener('click', e => {
   const pb = e.target.closest('[data-pb]'); if (pb) return runPlaybookById(pb.dataset.pb);
+  const run = e.target.closest('[data-run]');
+  if (run) { runFilter = {sop: '', trigger: ''}; return go('sop', {tab: 'runs', item: run.dataset.run}); }
+  if (e.target.closest('[data-gogaps]')) return go('docs', {tab: 'gaps', item: null});
   const q = e.target.closest('[data-q]'); if (q) return askFromHome(q.dataset.q);
   if (e.target.closest('#homeAsk')) return askFromHome($('homeQ').value);
   const td = e.target.closest('[data-todo]');
@@ -3092,10 +3257,11 @@ function tlRow(name, t) {
 function pbRow(p) {
   const bad = (p.missing_tools || []).length;
   const st = p.enabled && !bad ? ['ok', '生效'] : bad ? ['bad', '工具缺失'] : ['', '已停用'];
+  const last = (runSummary[p.id] || {}).last;
   mCache['pb:' + p.id] = p;
   return `<div class="mrow ${mItem === p.id ? 'on' : ''}" data-mitem="${esc(p.id)}">
     <div class="t">${esc(p.name)}</div>
-    <div class="s">${p.steps.length} 步 · ${esc(p.steps.map(s => toolLabel(s.tool)).join(' → '))}${p.trigger ? ' · ' + esc(p.trigger) : ''}</div>
+    <div class="s">${last ? `${(LEVEL[last.level] || LEVEL.unknown)[1]} ` : ''}${p.steps.length} 步 · ${esc(p.steps.map(s => toolLabel(s.tool)).join(' → '))}${p.trigger ? ' · ' + esc(p.trigger) : ''}</div>
     <span class="st ${st[0]}">${st[1]}</span></div>`;
 }
 function docRow(d) {
@@ -3116,8 +3282,9 @@ function unmountPanels() {
 
 async function renderManage() {
   const cfg = TAB[mTab];
-  const formPage = PAGE_TABS.includes(mTab) || (mTab === 'tools' && tlTab === 'infra');
-  const flat = (mTab === 'tools' && tlTab === 'pending') || (mTab === 'sop' && pbTab === 'proposals');
+  const formPage = PAGE_TABS.includes(mTab) || (mTab === 'tools' && tlTab === 'infra') || (mTab === 'sop' && pbTab === 'auto')
+                 || (mTab === 'docs' && docTab === 'gaps');
+  const flat = (mTab === 'tools' && tlTab === 'pending') || (mTab === 'sop' && ['proposals', 'runs'].includes(pbTab));
   document.body.classList.toggle('settings', formPage);
   document.body.classList.toggle('nogroups', flat);
   $('msettings').hidden = !formPage;
@@ -3127,6 +3294,9 @@ async function renderManage() {
   if (mTab === 'tools' && tlTab === 'infra') return renderInfra();
   if (mTab === 'tools' && tlTab === 'pending') return renderPending();
   if (mTab === 'sop' && pbTab === 'proposals') return renderProposals();
+  if (mTab === 'sop' && pbTab === 'runs') return renderRuns();
+  if (mTab === 'sop' && pbTab === 'auto') return renderAuto();
+  if (mTab === 'docs' && docTab === 'gaps') return renderGaps();
 
   // 1. 分组栏
   let groups, live, count;
@@ -3136,7 +3306,7 @@ async function renderManage() {
     groups = Object.entries(by).sort((a, b) => b[1] - a[1]).map(([name, total]) => ({name, total}));
     count = allDocs.length; live = null;
   } else {
-    const d = await (await fetch(LAZY[cfg.panel].url)).json();
+    const [d] = await Promise.all([fetch(LAZY[cfg.panel].url).then(r => r.json()), mTab === 'sop' ? loadRunSummary() : null]);
     groups = d.groups || []; live = d.live || 0; count = d.count || 0;
     if (mTab === 'sop') { pbTools = d.tools || {}; pbOrigins = d.origins || null; paintTop(); }
     if (mTab === 'tools') { tlHost = d.host || {}; tlConns = d.connections || {}; tlHosts = d.hosts || {configured: false}; }
@@ -4045,11 +4215,24 @@ $('mlist').addEventListener('click', e => {
     $('mrows').querySelectorAll('.mrow').forEach(r => r.classList.toggle('on', r === row));
     if (mTab === 'tools' && tlTab === 'pending') renderApDetail();
     else if (mTab === 'sop' && pbTab === 'proposals') renderProposalDetail();
+    else if (mTab === 'sop' && pbTab === 'runs') renderRunDetail();
     else renderDetail();
     document.body.classList.add('detail');   // 窄屏：详情盖住整页
     syncUrl(false);
     return;
   }
+  const runMore = e.target.closest('[data-runmore]');
+  if (runMore) {
+    runMore.disabled = true; runMore.textContent = '加载中…';
+    fetchRuns(+runMore.dataset.runmore).then(d => {
+      const next = +runMore.dataset.runmore + (d.runs || []).length;
+      runMore.insertAdjacentHTML('beforebegin', (d.runs || []).map(runRow).join(''));
+      runMore.outerHTML = moreRuns(next, d.total);
+    });
+    return;
+  }
+  const now = e.target.closest('[data-runnow]');
+  if (now) return runNowFlow(now.dataset.runnow);
   const more = e.target.closest('[data-docmore]');
   if (more) {
     const list = $('mrows')._docList || [], from = +more.dataset.docmore;
@@ -4069,8 +4252,39 @@ $('mlist').addEventListener('input', e => {
   mSearch = e.target.value; mSearchFocus = true;
   clearTimeout(searchTimer); searchTimer = setTimeout(renderManage, 250);
 });
+// 执行记录的筛选：只看一个 SOP、只看一种触发方式
+$('mlist').addEventListener('change', e => {
+  if (e.target.id !== 'runSop' && e.target.id !== 'runTrigger') return;
+  runFilter = {sop: $('runSop').value, trigger: $('runTrigger').value};
+  mItem = null;
+  syncUrl(false);
+  renderRuns();
+});
 $('mdetail').addEventListener('click', async e => {
   if (e.target.closest('[data-back]')) { document.body.classList.remove('detail'); return; }
+  // 执行记录的详情：再执行一次、在对话里看、看 SOP、删除、人工反馈
+  const again = e.target.closest('[data-runnow]'); if (again) return runNowFlow(again.dataset.runnow);
+  const conv = e.target.closest('[data-runconv]');
+  if (conv) { go('chat', {push: false}); await openConv(conv.dataset.runconv); syncUrl(true); return; }
+  const sopBtn = e.target.closest('[data-gosop]');
+  if (sopBtn) { pbTab = 'all'; mGroup = null; return go('sop', {item: sopBtn.dataset.gosop}); }
+  const del = e.target.closest('[data-rundel]');
+  if (del) {
+    if (!confirm('删除这条执行记录？连同图谱里这一次的工具调用和反馈一起删掉；对话里的消息不动。')) return;
+    try { await sendJson('DELETE', '/api/runs/' + encodeURIComponent(del.dataset.rundel)); }
+    catch (err) { return toast('删除失败：' + err.message, 'err'); }
+    toast('已删除', 'ok'); mItem = null; document.body.classList.remove('detail');
+    return renderRuns();
+  }
+  const fb = e.target.closest('[data-runfb]');
+  if (fb) {
+    const r = mCache['rd:' + mItem]; if (!r || !r.execution_id) return;
+    fb.disabled = true;
+    try { await postJson('/api/feedback', {execution_id: r.execution_id, verdict: fb.dataset.runfb, note: ($('runFbNote')?.value || '').trim()}); }
+    catch (err) { fb.disabled = false; return toast('没记下：' + err.message, 'err'); }
+    toast(`已记下：${FEEDBACK[fb.dataset.runfb]}`, 'ok');
+    return renderRunDetail();
+  }
   const ok = e.target.closest('[data-approve]'); if (ok) return approveFlow(ok.dataset.approve);
   const no = e.target.closest('[data-apreject]'); if (no) return rejectFlow(no.dataset.apreject);
   const tr = e.target.closest('[data-trust]'); if (tr) return trustFlow(tr.dataset.trust);
@@ -4095,6 +4309,514 @@ $('mdetail').addEventListener('click', async e => {
   }
   if (mTab === 'docs') docActions(e);
 });
+/* ---------- SOP 执行记录、自动执行（定时、告警）、知识库缺口（docs/自动执行.md） ----------
+   执行记录：每次按 SOP 执行（对话里的「▶ 执行」、SOP 页的「立即执行一次」、定时、告警触发）都留一份：结论（正常 / 有异常 /
+   没跑成 / 没法判断）、异常项、和上次比、每一步的调用和原始返回、人工反馈。结论从回答里按 SOP 输出格式的表格解析，
+   解析不出来的记「没法判断」，不当成正常。
+   自动执行：计划和告警规则只能从服务器上配好的收件组里选名字，收件地址、SMTP 账号和告警令牌页面上都看不到。
+   知识库缺口：大家常问、文档里没写的问题，按次数排；「忽略」后相似的问题不再出现。 */
+const LEVEL = {ok: ['ok', '✅', '正常'], anomaly: ['warn', '⚠️', '有异常'], failed: ['bad', '❌', '没跑成'], unknown: ['unk', '❓', '没法判断']};
+const RUN_STATUS = {queued: '排队中', running: '执行中', missed: '错过', skipped: '跳过'};
+const TRIGGER = {web: ['▶', '页面'], schedule: ['⏰', '定时'], alert: ['🚨', '告警']};
+const MARK = {ok: '✅', warn: '⚠️', bad: '❌', unknown: '❓'};
+const FEEDBACK = {correct: '判断正确', false_alarm: '误报', wrong_threshold: '阈值不对', missing_step: '漏了一步', unhelpful: '没答好'};
+const WEEKDAY = ['一', '二', '三', '四', '五', '六', '日'];
+const NOTIFY_WHEN = {problems: '有异常、没跑成、没法判断时', always: '每次都发'};
+const NOTIFY_REPEAT = {daily: '同一个问题每天最多提醒一次', always: '每次都发（标「仍未恢复」）', never: '恢复之前不重复发'};
+const GAP_KIND = {no_citation: '没引用知识库', kb_missing: '说知识库里没有', smart_general: '智能模式靠通用知识', feedback: '有人工反馈'};
+const GROUPING = {lexical: '按字面', mixed: '字面 + 向量', vector: '按向量'};
+let pbAll = null, runPoll = null;
+let autoState = {groups: [], books: []}, gapGroups = [];
+const fullTime = t => t ? new Date(t).toLocaleString('zh-CN', {hour12: false}) : '—';
+const shortTime = t => t ? new Date(t).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false}) : '—';
+const paramsText = p => Object.entries(p || {}).map(([k, v]) => `${k}=${v}`).join('，');
+const isRunning = r => !!r && (r.status === 'queued' || r.status === 'running');
+const triggerLabel = r => { const t = TRIGGER[r.trigger] || ['', r.trigger || '']; return `${t[0]} ${esc(t[1])}`; };
+function levelPill(r, big) {
+  const cls = big ? 'lv' : 'pill';
+  if (isRunning(r)) return `<span class="${cls} run">⏳ ${RUN_STATUS[r.status]}</span>`;
+  if (RUN_STATUS[r.status]) return `<span class="${cls} off">${RUN_STATUS[r.status]}</span>`;
+  const lv = LEVEL[r.level] || LEVEL.unknown;
+  return `<span class="${cls} ${lv[0]}">${lv[1]} ${lv[2]}</span>`;
+}
+// SOP 里留空的参数（自动执行时没人能回答，要先给值）：和服务端 sop_tools.blanks 一样，只认空串和 null
+function blanksOf(p) {
+  return [...new Set((p.steps || []).flatMap(s => Object.entries(s.args || {}).filter(([, v]) => v === '' || v == null).map(([k]) => k)))];
+}
+async function pbAllList(fresh) {
+  if (!pbAll || fresh) {
+    const d = await fetch('/api/playbooks?everything=1').then(r => r.json()).catch(() => ({playbooks: []}));
+    pbAll = d.playbooks || [];
+  }
+  return pbAll;
+}
+async function loadRunSummary() {
+  const d = await fetch('/api/runs/summary').then(r => r.ok ? r.json() : {}).catch(() => ({}));
+  runSummary = d.playbooks || {};
+}
+// SOP 详情里的一行：最近一次的结论、执行记录、自动执行
+function pbRunsHtml(p) {
+  const sm = runSummary[p.id] || {};
+  const last = sm.last ? `${levelPill(sm.last)}<span>最近一次 ${esc(ago(sm.last.started_at))}</span>` : '<span>还没有执行记录</span>';
+  const auto = [sm.schedules ? `${sm.schedules} 条计划` : '', sm.rules ? `${sm.rules} 条告警规则` : '',
+                sm.next_at ? `下次 ${esc(shortTime(sm.next_at))}` : ''].filter(Boolean).join(' · ');
+  return `<div class="pb-runs">${last}<button data-goruns="${esc(p.id)}">执行记录 ${sm.runs || 0} 次 →</button>
+    <button data-goauto="${esc(p.id)}">自动执行${auto ? '：' + auto : ''} →</button></div>`;
+}
+
+/* 「立即执行一次」：在后台按 SOP 跑一遍，不进对话；有留空的参数先在对话框里填 */
+function paramsDialog({title, summary, fields, confirm, run}) {
+  closeDialog();
+  const wrap = document.createElement('div');
+  wrap.className = 'dlg-scrim';
+  wrap.innerHTML = `<form class="dlg" autocomplete="off"><h3>${esc(title)}</h3><div class="sum">${summary || ''}</div>
+    ${fields.map(f => `<label class="fld">${esc(f)}<input type="text" data-param="${esc(f)}" maxlength="200" spellcheck="false"></label>`).join('')}
+    <div class="err" id="dlgErr"></div>
+    <div class="row"><button type="button" class="btn" data-dlgcancel>取消</button><button type="submit" class="btn pri" id="dlgOk">${esc(confirm || '确定')}</button></div></form>`;
+  document.body.appendChild(wrap);
+  setTimeout(() => wrap.querySelector('input')?.focus(), 30);
+  wrap.addEventListener('mousedown', e => { if (e.target === wrap) closeDialog(true); });
+  wrap.querySelector('[data-dlgcancel]').onclick = () => closeDialog(true);
+  wrap.querySelector('form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const values = Object.fromEntries([...wrap.querySelectorAll('[data-param]')].map(x => [x.dataset.param, x.value.trim()]));
+    const empty = Object.entries(values).find(([, v]) => !v);
+    if (empty) { $('dlgErr').textContent = `要填 ${empty[0]}`; return; }
+    const ok = $('dlgOk'); ok.disabled = true;
+    try { await run(values); wrap.remove(); }
+    catch (err) { $('dlgErr').textContent = err.message; ok.disabled = false; }
+  });
+}
+async function runNowFlow(id) {
+  const p = await pbGet(id);
+  if (!p) return toast('这个 SOP 已经不在了', 'err');
+  const start = async params => {
+    const d = await postJson(`/api/playbooks/${encodeURIComponent(id)}/run`, {params});
+    toast(`已开始在后台执行 SOP《${p.name}》，结果在「执行记录」里`, 'ok');
+    runFilter = {sop: id, trigger: ''};
+    go('sop', {tab: 'runs', item: d.run.id});
+  };
+  const blanks = blanksOf(p);
+  if (!blanks.length) { try { await start({}); } catch (e) { toast('没开始执行：' + e.message, 'err', 6000); } return; }
+  paramsDialog({title: `立即执行一次：SOP《${p.name}》`, confirm: '开始执行', fields: blanks, run: start,
+    summary: '在后台按 SOP 跑一遍，不进对话，结果在「执行记录」里。这个 SOP 有留空的参数，自动执行时没人能回答，先填好：'});
+}
+
+/* ---------- 执行记录：列表 → 详情 ---------- */
+async function fetchRuns(offset) {
+  const qs = new URLSearchParams({offset, limit: 30});
+  if (runFilter.sop) qs.set('playbook_id', runFilter.sop);
+  if (runFilter.trigger) qs.set('trigger', runFilter.trigger);
+  return fetch('/api/runs?' + qs).then(r => r.json()).catch(() => ({runs: [], total: 0}));
+}
+const moreRuns = (next, total) => total > next ? `<button class="more" data-runmore="${next}">加载更多（还有 ${total - next} 条）</button>` : '';
+function runRow(r) {
+  mCache['run:' + r.id] = r;
+  const lv = LEVEL[r.level] || LEVEL.unknown;
+  const st = isRunning(r) ? ['run', '⏳ ' + RUN_STATUS[r.status]] : RUN_STATUS[r.status] ? ['', RUN_STATUS[r.status]] : [lv[0], `${lv[1]} ${lv[2]}`];
+  return `<div class="mrow ${mItem === r.id ? 'on' : ''}" data-mitem="${esc(r.id)}">
+    <div class="t">SOP《${esc(r.playbook_name)}》</div>
+    <div class="s">${triggerLabel(r)}${r.note ? ' · ' + esc(r.note) : ''} · ${esc(ago(r.started_at))}${r.summary ? ' · ' + esc(r.summary) : ''}</div>
+    <span class="st ${st[0]}">${st[1]}</span></div>`;
+}
+async function renderRuns(refresh) {
+  unmountPanels();
+  clearTimeout(runPoll);
+  const books = await pbAllList(!refresh);
+  const d = await fetchRuns(0);
+  if (page !== 'sop' || pbTab !== 'runs') return;
+  const list = d.runs || [];
+  if (!mItem && list.length && !NARROW.matches) mItem = list[0].id;
+  $('mgroups').innerHTML = '';
+  $('mtool').innerHTML = `<span class="ttl">执行记录<small>${d.total} 条 · 每次按 SOP 执行都留一份</small></span>
+    <select id="runSop" title="只看一个 SOP"><option value="">全部 SOP</option>${books.map(b =>
+      `<option value="${esc(b.id)}"${runFilter.sop === b.id ? ' selected' : ''}>${esc(b.name)}</option>`).join('')}</select>
+    <select id="runTrigger" title="触发方式"><option value="">全部触发方式</option>${Object.entries(TRIGGER).map(([k, [i, n]]) =>
+      `<option value="${k}"${runFilter.trigger === k ? ' selected' : ''}>${i} ${n}</option>`).join('')}</select>
+    ${runFilter.sop ? `<button class="act" data-runnow="${esc(runFilter.sop)}">立即执行一次</button>` : ''}`;
+  const top = $('mrows').scrollTop;
+  $('mrows').innerHTML = list.map(runRow).join('') + moreRuns(list.length, d.total)
+    || `<div class="empty">还没有执行记录。<br><br>在 SOP 上点「▶ 执行」或「立即执行一次」，或者在「自动执行」里设定时计划、告警规则——
+       每次执行都会在这里留一份：结论、异常项、和上次比。</div>`;
+  if (refresh) $('mrows').scrollTop = top;
+  const selected = mCache['run:' + mItem];
+  if (!refresh || isRunning(selected) || isRunning(mCache['rd:' + mItem])) renderRunDetail();
+  // 有排队、在跑的就每 3 秒刷新一次，跑完就停
+  if (list.some(isRunning) || isRunning(mCache['rd:' + mItem])) runPoll = setTimeout(() => {
+    if (page === 'sop' && pbTab === 'runs') renderRuns(true);
+  }, 3000);
+}
+async function renderRunDetail() {
+  unmountPanels();
+  const det = $('mdetail'), want = mItem;
+  if (!want) { det.innerHTML = '<div class="md-empty">从左侧选一条执行记录<br>看结论、异常项、和上次比，<br>以及每一步的调用和原始返回</div>'; return; }
+  const r = await fetch('/api/runs/' + encodeURIComponent(want)).then(x => x.ok ? x.json() : null).catch(() => null);
+  if (want !== mItem || page !== 'sop' || pbTab !== 'runs') return;
+  if (!r) { det.innerHTML = BACK + '<div class="md-empty">这条执行记录已经不在了</div>'; return; }
+  mCache['rd:' + r.id] = r;
+  const keep = det.scrollTop;
+  det.innerHTML = BACK + runDetailHtml(r);
+  det.scrollTop = keep;
+}
+function compareHtml(c) {
+  if (!c) return '<div class="note" style="margin:0">同一个 SOP、同样的参数，这是第一次完成的执行：还没有可比的。</div>';
+  const line = (cls, label, i, extra) => `<div class="c ${cls}"><b>${label}</b><span>${esc(i.step)}：${esc(i.value || '—')}${extra || ''}</span></div>`;
+  const before = i => i.before && i.before !== i.value ? `（上次 ${esc(i.before)}）` : '';
+  const parts = [...c.new.map(i => line('new', '新出现', i, before(i))), ...c.still.map(i => line('still', '仍未恢复', i, before(i))),
+    ...c.recovered.map(i => line('rec', '已恢复', i, before(i))),
+    ...c.changed.filter(i => i.deltas.length).map(i => `<div class="c chg"><b>数值变化</b><span>${esc(i.step)}：${esc(i.deltas.join('；'))}</span></div>`),
+    ...(c.gone || []).map(i => line('gone', '没再出现', i))];
+  return `<div class="cmp-hd">和 ${esc(shortTime(c.previous.started_at))} 那次比 ${levelPill(c.previous)}</div>`
+    + (c.note ? `<div class="note" style="margin:0">${esc(c.note)}</div>` : '')
+    + (parts.length ? `<div class="cmp">${parts.join('')}</div>`
+       : c.note ? '' : '<div class="note" style="margin:0">和上一次一样：没有新出现、也没有恢复的异常，数值没变。</div>');
+}
+function callHtml(c) {
+  return `<div class="call"><div class="kv"><b>${esc(toolLabel(c.tool))}</b> <code>${esc(c.tool)}</code> ${esc(JSON.stringify(c.args || {}))}
+      · ${c.ok ? '成功' : '<span style="color:var(--danger)">失败</span>'} · ${c.duration_ms} ms · ${c.chars} 字</div>
+    <details><summary>原始返回</summary><pre class="code">${esc(c.output || '')}</pre>${c.truncated ? `<div class="kv">只显示了前 20000 字，共 ${c.chars} 字</div>` : ''}</details></div>`;
+}
+function stepsHtml(r) {
+  const steps = (r.steps || []).map(s => {
+    const marks = (s.rows || []).map(x => MARK[x.mark] || '❓').join('');
+    const args = Object.entries(s.args || {}).map(([k, v]) => `${k}=${v === '' || v == null ? (r.params && r.params[k] ? r.params[k] + '（执行时给的）' : '（留空）') : JSON.stringify(v)}`).join('，');
+    return `<details class="rs"><summary><span class="i">${s.n}</span><span class="tl">${esc(toolLabel(s.tool))}</span><span>${marks}</span>
+        <span class="ck">${esc(s.checkpoint || '')}</span></summary><div class="body">
+      ${s.checkpoint ? `<div class="kv">检查点：${esc(s.checkpoint)}</div>` : ''}${args ? `<div class="kv">参数：${esc(args)}</div>` : ''}
+      ${(s.rows || []).map(x => `<div class="kv">${MARK[x.mark] || '❓'} <b>${esc(x.check || '')}</b>：${esc(x.value || '—')}${x.note ? '（' + esc(x.note) + '）' : ''}</div>`).join('')}
+      ${s.calls.map(callHtml).join('') || '<div class="kv">这一步没有调用工具</div>'}</div></details>`;
+  }).join('');
+  const other = (r.other_calls || []).length ? `<details class="rs"><summary><span class="i">+</span><span class="tl">其他调用</span>
+      <span class="ck">${r.other_calls.length} 次：知识库、待办清单，或没对上步骤的数据工具</span></summary><div class="body">${r.other_calls.map(callHtml).join('')}</div></details>` : '';
+  return steps + other || '<div class="note" style="margin:0">没有调用记录</div>';
+}
+function mailHtml(r) {
+  const m = r.mail || {};
+  if (!m.status) return '';
+  if (m.status === 'sent') return `✉️ 已发邮件给收件组「${esc(m.group)}」${m.attempts > 1 ? `（试了 ${m.attempts} 次）` : ''}`;
+  if (m.status === 'failed') return `<span style="color:var(--danger)">✉️ 发给收件组「${esc(m.group)}」的邮件没发出去：${esc(m.error || '')}（试了 ${m.attempts || 1} 次）</span>`;
+  return `✉️ 没发邮件：${esc(m.reason || '')}`;
+}
+function runDetailHtml(r) {
+  const rep = r.report || {}, rows = rep.rows || [];
+  const secs = r.finished_at && r.started_at ? Math.max(0, Math.round((new Date(r.finished_at) - new Date(r.started_at)) / 1000)) : null;
+  const meta = [triggerLabel(r) + (r.note ? '：' + esc(r.note) : ''), `开始 ${esc(fullTime(r.started_at))}`,
+    secs != null && r.execution_id ? `用时 ${secs >= 60 ? Math.floor(secs / 60) + ' 分 ' : ''}${secs % 60} 秒` : '',
+    Object.keys(r.params || {}).length ? `参数 ${esc(paramsText(r.params))}` : ''].filter(Boolean);
+  const acts = [r.playbook && r.playbook.enabled && !isRunning(r) ? `<button class="btn sm" data-runnow="${esc(r.playbook_id)}">⏱ 再执行一次</button>` : '',
+    r.conversation_id ? `<button class="btn sm" data-runconv="${esc(r.conversation_id)}">↗ 在对话里看</button>` : '',
+    r.execution_id && !isRunning(r) ? `<a class="btn sm" href="/api/runs/${encodeURIComponent(r.id)}/report.md" download>⬇ 导出 Markdown</a>` : '',
+    r.playbook && r.playbook.exists ? `<button class="btn sm" data-gosop="${esc(r.playbook_id)}">📋 看 SOP</button>` : '',
+    isRunning(r) ? '' : `<button class="btn sm danger" data-rundel="${esc(r.id)}">删除</button>`].filter(Boolean).join('');
+  const head = `<div class="ap-hd"><div class="nm">${levelPill(r, true)} SOP《${esc(r.playbook_name)}》</div>
+    <div class="meta">${meta.join('<span>·</span>')}</div>${r.summary ? `<div class="desc">${esc(r.summary)}</div>` : ''}
+    ${mailHtml(r) ? `<div class="mailst" style="margin-top:6px">${mailHtml(r)}</div>` : ''}<div class="acts">${acts}</div></div>`;
+  if (isRunning(r)) return `<div class="ap run">${head}<div class="note">${r.status === 'queued' ? '排队等着执行' : '正在执行'}，页面每 3 秒刷新一次。</div></div>`;
+  if (!r.execution_id) return `<div class="ap run">${head}</div>`;
+  const table = rows.length ? `<table class="pt rt"><tr><th>步骤</th><th>查看</th><th>实际数据</th><th>结论</th></tr>${rows.map(x =>
+      `<tr class="${esc(x.mark)}"><td>${esc(x.step)}</td><td>${esc(x.check)}</td><td>${esc(x.value)}</td><td class="mk">${esc(x.verdict || MARK[x.mark])}</td></tr>`).join('')}</table>` : '';
+  const reason = rep.reason ? `<div class="note" style="margin:${rows.length ? '6px' : '0'} 0 0">${r.level === 'unknown' ? '没法判断：' : ''}${esc(rep.reason)}</div>` : '';
+  const fb = (r.feedback || []).map(f => `<div class="kv">👤 ${esc(FEEDBACK[f.verdict] || f.verdict)}${f.note ? '：' + esc(f.note) : ''}
+      <span style="color:var(--muted)">· ${esc(fullTime(f.created_at))}</span></div>`).join('');
+  return `<div class="ap run">${head}
+    <div class="ap-sec"><h4>和上一次比</h4>${compareHtml(r.compare)}</div>
+    <div class="ap-sec"><h4>逐步结论 <small>从回答里按 SOP 输出格式解析</small></h4>${table}${reason}</div>
+    ${(rep.followups || []).length ? `<div class="ap-sec"><h4>需要跟进</h4><ul style="margin:0;padding-left:18px">${rep.followups.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+    <div class="ap-sec"><h4>每一步 <small>SOP 执行时的步骤、调了什么、原始返回</small></h4>${stepsHtml(r)}</div>
+    <div class="ap-sec"><h4>人工反馈 <small>判断对不对：会记进图谱，也会进知识库缺口看板</small></h4>${fb}
+      <div class="fb">${['correct', 'false_alarm', 'wrong_threshold', 'missing_step'].map(v =>
+        `<button class="btn sm" data-runfb="${v}">${FEEDBACK[v]}</button>`).join('')}<input id="runFbNote" maxlength="300" placeholder="补充一句（可不填）"></div></div>
+    ${r.answer ? `<div class="ap-sec"><h4>完整回答</h4><details><summary style="cursor:pointer;color:var(--accent);font-size:12.5px">展开</summary><div class="answer">${md(r.answer)}</div></details></div>` : ''}
+  </div>`;
+}
+
+/* ---------- 自动执行：定时计划、告警规则、最近收到的告警、邮件、告警入口 ---------- */
+const enabledBooks = () => (autoState.books || []).filter(b => b.enabled);
+function notifyText(n) {
+  if (!n || !n.group) return '<span class="note">不发邮件</span>';
+  return `「${esc(n.group)}」<div class="note">${esc(NOTIFY_WHEN[n.when] || '')}；${esc(NOTIFY_REPEAT[n.repeat] || '')}</div>`;
+}
+function lastRunHtml(r) {
+  if (!r) return '<span class="note">还没执行过</span>';
+  return `<button class="pk" data-openrun="${esc(r.id)}" title="打开这条执行记录">${levelPill(r)}</button><div class="note">${esc(ago(r.started_at))}</div>`;
+}
+function scheduleRows(list) {
+  return list.map(s => `<tr><td><b>${esc(s.playbook_name || '（SOP 已删除）')}</b>${s.blocked ? `<div class="note" style="color:#b45309">${esc(s.blocked)}</div>` : ''}</td>
+    <td data-l="时间">${esc(s.describe)}${s.enabled ? '' : ' <span class="pill off">已暂停</span>'}${Object.keys(s.params || {}).length ? `<div class="note">${esc(paramsText(s.params))}</div>` : ''}</td>
+    <td data-l="邮件">${notifyText(s.notify)}</td><td data-l="下次">${s.next_at ? esc(shortTime(s.next_at)) : '—'}</td><td data-l="上次">${lastRunHtml(s.last)}</td>
+    <td><div class="ops"><button class="go" data-schrun="${esc(s.id)}" ${s.blocked ? 'disabled' : ''}>立即执行一次</button>
+      <button data-schtoggle="${esc(s.id)}" data-on="${s.enabled ? 1 : 0}">${s.enabled ? '暂停' : '恢复'}</button>
+      <button data-schedit="${esc(s.id)}">编辑</button><button class="del" data-schdel="${esc(s.id)}">删除</button></div></td></tr>`).join('');
+}
+function ruleRows(list) {
+  return list.map(r => `<tr><td><b>${esc(r.playbook_name || '（SOP 已删除）')}</b>${r.blocked ? `<div class="note" style="color:#b45309">${esc(r.blocked)}</div>` : ''}</td>
+    <td data-l="条件">${r.name_contains ? `告警名包含「${esc(r.name_contains)}」` : ''}${Object.entries(r.labels || {}).map(([k, v]) => `<div><code>${esc(k)}=${esc(v)}</code></div>`).join('')}
+      ${r.enabled ? '' : ' <span class="pill off">已暂停</span>'}${Object.keys(r.params || {}).length ? `<div class="note">${esc(paramsText(r.params))}</div>` : ''}</td>
+    <td data-l="去重">${r.dedup_minutes} 分钟内同一条只触发一次</td><td data-l="邮件">${notifyText(r.notify)}</td>
+    <td data-l="最近触发">${r.last_triggered ? `${esc(ago(r.last_triggered))}<div class="note">共 ${r.triggered} 次</div>` : '<span class="note">还没触发过</span>'}</td>
+    <td><div class="ops"><button data-ruletoggle="${esc(r.id)}" data-on="${r.enabled ? 1 : 0}">${r.enabled ? '暂停' : '恢复'}</button>
+      <button data-ruleedit="${esc(r.id)}">编辑</button><button class="del" data-ruledel="${esc(r.id)}">删除</button></div></td></tr>`).join('');
+}
+function eventRows(list) {
+  return list.map(e => `<tr><td data-l="时间">${esc(shortTime(e.received_at))}</td><td data-l="告警"><b>${esc(e.title || e.name)}</b>${e.title && e.name !== e.title ? `<div class="note">${esc(e.name)}</div>` : ''}</td>
+    <td data-l="标签">${Object.entries(e.labels || {}).slice(0, 6).map(([k, v]) => `<code>${esc(k)}=${esc(v)}</code>`).join(' ')}</td>
+    <td data-l="结果">${e.run_id ? `<button class="pk" data-openrun="${esc(e.run_id)}">${esc(e.action_name)}</button>` : esc(e.action_name)}</td><td data-l="来源">${esc(e.peer || '')}</td></tr>`).join('');
+}
+function bookOptions(selected) {
+  const books = enabledBooks();
+  return books.map(b => `<option value="${esc(b.id)}"${b.id === selected ? ' selected' : ''}>${esc(b.name)}</option>`).join('')
+    || '<option value="">（没有启用的 SOP）</option>';
+}
+function paramRows(bookId, values) {
+  const book = (autoState.books || []).find(b => b.id === bookId);
+  const blanks = book ? blanksOf(book) : [];
+  if (!blanks.length) return '<div class="frow"><span>参数</span><div class="note">这个 SOP 没有留空的参数</div></div>';
+  return blanks.map(k => `<div class="frow"><span>${esc(k)}<i>SOP 里留空的参数，必须给默认值</i></span>
+    <input data-afparam="${esc(k)}" maxlength="200" value="${esc((values || {})[k] || '')}" placeholder="比如主机名、容器名，或 @all"></div>`).join('');
+}
+function notifyRows(n) {
+  n = n || {};
+  const groups = autoState.groups || [];
+  return `<div class="frow"><span>邮件发给<i>服务器上配好的收件组</i></span><select id="afGroup"><option value="">不发邮件</option>${groups.map(g =>
+      `<option value="${esc(g.name)}"${n.group === g.name ? ' selected' : ''}>${esc(g.name)}（${g.count} 人）</option>`).join('')}</select></div>
+    <div class="frow"><span>什么时候发</span><select id="afWhen">${Object.entries(NOTIFY_WHEN).map(([k, v]) =>
+      `<option value="${k}"${(n.when || 'problems') === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
+    <div class="frow"><span>同一个问题<i>连续出现时</i></span><select id="afRepeat">${Object.entries(NOTIFY_REPEAT).map(([k, v]) =>
+      `<option value="${k}"${(n.repeat || 'daily') === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
+    ${groups.length ? '' : '<div class="note" style="margin:-4px 0 10px">服务器上还没有配收件组，现在只能选「不发邮件」（见下面「服务器上的配置文件」）。</div>'}`;
+}
+function scheduleForm(s) {
+  s = s || {kind: 'daily', at: '09:00', weekdays: [1, 2, 3, 4, 5], every: 60, params: {}, notify: {}, enabled: true, playbook_id: autoSop};
+  const book = s.playbook_id || autoSop || enabledBooks()[0]?.id || '';
+  return `<div class="autoform" data-form="schedule" data-id="${esc(s.id || '')}"><h4>${s.id ? '编辑计划' : '添加计划'}</h4>
+    <div class="frow"><span>SOP</span><select id="afSop" ${s.id ? 'disabled' : ''}>${bookOptions(book)}</select></div>
+    <div class="frow"><span>方式</span><select id="afKind">${[['daily', '每天'], ['weekly', '每周'], ['interval', '每隔 N 分钟']].map(([k, v]) =>
+      `<option value="${k}"${s.kind === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
+    <div class="frow" data-for="daily weekly"><span>时间<i>北京时间</i></span><input id="afAt" type="time" value="${esc(s.at || '09:00')}"></div>
+    <div class="frow" data-for="weekly"><span>星期</span><div class="checks">${WEEKDAY.map((d, i) =>
+      `<label><input type="checkbox" data-wd="${i + 1}"${(s.weekdays || []).includes(i + 1) ? ' checked' : ''}>周${d}</label>`).join('')}</div></div>
+    <div class="frow" data-for="interval"><span>间隔（分钟）<i>最少 15</i></span><input id="afEvery" type="number" min="15" step="5" value="${s.every || 60}"></div>
+    <div id="afParams">${paramRows(book, s.params)}</div>${notifyRows(s.notify)}
+    <div class="frow"><span>启用</span><div class="checks"><label><input type="checkbox" id="afEnabled"${s.enabled ? ' checked' : ''}>到点自动执行</label></div></div>
+    <div class="pb-err" id="afErr" hidden></div>
+    <div class="row"><button class="pri" data-afsave>保存</button><button data-afcancel>取消</button></div></div>`;
+}
+function ruleForm(r) {
+  r = r || {name_contains: '', labels: {}, dedup_minutes: 30, params: {}, notify: {}, enabled: true, playbook_id: autoSop};
+  const book = r.playbook_id || autoSop || enabledBooks()[0]?.id || '';
+  return `<div class="autoform" data-form="rule" data-id="${esc(r.id || '')}"><h4>${r.id ? '编辑告警规则' : '添加告警规则'}</h4>
+    <div class="frow"><span>触发哪个 SOP<i>只能是启用的</i></span><select id="afSop" ${r.id ? 'disabled' : ''}>${bookOptions(book)}</select></div>
+    <div class="frow"><span>告警名包含<i>告警名或标题，不分大小写</i></span><input id="afName" maxlength="100" value="${esc(r.name_contains)}" placeholder="如 DiskFull、磁盘"></div>
+    <div class="frow"><span>标签等于<i>一行一个 名字=值，都要对上</i></span><textarea id="afLabels" placeholder="severity=critical">${esc(Object.entries(r.labels || {}).map(([k, v]) => `${k}=${v}`).join('\n'))}</textarea></div>
+    <div class="frow"><span>去重（分钟）<i>同一条告警多久内只触发一次</i></span><input id="afDedup" type="number" min="1" max="1440" value="${r.dedup_minutes || 30}"></div>
+    <div id="afParams">${paramRows(book, r.params)}</div>${notifyRows(r.notify)}
+    <div class="frow"><span>启用</span><div class="checks"><label><input type="checkbox" id="afEnabled"${r.enabled ? ' checked' : ''}>收到对得上的告警就执行</label></div></div>
+    <div class="pb-err" id="afErr" hidden></div>
+    <div class="row"><button class="pri" data-afsave>保存</button><button data-afcancel>取消</button></div></div>`;
+}
+function showKindRows() {
+  const kind = $('afKind')?.value; if (!kind) return;
+  document.querySelectorAll('.autoform [data-for]').forEach(x => { x.hidden = !x.dataset.for.split(' ').includes(kind); });
+}
+async function renderAuto() {
+  if (!$('msettings').querySelector('.sf.auto')) $('msettings').innerHTML = '<div class="sf"><div class="empty">加载中…</div></div>';
+  const qs = autoSop ? '?playbook_id=' + encodeURIComponent(autoSop) : '';
+  const [st, sc, rl, ev, books] = await Promise.all([
+    fetch('/api/automation').then(r => r.json()).catch(() => ({})),
+    fetch('/api/schedules' + qs).then(r => r.json()).catch(() => ({schedules: []})),
+    fetch('/api/alert-rules' + qs).then(r => r.json()).catch(() => ({rules: []})),
+    fetch('/api/alerts/events?limit=20').then(r => r.json()).catch(() => ({events: []})),
+    pbAllList(true)]);
+  if (page !== 'sop' || pbTab !== 'auto') return;
+  autoState = {groups: st.groups || [], books, schedules: sc.schedules || [], rules: rl.rules || []};
+  const lim = st.limits || {}, mail = st.mail || {}, alerts = st.alerts || {};
+  const hook = location.origin + (st.hook_path || '/api/alerts/hook');
+  const problems = [...(st.problems || []), st.loose].filter(Boolean);
+  const table = (head, rows, none) => rows ? `<table class="ax stack"><tr>${head.map(x => `<th>${x}</th>`).join('')}</tr>${rows}</table>` : `<div class="note">${none}</div>`;
+  $('msettings').innerHTML = `<div class="sf auto">
+    <h2>自动执行</h2>
+    <p class="lead">让 SOP 到点自己跑（比如每天 9 点巡检），或者收到告警时自己跑；每次都在「执行记录」里留一份，有异常、没跑成、没法判断时发邮件。
+      和对话里的「▶ 执行」同一套规则：只用批准过的只读工具，不联网，结论只依据工具数据和知识库。</p>
+    <div class="filter"><span>只看</span><select id="autoSop"><option value="">全部 SOP</option>${books.map(b =>
+      `<option value="${esc(b.id)}"${autoSop === b.id ? ' selected' : ''}>${esc(b.name)}${b.enabled ? '' : '（已停用）'}</option>`).join('')}</select>
+      <span class="pill ${mail.configured ? 'ok' : 'off'}">${mail.configured ? '✓ 邮件已配置' : '– 邮件没配置'}</span>
+      <span class="pill ${alerts.enabled ? 'ok' : 'off'}">${alerts.enabled ? '✓ 告警入口已打开' : '– 告警入口关着'}</span>
+      ${st.scheduler === false ? '<span class="pill warn">定时执行在服务器上关了（SCHEDULER=false）</span>' : ''}</div>
+    ${problems.length ? `<div class="warn" style="margin:0 0 14px"><b>服务器上的配置文件有问题：</b><ul class="ax">${problems.map(p => `<li>${esc(p)}</li>`).join('')}</ul></div>` : ''}
+    <div class="card"><h3>定时计划 <small>北京时间；每隔 N 分钟的最少 ${lim.min_every || 15} 分钟；一共最多 ${lim.max_schedules || 50} 条</small></h3>
+      ${table(['SOP', '时间', '邮件', '下次', '上次', ''], scheduleRows(autoState.schedules), '还没有计划。')}
+      ${autoForm && autoForm.kind === 'schedule' ? scheduleForm(autoForm.item) : `<div class="row"><button class="pri" data-afnew="schedule" ${enabledBooks().length ? '' : 'disabled'}>＋ 添加计划</button></div>`}
+      <div class="howto"><b>错过了怎么办：</b>部署、重启时应用没在运行，到点的执行迟到 ${lim.grace_minutes || 10} 分钟以内照常跑；更晚的记一条「错过」，<b>不补跑</b>（过时的巡检结果容易误导人），下一次照常按时执行。
+        同时最多 ${lim.max_running || 2} 个自动执行在跑；同一个 SOP 上一次还没跑完，这一次记成「跳过」。</div></div>
+    <div class="card"><h3>告警规则 <small>告警名包含什么、标签等于什么 → 触发哪个 SOP</small></h3>
+      ${table(['SOP', '条件', '去重', '邮件', '最近触发', ''], ruleRows(autoState.rules), '还没有告警规则。')}
+      ${autoForm && autoForm.kind === 'rule' ? ruleForm(autoForm.item) : `<div class="row"><button class="pri" data-afnew="rule" ${enabledBooks().length ? '' : 'disabled'}>＋ 添加告警规则</button></div>`}
+      <div class="howto">每个 SOP 每小时最多被告警触发 ${lim.per_hour || 4} 次；同一条告警（Alertmanager 的 fingerprint，或标题加标签）在去重时间内只触发一次；已恢复的告警不触发。
+        告警内容只当背景资料放进提问，不当指令。</div></div>
+    <div class="card"><h3>最近收到的告警 <small>保留 7 天：对上了哪条规则、有没有触发</small></h3>
+      ${table(['时间', '告警', '标签', '结果', '来源'], eventRows(ev.events || []), alerts.enabled ? '还没有收到过告警。' : '告警入口关着，还没有收到过告警。')}</div>
+    <div class="card"><h3>邮件 <small>SMTP 和收件人在服务器上配，页面上只能选收件组的名字</small></h3>
+      <dl><dt>状态</dt><dd>${mail.configured ? `已配置（${esc(mail.security === 'starttls' ? 'STARTTLS' : mail.security === 'ssl' ? 'SSL' : '不加密')}）` : '没有配置：自动执行照常跑，只是不发邮件'}</dd>
+        <dt>收件组</dt><dd>${(st.groups || []).map(g => `<span class="pill">${esc(g.name)} · ${g.count} 人</span>`).join(' ') || '还没有'}</dd>
+        <dt>报告链接</dt><dd>${st.site_url ? `<code>${esc(st.site_url)}</code>` : '没配 site_url：邮件里没有报告链接'}</dd></dl>
+      <div class="row"><select id="testGroup" ${mail.configured && (st.groups || []).length ? '' : 'disabled'}>${(st.groups || []).map(g =>
+        `<option value="${esc(g.name)}">${esc(g.name)}</option>`).join('') || '<option>（没有收件组）</option>'}</select>
+        <button data-testmail ${mail.configured && (st.groups || []).length ? '' : 'disabled'}>发一封测试邮件</button>
+        <span class="note">同一个组每分钟最多一封，每次都记日志</span></div></div>
+    <div class="card"><h3>告警入口 <small>给 Prometheus Alertmanager 或任何能发 webhook 的监控用</small></h3>
+      <dl><dt>状态</dt><dd>${alerts.enabled ? '已打开' : '关着：服务器上没有配告警令牌，访问这个地址会得到 404'}</dd>
+        <dt>地址</dt><dd><code>POST ${esc(hook)}</code></dd>
+        <dt>认证</dt><dd>请求头 <code>Authorization: Bearer &lt;告警令牌&gt;</code>（令牌在服务器上配，不是网页密码；网页密码打不开它）</dd>
+        <dt>来源限制</dt><dd>${(alerts.clients || []).length ? (alerts.clients || []).map(c => `<code>${esc(c)}</code>`).join(' ') : '不限（可以在服务器上配 alerts.clients）'}</dd></dl>
+      <div class="howto"><b>Alertmanager：</b>在 receivers 里加一个 webhook，令牌写在 Alertmanager 机器上的文件里：
+        <pre class="cfg">receivers:
+  - name: doc2sop
+    webhook_configs:
+      - url: ${esc(hook)}
+        send_resolved: false
+        http_config:
+          authorization:
+            credentials_file: /etc/alertmanager/doc2sop.token</pre>
+        <b>别的监控（通用 JSON）：</b><pre class="cfg">curl -X POST ${esc(hook)} \\
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \\
+  -d '{"title": "磁盘使用率高", "content": "/ 用了 91%", "labels": {"host": "gw"}}'</pre></div></div>
+    <div class="card"><h3>服务器上的配置文件 <small>邮件、收件组、告警令牌都在这里，改了不用重启</small></h3>
+      <dl><dt>文件</dt><dd><code>${esc(st.file || '')}</code>${st.exists ? '' : '（还没有）'}</dd></dl>
+      <div class="howto">在宿主机上编辑这个文件（容器里的 <code>/data</code> 就是宿主机的数据目录），然后 <code>chmod 600</code>——里面有邮箱授权码和告警令牌。保存后下一次用到时生效，不用重启。
+        <pre class="cfg">site_url: http://10.0.0.5:8765        # 邮件里「查看完整报告」指向这里
+mail:
+  host: smtp.qq.com
+  port: 465
+  security: ssl                        # 465 用 ssl，587 用 starttls
+  user: bot@example.com
+  password: 邮箱的授权码
+  from: doc2sop 巡检 &lt;bot@example.com&gt;
+groups:                                # 页面上只能选这些名字
+  运维值班: [a@example.com, b@example.com]
+alerts:
+  token: 用 openssl rand -hex 32 生成
+  clients: [10.0.0.0/8]                # 可选：只接受这些来源</pre></div></div>
+  </div>`;
+  showKindRows();
+}
+function autoFormBody() {
+  const form = $('msettings').querySelector('.autoform'); if (!form) return null;
+  const params = Object.fromEntries([...form.querySelectorAll('[data-afparam]')].map(x => [x.dataset.afparam, x.value.trim()]));
+  const notify = {group: $('afGroup').value, when: $('afWhen').value, repeat: $('afRepeat').value};
+  const base = {playbook_id: $('afSop').value, params, notify, enabled: $('afEnabled').checked};
+  if (form.dataset.form === 'schedule') {
+    return {...base, kind: $('afKind').value, at: $('afAt').value, every: +$('afEvery').value,
+            weekdays: [...form.querySelectorAll('[data-wd]:checked')].map(x => +x.dataset.wd)};
+  }
+  const labels = {};
+  for (const line of $('afLabels').value.split('\n').map(x => x.trim()).filter(Boolean)) {
+    const at = line.indexOf('=');
+    if (at < 1) throw new Error(`标签条件要写成 名字=值：${line}`);
+    labels[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+  }
+  return {...base, name_contains: $('afName').value.trim(), labels, dedup_minutes: +$('afDedup').value};
+}
+async function sendJson(method, path, body) {
+  const r = await fetch(path, {method, headers: {'Content-Type': 'application/json'}, body: body ? JSON.stringify(body) : undefined});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : `请求失败（${r.status}）`);
+  return d;
+}
+
+/* ---------- 知识库缺口：文档页的「知识库缺口」页签、工作台的卡片 ---------- */
+function gapRow(g) {
+  const kinds = Object.entries(g.kinds || {}).map(([k, n]) => `<span class="pill">${esc(GAP_KIND[k] || k)}${n > 1 ? ' ' + n : ''}</span>`).join('');
+  const others = (g.questions || []).filter(q => q !== g.example);
+  return `<div class="gap-row"><div class="cnt">${g.count}<small>次</small></div>
+    <div style="min-width:0"><div class="ex">${esc(g.example)}</div><div class="meta">最近一次 ${esc(ago(g.last_at))}${g.detail ? ' · ' + esc(g.detail) : ''}</div>
+      <div class="chipset">${kinds}</div>
+      ${others.length ? `<details><summary>同一类的其他问法（${others.length}）</summary><ul>${others.map(q => `<li>${esc(q)}</li>`).join('')}</ul></details>` : ''}</div>
+    <div class="acts"><button class="btn sm" data-gapopen="${esc(g.id)}">看当时的回答</button>
+      <button class="btn sm pri" data-gapupload>去上传文档</button><button class="btn sm" data-gapignore="${esc(g.id)}">忽略</button></div></div>`;
+}
+async function renderGaps() {
+  if (!$('msettings').querySelector('.sf.gaps')) $('msettings').innerHTML = '<div class="sf"><div class="empty">加载中…</div></div>';
+  const d = await fetch('/api/gaps').then(r => r.json()).catch(() => ({groups: [], total: 0, questions: 0}));
+  if (page !== 'docs' || docTab !== 'gaps') return;
+  gapGroups = d.groups || [];
+  $('msettings').innerHTML = `<div class="sf gaps">
+    <h2>知识库缺口</h2>
+    <p class="lead">大家常问、文档里没写的问题，相似的归成一组、按次数排。线索来自：知识库模式下没引用任何文档、或者明说知识库里没有的回答；
+      智能模式里查过知识库、最后靠 💡 通用知识回答的；有人点了 👎、或者在执行记录上标了误报、阈值不对、漏了一步的。打招呼、闲聊、查实际数据的不算。</p>
+    <div class="filter"><span class="pill">${d.total || 0} 组 · ${d.questions || 0} 个问题</span>${d.ignored ? `<span class="pill off">已忽略 ${d.ignored} 个</span>` : ''}
+      <span class="pill" title="字面：按字的二元组粗分，不调模型；向量：向量模型可用时后台限量补算">归类：${esc(GROUPING[d.grouping] || '按字面')}</span></div>
+    <div class="card">${gapGroups.map(gapRow).join('') || '<div class="all-done">✓ 暂时没有发现缺口</div>'}</div>
+    <p class="note">「忽略」：这类问题不需要文档，这一组和以后相似的问题都不再出现。「去上传文档」：把写好的文档拖进页面任何地方也能上传。</p>
+  </div>`;
+}
+async function openAnswer(link) {
+  if (link.run_id) { runFilter = {sop: '', trigger: ''}; return go('sop', {tab: 'runs', item: link.run_id}); }
+  go('chat', {push: false});
+  await openConv(link.conversation_id);
+  syncUrl(true);
+  const bot = document.querySelector(`.bot[data-mid="${CSS.escape(String(link.message_id))}"]`);
+  if (bot) { bot.scrollIntoView({block: 'center'}); flash(bot); }
+}
+// 自动执行页、知识库缺口页的操作（都画在 #msettings 里）
+$('msettings').addEventListener('click', async e => {
+  const autoPage = mTab === 'sop' && pbTab === 'auto', gapPage = mTab === 'docs' && docTab === 'gaps';
+  if (!autoPage && !gapPage) return;
+  const t = e.target.closest('button'); if (!t || t.disabled) return;
+  const d = t.dataset;
+  if (d.openrun) { runFilter = {sop: '', trigger: ''}; return go('sop', {tab: 'runs', item: d.openrun}); }
+  if (d.afnew) { autoForm = {kind: d.afnew, item: null}; return renderAuto(); }
+  if (d.afcancel !== undefined) { autoForm = null; return renderAuto(); }
+  if (d.schedit) { autoForm = {kind: 'schedule', item: autoState.schedules.find(s => s.id === d.schedit)}; return renderAuto(); }
+  if (d.ruleedit) { autoForm = {kind: 'rule', item: autoState.rules.find(r => r.id === d.ruleedit)}; return renderAuto(); }
+  if (d.afsave !== undefined) {
+    const form = t.closest('.autoform'), err = $('afErr');
+    err.hidden = true;
+    try {
+      const body = autoFormBody(), base = form.dataset.form === 'schedule' ? '/api/schedules' : '/api/alert-rules';
+      t.disabled = true;
+      await sendJson(form.dataset.id ? 'PUT' : 'POST', form.dataset.id ? `${base}/${encodeURIComponent(form.dataset.id)}` : base, body);
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; t.disabled = false; return; }
+    toast(form.dataset.form === 'schedule' ? '计划已保存' : '告警规则已保存', 'ok');
+    autoForm = null;
+    return renderAuto();
+  }
+  const act = async (method, path, done) => {
+    t.disabled = true;
+    try { const r = await sendJson(method, path); if (done) done(r); } catch (ex) { toast(ex.message, 'err', 6000); }
+    return renderAuto();
+  };
+  if (d.schrun) return act('POST', `/api/schedules/${encodeURIComponent(d.schrun)}/run`,
+    r => toast('已开始在后台执行，结果在「执行记录」里', 'ok') || (mCache['run:' + r.run.id] = r.run));
+  if (d.schtoggle) return act('POST', `/api/schedules/${encodeURIComponent(d.schtoggle)}/${d.on === '1' ? 'pause' : 'resume'}`);
+  if (d.schdel) { if (!confirm('删除这条计划？已经留下的执行记录不删。')) return; return act('DELETE', `/api/schedules/${encodeURIComponent(d.schdel)}`); }
+  if (d.ruletoggle) return act('POST', `/api/alert-rules/${encodeURIComponent(d.ruletoggle)}/${d.on === '1' ? 'pause' : 'resume'}`);
+  if (d.ruledel) { if (!confirm('删除这条告警规则？')) return; return act('DELETE', `/api/alert-rules/${encodeURIComponent(d.ruledel)}`); }
+  if (d.testmail !== undefined) {
+    const group = $('testGroup').value;
+    t.disabled = true; t.textContent = '发送中…';
+    try { const r = await postJson('/api/automation/test-mail', {group}); toast(`测试邮件已发给收件组「${group}」（${r.recipients} 人），去邮箱看看`, 'ok', 6000); }
+    catch (ex) { toast('测试邮件没发出去：' + ex.message, 'err', 8000); }
+    t.disabled = false; t.textContent = '发一封测试邮件';
+    return;
+  }
+  if (d.gapupload !== undefined) return $('files').click();
+  const group = gapGroups.find(g => g.id === (d.gapopen || d.gapignore));
+  if (d.gapopen && group) return openAnswer(group.link);
+  if (d.gapignore && group) {
+    if (!confirm(`忽略「${group.example}」这一类问题？这一组（${group.count} 次）和以后相似的问题都不再出现在看板上。`)) return;
+    try { await postJson('/api/gaps/ignore', {keys: group.keys}); } catch (ex) { return toast('没忽略成：' + ex.message, 'err'); }
+    toast('已忽略这一类问题', 'ok');
+    refreshBadges();
+    return renderGaps();
+  }
+});
+$('msettings').addEventListener('change', e => {
+  if (!(mTab === 'sop' && pbTab === 'auto')) return;
+  if (e.target.id === 'autoSop') { autoSop = e.target.value; autoForm = null; syncUrl(false); return renderAuto(); }
+  if (e.target.id === 'afKind') return showKindRows();
+  if (e.target.id === 'afSop') $('afParams').innerHTML = paramRows(e.target.value, {});
+});
+
 /* 分栏宽度可拖：分组栏、详情栏各自记在浏览器里，双击分隔条恢复默认 */
 const SPLIT = {mgroups: [160, 420, 230], mdetail: [300, 800, 440]};   // [最小, 最大, 默认]
 function applySplit() {

@@ -1,5 +1,5 @@
 // 页面（app/web/index.html）的检查：内联脚本能编译；几个纯函数的行为（风险提示的措辞、主机原因去重、参数范围转义、
-// 审批口令卡片在各个状态下给的表单和说明、工作台「待处理」里的「还没设审批口令」）。
+// 审批口令卡片在各个状态下给的表单和说明、工作台「待处理」里的「还没设审批口令」、执行记录 / 自动执行 / 知识库缺口里服务端文字的转义）。
 // 用法：node tests/page.test.js（和 picker.test.js 一样，不需要浏览器和依赖）
 const fs = require('fs');
 
@@ -138,6 +138,47 @@ check('原因里的 HTML 被转义', modes('kb', {available: false, reason: '<b>
 check('选择记在 localStorage', /localStorage\.setItem\('kb-answer-mode'/.test(html), true);
 check('请求里带 answer_mode', /answer_mode: mode/.test(html), true);
 check('工作台的输入框也有模式 tab', /<div class="ask-wrap"><div class="modes">\$\{modesHtml\(\)\}/.test(html), true);
+
+// 执行记录、自动执行、知识库缺口：服务端来的文字（SOP 名、告警标题和标签、用户的问题）都转义后再进 HTML
+const runCode = [/^const esc = .*$/m, /^const LEVEL = .*$/m, /^const RUN_STATUS = .*$/m, /^const TRIGGER = .*$/m, /^const MARK = .*$/m,
+  /^const NOTIFY_WHEN = .*$/m, /^const NOTIFY_REPEAT = .*$/m, /^const GAP_KIND = .*$/m, /^const shortTime = .*$/m,
+  /^const paramsText = .*$/m, /^const isRunning = .*$/m, /^const triggerLabel = .*$/m].map(lineOf)
+  .concat(['levelPill', 'runRow', 'compareHtml', 'mailHtml', 'notifyText', 'lastRunHtml', 'scheduleRows', 'eventRows', 'gapRow'].map(extract)).join('\n');
+const R = new Function(`const mCache = {}; let mItem = null; const ago = t => '刚刚';\n${runCode}\n`
+  + 'return {levelPill, runRow, compareHtml, mailHtml, scheduleRows, eventRows, gapRow};')();
+const raw = /<(img|svg|script|q|i|u|em)[\s>]/;
+check('结论：有异常', R.levelPill({status: 'done', level: 'anomaly'}), '<span class="pill warn">⚠️ 有异常</span>');
+check('结论：没跑成', R.levelPill({status: 'done', level: 'failed'}, true), '<span class="lv bad">❌ 没跑成</span>');
+check('不认识的结论按没法判断', R.levelPill({status: 'done', level: '<b>'}), '<span class="pill unk">❓ 没法判断</span>');
+check('错过的写「错过」', R.levelPill({status: 'missed', level: 'failed'}), '<span class="pill off">错过</span>');
+check('在跑的写「执行中」', R.levelPill({status: 'running', level: ''}).includes('⏳ 执行中'), true);
+const row = R.runRow({id: 'r"1', playbook_name: '<img src=x onerror=alert(1)>', trigger: 'alert', note: '<q>磁盘</q>',
+                      summary: '<script>x</script>', started_at: '2026-11-01T01:00:00+00:00', status: 'done', level: 'anomaly'});
+check('执行记录一行：SOP 名、告警标题、摘要都转义', raw.test(row), false);
+check('执行记录一行：id 进属性也转义', row.includes('data-mitem="r&quot;1"'), true);
+check('不认识的触发方式也转义', raw.test(R.runRow({id: 'x', playbook_name: 'p', trigger: '<svg onload=1>', status: 'done', level: 'ok'})), false);
+const cmp = R.compareHtml({previous: {started_at: '2026-10-31T01:00:00+00:00', status: 'done', level: 'ok'}, note: '<em>注意</em>',
+  new: [{step: '<q>第 1 步</q>', value: '<i>92%</i>', before: '<u>86%</u>'}], still: [], recovered: [],
+  changed: [{step: '第 2 步', deltas: ['<img src=x>']}], gone: []});
+check('和上次比：异常项、数值变化、说明都转义', raw.test(cmp), false);
+check('和上次比：新出现的写上次的值', cmp.includes('（上次 &lt;u&gt;86%&lt;/u&gt;）'), true);
+check('第一次执行：没有可比的', R.compareHtml(null).includes('第一次完成的执行'), true);
+check('邮件没发出去：组名和原因转义', raw.test(R.mailHtml({mail: {status: 'failed', group: '<q>值班</q>', error: '<i>535</i>', attempts: 3}})), false);
+check('没有邮件状态就不显示', R.mailHtml({mail: {}}), '');
+const sched = R.scheduleRows([{id: 's"1', playbook_name: '<img src=x>', describe: '<q>每天</q>', enabled: false, params: {'<i>': '<u>'},
+  notify: {group: '<script>g</script>', when: 'problems', repeat: 'daily'}, next_at: null, last: null}]);
+check('定时计划：SOP 名、参数、收件组都转义', raw.test(sched), false);
+check('定时计划：手机上每格有列名', ['时间', '邮件', '下次', '上次'].every(l => sched.includes(`data-l="${l}"`)), true);
+const evs = R.eventRows([{received_at: '2026-11-01T01:00:00+00:00', name: '<q>DiskFull</q>', title: '<img src=x>',
+  labels: {'<i>k': '<u>v'}, action_name: '<em>已触发</em>', run_id: 'r1', peer: '<q>10.0.0.1'}]);
+check('最近收到的告警：标题、标签、来源都转义', raw.test(evs), false);
+const gap = R.gapRow({id: 'g"1', count: 3, example: '<img src=x onerror=alert(1)>', questions: ['<img src=x onerror=alert(1)>', '<svg onload=1>'],
+  last_at: '2026-11-01T01:00:00+00:00', detail: '<q>没有</q>', kinds: {'<i>': 1, feedback: 2}});
+check('知识库缺口：问题、其他问法、线索都转义', raw.test(gap), false);
+check('知识库缺口：线索写成中文', gap.includes('有人工反馈 2'), true);
+check('知识库缺口：id 进属性也转义', gap.includes('data-gapopen="g&quot;1"'), true);
+// 页面上只能选收件组的名字：自动执行页不显示收件地址、SMTP 账号
+check('自动执行页不显示收件地址、SMTP 账号', /\.addresses|mail\.user\b|mail\.password|mail\.host\b/.test(scripts.join('\n')), false);
 
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
