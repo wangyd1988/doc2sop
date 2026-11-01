@@ -4312,7 +4312,7 @@ function paintInfra() {
     </ul>
     ${live ? '' : `<div class="banner">${esc(c.error || '工具服务较旧，页面上不能配置')}。下面只能看。</div>`}
     ${live && blocked ? `<div class="banner">${esc(blocked)}</div>` : ''}
-    ${can ? `<div class="howto" style="margin:0 0 14px">输审批口令时，最好经 SSH 隧道打开页面：<code>ssh -N -L 8765:127.0.0.1:8765 root@宿主机</code>，再开 <code>http://127.0.0.1:8765</code>。
+    ${can ? `<div class="howto" style="margin:0 0 14px">审批口令等同工具服务那台机器的 root（能批准以 root 运行的命令），只经 SSH 隧道打开页面再输：<code>ssh -N -L 8765:127.0.0.1:8765 root@宿主机</code>，再开 <code>http://127.0.0.1:8765</code>。
       页面上加的连接只能用这里输入的凭据，引用不了服务器上的 <code>\${名字}</code>；凭据存好以后只看得到「已设置」，改了地址就要重新输入。</div>` : ''}
     <div class="card"><h3>主机 <small>命令型工具在哪些机器上跑</small>${add('host', '添加主机')}</h3>
       ${hostMode.configured || hosts.length ? table(['名称', '账号与地址', '方式', '状态', '分组', ''], hosts.map(h => icHostRow(h, hostMode.default, live)).join(''), '还没有主机。')
@@ -4327,7 +4327,7 @@ function paintInfra() {
     <div class="card"><h3>MCP server <small>别人写好的工具服务器</small>${add('mcp', '添加远程 MCP server')}</h3>
       ${table(['名称', '地址', '状态', '凭据', ''], servers.map(x => icMcpRow(x, blocked)).join(''), '还没有 MCP server。')}
       <div class="howto"><b>页面上能加：</b>远程 server（Streamable HTTP），发现的工具自动进「待审批」，批准后才能用。
-        <b>只能在服务器上：</b>本机子进程（stdio）——它在工具服务这台机器上以 root 跑程序，放到页面上，口令一泄露就等于 root。</div></div>
+        <b>只能在服务器上：</b>本机子进程（stdio）——要在服务器上放程序文件；页面上不给这个入口，少一条以 root 长驻运行程序的路。</div></div>
     <div class="card"><h3>对外开放的数据工具 <small>外部智能体经 MCP 能调哪些</small><span class="ro">${o.access?.enabled ? '对外接入已打开' : '对外接入没打开'}</span></h3>
       <div class="note">对外开放只在 MCP 打开时才有用：打开以后，外部智能体凭对外接入的令牌就能调这个工具。打开要审批口令，关闭不要。
         主配置里写了 <code>export: true</code> 的也能在这里关（记在页面配置里，不改主配置）。</div>
@@ -4891,7 +4891,7 @@ async function renderSettings() {
       <dl><dt>文档数</dt><dd>${s.docs}</dd><dt>当前维度</dt><dd>${s.index_dim ?? '（空）'}</dd><dt>重建状态</dt><dd id="stJob">${job ? esc(job.stage) + (job.status === 'done' && job.result ? `（成功 ${job.result.rebuilt}/${job.result.total}${job.result.failed.length ? '，失败：' + esc(job.result.failed.join('、')) : ''}）` : '') : '—'}</dd></dl>
       <div class="row"><button id="stReindex" ${s.docs ? '' : 'disabled'}>重建全部索引</button><span class="note">从保存的原文件重新解析、向量化，图片识别走缓存不重复花钱；${s.docs} 个文档约需几分钟。</span></div>
     </div>
-    <p class="note"><b>为什么 key 不回显</b>：页面只能写入新 key，看不到旧的；文件存在 data/settings.json，权限 600。<b>和工具凭据的区别</b>：这里决定问题和片段发给哪个模型，工具凭据决定宿主机执行什么——后者永远不进页面。</p>
+    <p class="note"><b>为什么 key 不回显</b>：页面只能写入新 key，看不到旧的；文件存在 data/settings.json，权限 600。<b>和工具凭据的区别</b>：这里决定问题和片段发给哪个模型，工具凭据决定宿主机执行什么——服务器上的工具凭据不进页面；「工具 → 主机与数据源」上为页面连接输入的凭据只写不读。</p>
     <div class="card" id="stCardPacks"><h3>场景包 <small>一套文档 + 工具定义 + SOP，导入后就能问（docs/场景包.md）</small></h3><div id="stPacks" class="note">加载中…</div>
       <div class="row"><button id="stExport">导出 SOP（sops.json）</button><span class="note">把库里现场长出来、核对过的 SOP 按场景包格式导出，放进包里给别处用。工具定义不随包导入，由宿主机 include。</span></div></div>
     <div class="card" id="stCardPass"><h3>审批口令 <small>在页面上批准工具时要输</small></h3><div id="stPass"><div class="note">加载中…</div></div></div>

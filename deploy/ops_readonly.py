@@ -4251,7 +4251,7 @@ def _sqlite_explain(conn, module, segments, params, used, query):
 
 def _postgres_explain(conn, module, segments, params, used, query):
     """PostgreSQL：和查询同一套连接参数（默认只读事务、语句超时），再 read_only；只 EXPLAIN，不带 ANALYZE。"""
-    kwargs = _postgres_kwargs(conn, used)
+    kwargs = _postgres_kwargs(conn, used, module)
     try:
         db = module.connect(autocommit=False, **kwargs)
     except Exception:
@@ -5187,8 +5187,35 @@ def _sqlite_query(conn, module, segments, params, max_rows, used):
     return columns, rows[:max_rows], len(rows) > max_rows
 
 
-def _postgres_kwargs(conn, used):
-    """连 PostgreSQL 的参数：查询和自动检查的 EXPLAIN 用同一套。"""
+# 页面上加的 PostgreSQL 连接（还有「测试」的草稿）只能用页面上为它输入的凭据。参数里没给的，libpq 会自己去找：
+# 环境变量（PGPASSWORD、PGSSLCERT……）、密码文件（PGPASSFILE、~/.pgpass）、service 文件、客户端证书
+# （~/.postgresql/postgresql.crt）、Kerberos 票据——这些都是服务器上的凭据。所以这类连接的参数里一律显式给出：
+# 密码没有就给空串（显式的空串不会被 PGPASSWORD、service 文件补上；None 会被 psycopg 丢掉，等于没给），
+# 密码文件和客户端证书指向一个不存在的路径（libpq 找不到就当没有；不用 /dev/null：libpq 会打「not a plain file」的警告）。
+PG_NO_FILE = "/nonexistent/doc2sop-page-connection"
+
+
+def _libpq_version(module):
+    """psycopg 用的 libpq 的版本号（160004 这样）；不是 psycopg（比如测试里的假驱动）就是 0。"""
+    try:
+        return int(module.pq.version())
+    except Exception:
+        return 0
+
+
+def _pg_isolated(module):
+    """页面连接不碰服务器上凭据的那几项参数。按 libpq 的版本加：老版本不认识的参数一写就连不上。"""
+    kwargs = {"passfile": PG_NO_FILE, "sslcert": PG_NO_FILE, "sslkey": PG_NO_FILE}
+    version = _libpq_version(module)
+    if version >= 120000:
+        kwargs["gssencmode"] = "disable"            # 不拿这台机器的 Kerberos 票据建加密通道
+    if version >= 160000:
+        kwargs["require_auth"] = "!gss,!sspi"       # 服务器要 Kerberos / SSPI 认证（用的是这台机器的身份）就不连
+    return kwargs
+
+
+def _postgres_kwargs(conn, used, module=None):
+    """连 PostgreSQL 的参数：查询和自动检查的 EXPLAIN 用同一套。module 是驱动（页面连接按它的 libpq 版本加参数）。"""
     millis = conn["timeout"] * 1000
     kwargs = {"host": _resolve(conn["host"], used), "port": conn["port"],
               "dbname": _resolve(conn["database"], used), "user": _resolve(conn["user"], used),
@@ -5198,20 +5225,21 @@ def _postgres_kwargs(conn, used):
               # 第二层：这条连接上的事务默认只读；语句超时由数据库自己掐
               "options": f"-c default_transaction_read_only=on -c statement_timeout={millis} "
                          f"-c idle_in_transaction_session_timeout={millis * 2}"}
-    if conn["password"]:
+    origin = conn.get("origin")
+    if origin in ("page", "draft"):
+        # 页面上加的连接：密码只从页面凭据文件里它自己那一条取，去向对不上就不给（见 _page_credential）；
+        # 草稿的密码由调用方换成这次输入的。别的一概不让 libpq 自己去找（见 PG_NO_FILE）
+        kwargs["password"] = _page_credential(conn, used, optional=True) if origin == "page" else ""
+        kwargs.update(_pg_isolated(module))
+    elif conn["password"]:
         kwargs["password"] = _resolve(conn["password"], used)
-    elif conn.get("origin") == "page":
-        # 页面上加的连接：密码只从页面凭据文件里它自己那一条取，去向对不上就不给（见 _page_credential）
-        password = _page_credential(conn, used, optional=True)
-        if password:
-            kwargs["password"] = password
     if conn["ca"]:
         kwargs["sslrootcert"] = _resolve(conn["ca"], used)
     return kwargs
 
 
 def _postgres_query(conn, module, segments, params, max_rows, used):
-    kwargs = _postgres_kwargs(conn, used)
+    kwargs = _postgres_kwargs(conn, used, module)
     try:
         db = module.connect(autocommit=False, **kwargs)
     except Exception as exc:
@@ -7382,13 +7410,19 @@ def _page_external(owner, raw):
 
 
 def _page_url(owner, field, raw):
-    """页面上的地址：只能是字面量 http(s)://主机[:端口][/路径]，主机部分不能有参数、变量、空白和用户名密码，不能带查询串。"""
+    """页面上的地址：只能是字面量 http(s)://主机[:端口][/路径]，主机部分不能有参数、变量、空白和用户名密码，不能带查询串；
+    写了端口就得是 1..65535（保存时就挡住，免得到测试、调用时才在 urlsplit 里出错）。"""
     text = str(raw or "").strip()
     found = re.match(r"^https?://([^/?#]+)(.*)$", text)
     if not found or len(text) > 2000 or not _url_host(text):
         raise ConfigError(f"{owner} 的 {field} 要写成 http://主机[:端口][/路径] 或 https://…")
     if re.search(r"[{}$@\s\\]", found.group(1)):
         raise ConfigError(f"{owner} 的 {field} 的主机部分不能有参数、变量、空白或用户名密码（凭据单独输入）")
+    hostport = found.group(1).rsplit("]", 1)[-1]          # IPv6 字面量 [::1] 里的冒号不算端口
+    if ":" in hostport:
+        digits = hostport.split(":", 1)[1]
+        if not re.fullmatch(r"[0-9]{1,5}", digits) or not 1 <= int(digits) <= 65535:
+            raise ConfigError(f"{owner} 的 {field} 的端口要是 1..65535 的整数")
     rest = found.group(2)
     if rest and not rest.startswith("/"):
         raise ConfigError(f"{owner} 的 {field} 主机名后面必须直接是路径（以 / 开头）")
@@ -8113,12 +8147,12 @@ def _page_db_checks(conn, secret, use_stored, done):
     done.append("连库")
     probe = dict(conn, timeout=min(conn["timeout"], PRECHECK_SQL_TIMEOUT))
     if not use_stored:
-        probe["origin"] = "draft"        # 不是 page：_postgres_kwargs / _mysql_kwargs 不会去取存着的凭据
+        probe["origin"] = "draft"        # 草稿：不去取存着的凭据，也不让驱动自己去找服务器上的（见 _postgres_kwargs）
     title = "连上数据库，在只读事务里执行 SELECT 1"
     used = []
     try:
         if conn["type"] == "postgres":
-            kwargs = _postgres_kwargs(probe, used)
+            kwargs = _postgres_kwargs(probe, used, module)
             if secret and not use_stored:
                 kwargs["password"] = secret
             db = module.connect(autocommit=False, **kwargs)
@@ -8834,9 +8868,11 @@ def page_host_delete(payload, caller=""):
         entries.pop(index)
         _page_write(document)
         _page_unpin(name)
-        for path in (_page_key_path(name), _page_key_path(name) + ".pub", _page_bundle_path(name)):
-            with contextlib.suppress(OSError):
-                os.unlink(path)
+        # 手改出来的非法主机名拼不出路径（_named_path 拒绝）：条目已经删了，这几个文件本来也不会有
+        for path_of in (lambda: _page_key_path(name), lambda: _page_key_path(name) + ".pub",
+                        lambda: _page_bundle_path(name)):
+            with contextlib.suppress(ConfigError, OSError):
+                os.unlink(path_of())
         refresh(force=True)
         _page_change("删除主机", name, "私钥、登记的 host key、安装包一起删了", caller)
     return {"deleted": name, "revoke": _page_revoke(host) if host else [], "impact": impact}

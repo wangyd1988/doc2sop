@@ -295,6 +295,8 @@ check('页面上的动作都走 /api/tools/config', ['connection-save', 'connect
   'host-trust', 'host-delete', 'host-scan', 'host-check', 'host-bundle'].every(a => html.includes(`'/api/tools/config/${a}'`))
   && html.includes("`/api/tools/config/${kind === 'conn' ? 'connection' : 'mcp'}-delete`"), true);
 check('口令、凭据不进 localStorage', /localStorage\.setItem\([^)]*(secret|token|password)/i.test(html), false);
+check('不拿「口令一泄露」当理由：审批口令本来就等同 root，页面上照实写', [html.includes('口令一泄露'),
+  html.includes('审批口令等同工具服务那台机器的 root')], [false, true]);
 
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

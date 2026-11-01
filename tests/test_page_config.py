@@ -10,13 +10,17 @@ import contextlib
 import io
 import json
 import os
+import queue
+import socket
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
 import textwrap
 import threading
+import time
 import types
 import unittest
 import urllib.error
@@ -36,6 +40,11 @@ else:
     ops = importlib.util.module_from_spec(_SPEC)
     sys.modules["ops_readonly"] = ops
     _SPEC.loader.exec_module(ops)
+
+try:     # 真的 psycopg（带 libpq）：装进 OPS_VENDOR_DIR 才有，平时的测试环境没有，用它的用例跳过
+    import psycopg as PSYCOPG
+except Exception:
+    PSYCOPG = None
 
 POSIX = os.name == "posix"
 PASS = "correct horse battery staple"
@@ -336,8 +345,98 @@ class ConnectionTests(_Config):
         self.add_pg(secret=None)
         self.assertTrue(ops.run_tool("cmdb_count", {})["ok"])
         sent = self.driver.connects[-1]
-        self.assertNotIn("password", sent)
+        self.assertEqual((sent["password"], sent["passfile"]), ("", ops.PG_NO_FILE))   # 显式的空密码，不让 libpq 自己找
         self.assertNotIn(SERVER_SECRET, json.dumps(self.driver.connects))
+
+    def test_page_postgres_never_lets_libpq_look_for_server_credentials(self):
+        """参数里没给的密码、密码文件、客户端证书，libpq 会自己去找服务器上的（PGPASSWORD、~/.pgpass、service 文件、
+        ~/.postgresql/postgresql.crt）。页面连接走的每一条路——保存后的测试、查询、测试草稿、自动检查的 EXPLAIN——都显式给出；
+        主配置的连接参数和以前一样。"""
+        isolated = {"passfile": ops.PG_NO_FILE, "sslcert": ops.PG_NO_FILE, "sslkey": ops.PG_NO_FILE}
+
+        def sent_with(password):
+            sent = self.driver.connects[-1]
+            self.assertEqual({key: sent.get(key) for key in ("password", *isolated)}, {"password": password, **isolated})
+
+        fields = {"name": "cmdb", "type": "postgres", "host": "db.example.internal", "database": "cmdb",
+                  "user": "doc2sop_ro", "tls": "require"}
+        self.add_pg(secret=None)
+        sent_with("")                                               # 保存之后的测试，没有密码
+        self.assertTrue(ops.run_tool("cmdb_count", {})["ok"])
+        sent_with("")                                               # 真正的查询
+        self.ok(ops.page_connection_test, {"connection": fields, "passphrase": PASS})
+        sent_with("")                                               # 测试草稿，没输密码
+        self.ok(ops.page_connection_test, {"connection": fields, "secret": "typed-in-the-dialog", "passphrase": PASS})
+        sent_with("typed-in-the-dialog")                            # 测试草稿，输了
+        self.ok(ops.page_connection_save, {"original": "cmdb", "connection": fields, "secret": DB_SECRET,
+                                           "confirm": ["cmdb_count"], "passphrase": PASS})
+        sent_with(DB_SECRET)                                        # 存了密码之后的测试
+        self.assertTrue(ops.run_tool("cmdb_count", {})["ok"])
+        sent_with(DB_SECRET)
+        item = ops.propose_tool({"name": "cmdb_status", "desc": "按状态数资产", "params": {},
+                                 "impl": {"type": "sql", "conn": "cmdb", "query": "SELECT status FROM assets"}})
+        state = ops.review_pending(item, caller="web user=admin ip=10.1.2.3", deadline=time.monotonic() + 30,
+                                   fresh=True)["precheck"]
+        self.assertEqual(state["state"], "done", state)
+        sent_with(DB_SECRET)                                        # 自动检查的 EXPLAIN
+        # 主配置的连接：一个参数都没多（服务器上的连接照旧由管理员决定）
+        self.assertTrue(ops.run_tool("usage", {})["ok"])
+        self.assertEqual(self.driver.connects[-1], {
+            "autocommit": False, "host": "127.0.0.1", "port": 15432, "dbname": "litellm", "user": "doc2sop_ro",
+            "connect_timeout": 8, "application_name": "doc2sop-ops-readonly", "sslmode": "prefer",
+            "options": "-c default_transaction_read_only=on -c statement_timeout=5000 "
+                       "-c idle_in_transaction_session_timeout=10000", "password": SERVER_SECRET})
+
+    def test_newer_libpq_also_keeps_kerberos_and_sspi_out(self):
+        """libpq 12 起不拿 Kerberos 票据建加密通道，16 起服务器要 Kerberos / SSPI 认证就不连；更老的不认识这两个参数，不加。"""
+        self.add_pg(secret=None)
+        page, main = ops._state["connections"]["cmdb"], ops._state["connections"]["litellm_db"]
+        for version, extra in ((110000, {}), (150004, {"gssencmode": "disable"}),
+                               (180004, {"gssencmode": "disable", "require_auth": "!gss,!sspi"})):
+            with self.subTest(version=version):
+                driver = types.SimpleNamespace(pq=types.SimpleNamespace(version=lambda version=version: version))
+                kwargs = ops._postgres_kwargs(page, [], driver)
+                self.assertEqual({key: kwargs[key] for key in ("gssencmode", "require_auth") if key in kwargs}, extra)
+                self.assertFalse({"passfile", "sslcert", "sslkey", "gssencmode", "require_auth"}
+                                 & set(ops._postgres_kwargs(main, [], driver)))
+
+    @unittest.skipUnless(PSYCOPG, "没有 psycopg：把 psycopg[binary] 装进 OPS_VENDOR_DIR 才跑")
+    def test_psycopg_hands_the_empty_password_to_libpq(self):
+        """None 会被 psycopg 丢掉（等于没给），空串才真的进连接串。"""
+        self.add_pg(secret=None)
+        kwargs = ops._postgres_kwargs(ops._state["connections"]["cmdb"], [], PSYCOPG)
+        conninfo = PSYCOPG.conninfo.make_conninfo(**kwargs)
+        self.assertIn("password=''", conninfo)
+        parsed = PSYCOPG.conninfo.conninfo_to_dict(conninfo)
+        self.assertEqual([parsed[key] for key in ("password", "passfile", "sslcert", "sslkey")],
+                         ["", ops.PG_NO_FILE, ops.PG_NO_FILE, ops.PG_NO_FILE])
+        if PSYCOPG.pq.version() >= 160000:
+            self.assertEqual(parsed["require_auth"], "!gss,!sspi")
+
+    def test_ports_must_be_1_to_65535(self):
+        """地址里的端口保存时就查（连接和 MCP 都是），免得存下来、到测试和调用时才出错；手改旁路文件写错的照样跳过。"""
+        for base in ("https://prom.example.internal:abc", "https://prom.example.internal:99999",
+                     "https://prom.example.internal:0", "https://prom.example.internal:", "https://prom.example.internal:+80",
+                     "https://prom.example.internal:\u0668\u0660", "https://[::1]:abc", "https://a:b:c"):
+            with self.subTest(base=base):
+                error = self.refused(ops.page_connection_save, {"connection": {"name": "prom", "type": "http",
+                                                                               "base": base, "auth": "none"},
+                                                                "passphrase": PASS}, 400)
+                self.assertIn("端口", str(error))
+        error = self.refused(ops.page_mcp_save, {"server": {"id": "itsm", "url": "https://mcp.example.com:99999/mcp"},
+                                                 "passphrase": PASS}, 400)
+        self.assertIn("端口", str(error))
+        self.assertEqual(ops._approval["failures"], 0)          # 请求本身不对，不消耗口令次数
+        self.assertFalse(ops._page_file().exists())
+        for index, base in enumerate(("https://prom.example.internal:9090", "http://[::1]:8080", "https://[2001:db8::1]",
+                                      "https://prom.example.internal:65535/api")):
+            with self.subTest(base=base):
+                self.add_http(name=f"ok{index}", base=base, auth="none", secret=None)
+        ops._page_write({"connections": [{"name": "bad", "type": "http", "base": "https://x.example.com:99999",
+                                          "auth": "none"}], "mcp_servers": [], "export": [], "hosts": []})
+        ops.refresh(force=True)
+        self.assertNotIn("bad", ops.describe_connections())
+        self.assertTrue(any("端口" in problem for problem in ops._state["problems"]))
 
     def test_a_tool_on_a_page_connection_cannot_carry_its_own_server_credential(self):
         # 管理员删掉了主配置里的连接 prom 之后，有人在页面上建一个同名的指向自己：手写工具自带的 ${…} 不能跟过去
@@ -377,7 +476,7 @@ class ConnectionTests(_Config):
         self.driver.connects.clear()
         self.assertTrue(ops.run_tool("cmdb_count", {})["ok"])
         self.assertEqual(self.driver.connects[-1]["host"], "other.example.internal")
-        self.assertNotIn("password", self.driver.connects[-1])
+        self.assertEqual(self.driver.connects[-1]["password"], "")
 
     def test_every_part_of_the_destination_counts(self):
         for field, value in (("port", 6543), ("database", "other"), ("user", "someone"), ("tls", "disable")):
@@ -413,7 +512,7 @@ class ConnectionTests(_Config):
         draft = {**document["connections"][0]}
         test = self.ok(ops.page_connection_test, {"original": "cmdb", "connection": draft, "passphrase": PASS})
         self.assertFalse(test["used_saved_secret"])
-        self.assertTrue(all("password" not in sent for sent in self.driver.connects))
+        self.assertTrue(all(sent["password"] == "" for sent in self.driver.connects))
         self.assertNothingLeaks()
 
     def test_testing_uses_the_saved_password_only_for_the_same_destination(self):
@@ -553,6 +652,128 @@ class ConnectionTests(_Config):
         self.refused(ops.page_connection_save, {"connection": {"name": "other", "type": "postgres", "host": "db",
                                                                "database": "x", "user": "u"},
                                                 "secret": DB_SECRET, "passphrase": PASS}, 409)
+
+
+class FakePostgres:
+    """假的 PostgreSQL：收下启动包（SSL、GSS 加密一律回「不支持」），要明文密码，记下客户端发来的密码，然后拒绝。
+    客户端手里没有密码时，libpq 根本不发（「no password supplied」）就断开：记 None。"""
+
+    def __init__(self):
+        self.listener = socket.create_server(("127.0.0.1", 0))
+        self.port = self.listener.getsockname()[1]
+        self.results = queue.Queue()
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    def close(self):
+        self.listener.close()
+
+    def serve(self):
+        while True:
+            try:
+                client, _ = self.listener.accept()
+            except OSError:
+                return
+            with client:
+                client.settimeout(15)
+                try:
+                    self.results.put(self.handle(client))
+                except (OSError, EOFError, struct.error) as exc:
+                    self.results.put(f"broken: {exc!r}")
+
+    @staticmethod
+    def read(client, size):
+        data = b""
+        while len(data) < size:
+            chunk = client.recv(size - len(data))
+            if not chunk:
+                raise EOFError("closed")
+            data += chunk
+        return data
+
+    def handle(self, client):
+        while True:
+            length, code = struct.unpack("!ii", self.read(client, 8))
+            self.read(client, length - 8)
+            if code not in (80877103, 80877104):       # SSLRequest、GSSENCRequest：回 N（不支持），客户端接着发启动包
+                break
+            client.sendall(b"N")
+        client.sendall(b"R" + struct.pack("!ii", 8, 3))  # AuthenticationCleartextPassword
+        try:
+            kind = self.read(client, 1)
+        except (EOFError, ConnectionError):
+            return None
+        payload = self.read(client, struct.unpack("!i", self.read(client, 4))[0] - 4)
+        error = b"SFATAL\0VFATAL\0C28P01\0Mpassword authentication failed\0\0"
+        client.sendall(b"E" + struct.pack("!i", len(error) + 4) + error)
+        return payload.rstrip(b"\0").decode("utf-8") if kind == b"p" else f"unexpected {kind!r}"
+
+    def next(self):
+        return self.results.get(timeout=20)
+
+
+@unittest.skipUnless(PSYCOPG, "没有 psycopg：把 psycopg[binary] 装进 OPS_VENDOR_DIR 才跑")
+class LibpqTests(_Config):
+    """真的 libpq 连一个假的 PostgreSQL：服务器上的 PGPASSWORD、密码文件、service 文件里的密码，页面上的连接一个都带不过去，
+    页面上输入的照常送到。每种来源先用以前的参数（不给密码）连一次，确认这台机器上它真的会被 libpq 带过去。"""
+
+    def setUp(self):
+        super().setUp()
+        self.set_passphrase()
+        self.server = FakePostgres()
+        self.addCleanup(self.server.close)
+        clean = patch.dict(os.environ)
+        clean.start()
+        self.addCleanup(clean.stop)
+        for name in ("PGPASSWORD", "PGPASSFILE", "PGSERVICE", "PGSERVICEFILE", "PGSYSCONFDIR"):
+            os.environ.pop(name, None)                  # 跑测试的机器上本来就有的先拿掉
+        passfile, services = self.dir / "pgpass", self.dir / "pg_service.conf"
+        passfile.write_text("*:*:*:*:from-passfile\n", encoding="utf-8")
+        services.write_text("[doc2sop]\npassword=from-service-file\n", encoding="utf-8")
+        if POSIX:
+            passfile.chmod(0o600)                       # 组或其他用户能读的密码文件 libpq 不用
+        self.sources = {"from-PGPASSWORD": {"PGPASSWORD": "from-PGPASSWORD"},
+                        "from-passfile": {"PGPASSFILE": str(passfile)},
+                        "from-service-file": {"PGSERVICEFILE": str(services), "PGSERVICE": "doc2sop"}}
+        real = patch.object(ops, "_driver", lambda kind: (PSYCOPG, "") if kind == "postgres" else (self.driver, ""))
+        real.start()
+        self.addCleanup(real.stop)
+        self.fields = {"name": "cmdb", "type": "postgres", "host": "127.0.0.1", "port": self.server.port,
+                       "database": "cmdb", "user": "doc2sop_ro", "tls": "prefer"}
+
+    def connect(self, kwargs):
+        with contextlib.suppress(PSYCOPG.Error):
+            PSYCOPG.connect(autocommit=False, **kwargs).close()
+        return self.server.next()
+
+    def test_server_credentials_never_reach_a_page_connection(self):
+        self.ok(ops.page_connection_save, {"connection": self.fields, "passphrase": PASS})
+        self.assertIsNone(self.server.next())                        # 保存之后的测试：没有密码
+        conn = ops._state["connections"]["cmdb"]
+        for source, env in self.sources.items():
+            with self.subTest(source=source), patch.dict(os.environ, env):
+                before = {key: value for key, value in ops._postgres_kwargs(conn, [], PSYCOPG).items()
+                          if key not in ("password", "passfile")}
+                self.assertEqual(self.connect(before), source)       # 以前的参数：libpq 把服务器上的凭据带过去了
+                self.assertIsNone(self.connect(ops._postgres_kwargs(conn, [], PSYCOPG)))
+                self.assertFalse(ops.run_tool("cmdb_count", {})["ok"])
+                self.assertIsNone(self.server.next())                # 真正的查询
+                self.ok(ops.page_connection_test, {"connection": self.fields, "passphrase": PASS})
+                self.assertIsNone(self.server.next())                # 测试草稿，没输密码
+                self.ok(ops.page_connection_test, {"connection": self.fields, "secret": "typed-in-the-dialog",
+                                                   "passphrase": PASS})
+                self.assertEqual(self.server.next(), "typed-in-the-dialog")
+        everything = {key: value for env in self.sources.values() for key, value in env.items()}
+        with patch.dict(os.environ, everything):
+            self.ok(ops.page_connection_save, {"original": "cmdb", "connection": self.fields, "secret": DB_SECRET,
+                                               "confirm": ["cmdb_count"], "passphrase": PASS})
+            self.assertEqual(self.server.next(), DB_SECRET)          # 存了密码之后的测试
+            self.assertFalse(ops.run_tool("cmdb_count", {})["ok"])
+            self.assertEqual(self.server.next(), DB_SECRET)
+            item = ops.propose_tool({"name": "cmdb_status", "desc": "按状态数资产", "params": {},
+                                     "impl": {"type": "sql", "conn": "cmdb", "query": "SELECT status FROM assets"}})
+            ops.review_pending(item, caller="web user=admin ip=10.1.2.3", deadline=time.monotonic() + 30, fresh=True)
+            self.assertEqual(self.server.next(), DB_SECRET)          # 自动检查的 EXPLAIN
+        self.assertTrue(self.server.results.empty())
 
 
 class McpServerTests(_Config):
@@ -955,6 +1176,22 @@ class HostTests(_Config):
         self.refused(ops.page_host_save, {"host": {**WEB01, "address": "${evil}"}, "passphrase": PASS}, 400)
         self.assertEqual(ops._approval["failures"], 0)
         self.assertFalse(ops._page_file().exists())
+
+    def test_a_hand_edited_bad_host_name_can_still_be_deleted(self):
+        """手改旁路文件写出来的非法主机名拼不出私钥、安装包的路径：删的时候不能删了条目又回 400，变更记录照记。"""
+        outside = self.dir / "evil"
+        outside.write_text("not ours", encoding="utf-8")
+        ops._page_write({"connections": [], "mcp_servers": [], "export": [],
+                         "hosts": [{**WEB01, "name": "../evil"}, {**WEB01, "name": "Web02"}]})
+        ops.refresh(force=True)
+        self.assertEqual(len([item for item in ops.config_view()["skipped"] if item["kind"] == "hosts"]), 2)
+        for name in ("../evil", "Web02"):
+            with self.subTest(name=name):
+                result = self.ok(ops.page_host_delete, {"name": name, "passphrase": PASS})
+                self.assertEqual(result["deleted"], name)
+                self.assertEqual(ops._page_changes()[0]["target"], name)
+        self.assertEqual(self.page_doc().get("hosts") or [], [])
+        self.assertEqual(outside.read_text(encoding="utf-8"), "not ours")
 
     def test_names_never_escape_their_folder(self):
         folder = self.dir / "keys"
