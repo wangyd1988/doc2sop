@@ -140,12 +140,12 @@ flowchart LR
 
 | 表 | 存什么 |
 |---|---|
-| `executions` | 一次提问 / 一次「▶ 执行」：会话、对应的回答消息、按哪个 SOP 跑的、结论质量（ok / anomaly / failed / unknown）；`channel` 是 web 或 mcp（对外 MCP 的一个会话一条，不算结论质量） |
+| `executions` | 一次提问 / 一次「▶ 执行」：会话、对应的回答消息、按哪个 SOP 跑的、结论质量（ok / anomaly / failed / unknown）；`channel` 是 web 或 mcp（对外 MCP 的一个会话一条，不算结论质量），自动执行的是 schedule / alert（「立即执行一次」也是 web） |
 | `tool_calls` | 每次工具调用的参数、**完整返回**（页面和模型看到的都是截断 / 压缩过的）、成功与否、耗时 |
 | `entities` | 容器、命名空间、K8s 对象、工具、SOP、文档、阈值、执行……`(kind, name)` 唯一，记首次 / 最近见到的时间 |
 | `facts` | 主语 → 谓语 → 宾语（实体或字面量），带 `source_kind`（tool / doc / human / sop）和 `source_ref`（`tool_call:<id>` / `sop:<id>` / `feedback:<id>`） |
 | `proposals` | 图谱提出的建议（长出 SOP、补充 SOP、调阈值……），`evidence_refs` 指向工具调用，状态 pending / approved / rejected |
-| `feedback` | 人对一次执行的判断：correct / false_alarm / wrong_threshold / missing_step |
+| `feedback` | 人对一次执行的判断：correct / false_alarm / wrong_threshold / missing_step；对话里的「👎」是 unhelpful |
 
 两条铁律：**没有出处的事实、没有证据的提议不进图谱**（Python 层校验 + 表上 CHECK）；
 **事实只追加不覆盖**，同一主语同一谓语的多条记录就是时间线，撤回只把状态改成 retracted。
@@ -188,6 +188,37 @@ SOP 面板顶部有「待确认提议 N」，回放对话时卡片也会补画�
 新建来源为「从实践沉淀」、默认停用的 SOP，或把步骤追加到目标 SOP 末尾；忽略则同签名 30 天静默。
 开关 `AUTO_SOP_PROPOSALS`，每日上限 `SOP_PROPOSALS_PER_DAY`。
 
+## 自动执行与执行记录
+
+SOP 不只在有人问的时候跑（用法见 [`自动执行.md`](自动执行.md)）。四个入口最后都是同一种执行，结果都落成一条执行记录：
+
+```
+对话里「▶ 执行」   /api/ask 照旧流式回答；有 playbook_id 时多建一条记录（id = execution_id），回答结束时补上结论
+立即执行一次 ┐
+定时计划到点 ├─ autorun.enqueue → 线程池（同时 2 个、排队 10 个；同一 SOP 没跑完就不再起）
+告警对上规则 ┘    └─ execute：和「▶ 执行」同一套 Agent 参数（知识库模式、默认模型、不联网），没有对话历史，
+                    一次性的 Agent 线程跑完就删；告警内容标成外部资料附在提问后面
+结束            runs.finish：从回答里按 SOP 输出格式解析逐步结论 → 等级、异常项；工具调用照常在图谱的 tool_calls 里
+                 └─ notify.after_run（计划、规则选了收件组时）：按「什么时候发 / 同一个问题怎么提醒」决定发不发 → mailer
+```
+
+定时：`schedules` 的后台线程每 20 秒看一遍（`SCHEDULER`，默认开），时刻按北京时间（固定 UTC+8）算、库里存 UTC；
+每个计划时刻先在 `sop_slots` 里占一行（主键冲突的不执行），发版切换时新旧两份同时在跑也只执行一次。迟到 10 分钟以内照常，
+更晚的记一条「错过」、不补跑。告警：`/api/alerts/hook` 是挂在路由表上的 ASGI 端点，不经 FastAPI 的 Basic 依赖，
+只认服务器配置文件里的告警令牌；没配令牌时回 404。邮件和告警令牌在 `AUTOMATION_FILE`（默认 `DATA_DIR/automation.yaml`），
+按修改时间热加载，页面上只看得到收件组的名字。
+
+同一个 `graph.db` 里多了八张表（`CREATE TABLE IF NOT EXISTS`，老表一列没改，回滚到旧版本时旧代码不碰它们）：
+
+| 表 | 存什么 |
+|---|---|
+| `sop_runs` | 执行记录：触发方式（web / schedule / alert）、来源（计划 / 规则 id）、参数、SOP 当时的步骤、状态、等级、异常项、摘要、邮件结果 |
+| `sop_schedules` | 定时计划：SOP、方式（daily / weekly / interval）、时刻、参数、收件组与提醒设置、上一个处理过的时刻 |
+| `sop_slots` | 占过的计划时刻（计划 id + 时刻是主键），防重复执行 |
+| `alert_rules` / `alert_events` | 告警规则；收到的每条告警对上了哪条规则、结果（保留 7 天） |
+| `kb_gaps` / `kb_gap_ignores` | 知识库缺口：从回答和反馈里扫出来的问题、线索、向量；忽略过的代表问题 |
+| `app_state` | 小的键值：知识库缺口扫描到哪了 |
+
 ## 入库链路
 
 ```
@@ -213,6 +244,14 @@ app/
 ├── playbooks.py       SOP：存储与校验（只能引用已有工具）
 ├── packs.py           场景包：发现、校验、导入（文档 + SOP）、导出、首次运行自动导入
 ├── graph.py           组织运行图谱：执行、工具完整返回、实体与带出处的事实、提议、反馈（SQLite）
+├── runs.py            SOP 执行记录：从回答解析逐步结论、等级、和上次比、详情与 Markdown 导出（docs/自动执行.md）
+├── autorun.py         自动执行：立即执行一次、定时、告警触发都在后台按 SOP 跑一遍（和「▶ 执行」同一套参数）
+├── schedules.py       定时计划：北京时间的时刻、占时刻防重复、错过不补跑、后台线程（SCHEDULER）
+├── alerts.py          告警规则与入口 /api/alerts/hook（只认告警令牌，没配时 404）：去重、限频、告警内容当资料
+├── notify.py          执行完发不发邮件、发什么；mailer.py 经 SMTP 发给服务器上配好的收件组（标准库 smtplib）
+├── automation_config.py  服务器上的配置文件（邮件、收件组、告警令牌、报告链接），热加载，页面只看得到收件组的名字
+├── automation_api.py  执行记录、计划、告警规则、测试邮件、知识库缺口的接口，挂告警入口和后台线程
+├── gaps.py            知识库缺口看板：从回答和反馈里找出文档没写的问题，按字面 / 向量归组
 ├── models.py          网关可用模型列表与校验
 ├── tracing.py         LangSmith 追踪
 ├── agent/
