@@ -13,6 +13,7 @@ import sys
 import tempfile
 import textwrap
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -358,6 +359,43 @@ class OverviewTests(_WithOps):
         self.assertEqual(data["tools"]["sources"]["hosts"], 3)
         self.assertFalse(data["approval"]["configured"])
         self.assertEqual(data["tool_labels"]["one"], "one")
+
+    def test_the_overview_does_not_wait_for_unfinished_checks(self):
+        """导航徽标每次切页都来 /api/overview：待审申请的自动检查没做完也不等，照样交给工具服务在后台做。"""
+        entered, gate = threading.Event(), threading.Event()
+        self.addCleanup(gate.set)
+
+        def slow(spec, done):
+            entered.set()
+            gate.wait(10)
+            return [ops._check("which", "ok", "本机有没有 kubectl", "本机有 kubectl")], ""
+
+        self.propose()
+        with patch.object(ops, "_precheck_command", slow), patch.object(ops, "PRECHECK_WAIT", 10), \
+                patch.dict(ops._precheck_cache, clear=True), patch.dict(ops._precheck_jobs, clear=True), \
+                patch.dict(ops._precheck_askers, clear=True):
+            started = time.monotonic()
+            data = self.client.get("/api/overview", auth=self.auth).json()
+            self.assertLess(time.monotonic() - started, 5)            # 等了的话至少 10 秒
+            self.assertEqual([t["name"] for t in data["pending"]["tools"]], ["pod_list"])
+            self.assertTrue(entered.wait(5))                          # 没等，但检查已经在后台做起来了
+            gate.set()
+
+    def test_an_older_tool_service_without_the_quick_review_still_works(self):
+        real = ops_client._request
+
+        def older(path, payload=None, timeout=30, headers=None):
+            if path == "/tools/review?wait=0":
+                raise ops_client.OpsUnavailable("Not found", status=404)
+            return real(path, payload, timeout, headers)
+
+        self.propose()
+        with patch.object(ops_client, "_request", side_effect=older) as request:
+            data = self.client.get("/api/overview", auth=self.auth).json()
+        self.assertEqual([t["name"] for t in data["pending"]["tools"]], ["pod_list"])
+        paths = [call.args[0] for call in request.call_args_list]
+        self.assertIn("/tools/review?wait=0", paths)
+        self.assertIn("/tools/review", paths)
 
     def test_examples_without_packs_come_from_docs_tools_and_live_sops(self):
         book = playbooks.save(None, "内存巡检", "内存紧张时", [{"tool": "one", "args": {}, "checkpoint": "看可用内存",

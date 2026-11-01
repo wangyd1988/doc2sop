@@ -194,6 +194,9 @@ check('自动检查：标题、文字、说明都转义', pc.includes('<img'), f
 check('自动检查：结论在最上面', pc.startsWith('<div class="pc-verdict blocked">⛔ 跑不了'), true);
 check('自动检查：每项一行', (pc.match(/<li /g) || []).length, 2);
 check('自动检查还在做', C.precheckHtml({state: 'checking', key: 'k'}).includes('自动检查进行中'), true);
+check('草稿的检查还在排队：请人过一会儿再点，不说会自动刷新',
+  [C.precheckHtml({state: 'checking', key: 'k'}, '', true)].map(h => h.includes('还在排队') && h.includes('再点「检查一下」')
+    && !h.includes('自动刷新'))[0], true);
 check('老工具服务：写明没有自动检查', C.precheckHtml(undefined).includes('工具服务版本较旧'), true);
 check('申请本身不合法：不说成老版本', C.precheckHtml(undefined, '缺少 binary').includes('批不了'), true);
 check('列表上的标记', C.precheckMark({state: 'done', verdict: 'ok', label: '能用'}), ['ok', '能用']);

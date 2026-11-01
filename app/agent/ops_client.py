@@ -151,15 +151,19 @@ def approval_status() -> dict:
         return _no_approval(OLD_SERVICE if exc.status == 404 else str(exc))
 
 
-def review(caller: str = "") -> dict:
+def review(caller: str = "", wait: bool = True) -> dict:
     """页面审批要看的：待审申请（带完整内容、风险提示和自动检查）、要重新确认的脚本、审批口令的状态。
 
+    wait=False 给工作台和导航徽标：工具服务不等没做完的自动检查（照样交给后台去做），立刻回。
     老工具服务没有 /tools/review：退回只有待审列表，页面上能看能拒绝、不能批。caller 只进工具服务的 [precheck] 日志。"""
     if not enabled():
         return {"pending": [], "held": [], "approval": _no_approval("未配置只读工具接口（OPS_URL / OPS_TOKEN）")}
     try:
-        data = _request("/tools/review", timeout=20, headers=_caller_headers(caller))
+        data = _request("/tools/review" if wait else "/tools/review?wait=0", timeout=20,
+                        headers=_caller_headers(caller))
     except OpsUnavailable as exc:
+        if exc.status == 404 and not wait:   # 比这一版老的工具服务不认 ?wait=0（它也没有自动检查，不会等）
+            return review(caller)
         if exc.status == 404:
             return {"pending": list_pending(), "held": [], "approval": _no_approval(OLD_SERVICE)}
         return {"pending": [], "held": [], "approval": _no_approval(str(exc)), "error": str(exc)}

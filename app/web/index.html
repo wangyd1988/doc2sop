@@ -2732,7 +2732,7 @@ function tlCheckHtml(c) {
   const risks = (d.risks || []).length ? `<div class="risks">${d.risks.map(riskHtml).join('')}</div>`
     : '<div class="note" style="margin:0">没有检测到风险。自动检测只是辅助。</div>';
   return `<div><h5>风险提示（规则检测）</h5>${risks}</div>
-    <div><h5>自动检查（只试探，不执行）</h5>${precheckHtml(d.precheck, d.invalid)}</div>
+    <div><h5>自动检查（只试探，不执行）</h5>${precheckHtml(d.precheck, d.invalid, true)}</div>
     ${c.prereview ? `<div id="tlCheckMr" data-key="${esc(c.prereview.key || '')}"><h5>${PRE_DISCLAIMER}</h5>${prereviewHtml(c.prereview)}</div>` : ''}
     <div class="tl-note" style="padding:0">只是检查，没有提交。改了表单要再点一次「检查一下」。</div>`;
 }
@@ -2740,7 +2740,7 @@ function tlCheckHtml(c) {
 function dlgCheckHtml(c) {
   if (!c) return '<div style="margin-top:8px">自动检查没做成（原因在表单下面），仍然可以提交并批准。</div>';
   const d = c.detail || {};
-  return `<div style="margin-top:10px"><b>输口令之前，先看看自动检查</b>（只试探，不执行）${precheckHtml(d.precheck, d.invalid)}
+  return `<div style="margin-top:10px"><b>输口令之前，先看看自动检查</b>（只试探，不执行）${precheckHtml(d.precheck, d.invalid, true)}
     ${c.prereview ? `<div id="dlgMr" data-key="${esc(c.prereview.key || '')}" style="margin-top:8px"><b>${PRE_DISCLAIMER}</b>${prereviewHtml(c.prereview)}</div>` : ''}</div>`;
 }
 function tlPollDraft(r) {
@@ -3579,10 +3579,13 @@ function precheckMark(p) {
   if (!p) return null;
   return p.state === 'done' ? [p.verdict, p.label] : ['checking', '检查中'];
 }
-function precheckHtml(p, invalid) {
+// draft：「检查一下」的草稿没有自动刷新——还在排队（工具服务这会儿试探得多）时请人过一会儿再点
+function precheckHtml(p, invalid, draft) {
   if (!p) return invalid ? '<div class="note" style="margin:0">申请本身现在批不了（原因见上面），没做自动检查。</div>'
     : '<div class="note" style="margin:0">工具服务版本较旧，没有自动检查：升级宿主机上的 ops_readonly.py（和 ops_exec.py 一起拷）后就有。</div>';
-  if (p.state !== 'done') return '<div class="pc-verdict checking">⏳ 自动检查进行中…<small>做完自动刷新</small></div>';
+  if (p.state !== 'done') return draft
+    ? '<div class="pc-verdict checking">⏳ 自动检查还在排队<small>工具服务这会儿要做的试探多，过一会儿再点「检查一下」</small></div>'
+    : '<div class="pc-verdict checking">⏳ 自动检查进行中…<small>做完自动刷新</small></div>';
   const items = (p.checks || []).map(c => `<li class="${esc(c.status)}"><span>${PC_ICON[c.status] || '•'}</span><div><b>${esc(c.title)}</b>：${esc(c.text)}</div></li>`).join('');
   const at = p.at ? (typeof ago === 'function' ? ago(p.at) : p.at) : '';
   return `<div class="pc-verdict ${esc(p.verdict)}">${PC_VERDICT_ICON[p.verdict] || ''} ${esc(p.label)}${p.note ? `<small>${esc(p.note)}</small>` : ''}${at ? `<small>${esc(at)} 检查</small>` : ''}</div>`

@@ -141,11 +141,12 @@ def examples(knowledge, tools, live_sops, labels):
 
 def overview(usable_tools, caller="") -> dict:
     """GET /api/overview。usable_tools：此刻能进 SOP 的数据类工具（名字 → 说明），由 main 传进来。
-    caller（谁、从哪里）只进工具服务的 [precheck] 日志：/tools/review 会顺带把待审申请的自动检查做起来。"""
+    caller（谁、从哪里）只进工具服务的 [precheck] 日志。待审申请取的时候不等自动检查（导航徽标每次切页都来这里），
+    没做完的照样交给工具服务在后台做。"""
     usable_tools = dict(usable_tools or {})
     knowledge = _knowledge()
     detail = ops_client.describe_tools()
-    review = ops_client.review(caller)
+    review = ops_client.review(caller, wait=False)
     tools = _tools(detail)
     labels = {name: tool.get("label") or name for name, tool in (detail.get("tools") or {}).items()}
     sops = playbooks.list_all()

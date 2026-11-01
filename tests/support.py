@@ -23,6 +23,9 @@ os.environ["SMART_MODE"] = "false"
 # 工具申请的模型预审同理：开着会在后台调真实网关；要测它的用例自己 patch app.config.TOOL_PREREVIEW。
 os.environ["TOOL_PREREVIEW"] = "false"
 os.environ.pop("TOOL_PREREVIEW_MODEL", None)
+# 工具服务的自动检查：所有真正的试探共用每分钟 30 次的名额。几十个用例都会提交申请，按这个名额会在后台互相排队；
+# 测名额的用例自己清掉这个变量、patch ops_readonly.PRECHECK_BUDGET。
+os.environ["OPS_PRECHECK_PER_MINUTE"] = "100000"
 # 场景包自动导入是后台线程，测试里必须关掉，要导入就在用例里显式调 packs.import_pack。
 os.environ["DEMO_PACKS"] = ""
 # 页面审批的口令文件指向临时目录（用例自己写），不读这台机器上真的 /etc/ops-readonly/approval.hash；

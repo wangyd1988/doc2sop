@@ -3675,18 +3675,24 @@ def _bait_risks(tool, out, risks):
 #     数据库的原始报错也不转述（里面可能有申请人没写过的表名、列名），只在报错点到的名字原样出现在申请人自己的查询里时说出它；
 #   · kubectl 只带推出来的动词、资源、命名空间：--server、--kubeconfig、--token、--as 这类连接、身份参数一律不跟，
 #     跟了就可能把只读账号的令牌发到申请人指定的地方。
+# 试探要启动的程序只用工具服务 PATH 里按名字找到的那个（kubectl、bash、sh、dash）。申请里写的路径——binary 的绝对、相对路径，
+# 脚本 #! 后面的路径——只 stat，不执行：binary 不是 kubectl 本身、也解析不到同一个文件的，不问 can-i；语法检查用 PATH 里的 shell。
 # 每次试探记一行 [precheck] 日志：谁、哪条申请、做了哪几项，不记内容。结果按内容缓存（同一份申请、同一份脚本、同一个连接上
 # 不重复试探）；连不上、MCP server 离线这类暂时的结果一分钟后作废。页面上可以「重新检查」；「检查一下」（表单里的草稿，
-# 不入队）和「重新检查」合起来限频。结论（能用 / 有问题 / 跑不了 / 没法自动判断）只由这里的检查得出，模型预审不参与。
+# 不入队）和「重新检查」合起来限频。真正的试探不管从哪里来（提交、审批页、工作台、检查一下、重新检查）都从同一个名额里扣，
+# 超了就在后台排队、页面照常显示「检查中」；排队时申请已经撤回或处理掉的，不再试探。
+# 结论（能用 / 有问题 / 跑不了 / 没法自动判断）只由这里的检查得出，模型预审不参与。
 
 PRECHECK_VERSION = 1
 PRECHECK_TIMEOUT = 8          # 每一项试探（子进程、连库）最多等几秒
 PRECHECK_SQL_TIMEOUT = 5      # EXPLAIN 的语句超时上限（秒）：连接自己配的更短就用它的
-PRECHECK_WAIT = 3             # 打开审批页时最多等几秒：没做完的先显示「检查中」，后台做完进缓存
+PRECHECK_WAIT = 3             # 打开审批页时最多等几秒：没做完的先显示「检查中」，后台做完进缓存（工作台、徽标不等）
 PRECHECK_ON_DEMAND = 20       # 「检查一下」「重新检查」最多等几秒（应用等它 60 秒）
 PRECHECK_CACHE = 256          # 最多缓存多少份结果
 PRECHECK_RETRY = 60           # 暂时的结果（连不上、离线）多少秒后作废、重新试探
-PRECHECK_RATE = (12, 60)      # 「检查一下」和「重新检查」加起来：每 60 秒最多 12 次
+PRECHECK_RATE = (12, 60)      # 「检查一下」和「重新检查」加起来：每 60 秒最多 12 次，超了回 429
+PRECHECK_BUDGET = (30, 60)    # 所有真正的试探合起来（不管从哪里来）：每 60 秒最多 30 次，多的在后台排队；命中缓存的不算。
+                              # 宿主机上可以用环境变量 OPS_PRECHECK_PER_MINUTE 调次数
 PRECHECK_PATHS = 10           # 一条命令最多查几个写死的路径
 PYTHON_SYNTAX_MAX = 1024 * 1024
 VERDICTS = {"ok": "能用", "problem": "有问题", "blocked": "跑不了", "unknown": "没法自动判断"}
@@ -3845,10 +3851,25 @@ def _kubectl_question(argv):
     return (verb, resources[:5], subresource, scope), ""
 
 
-def _kubectl_can_i(binary, verb, resource, subresource, scope):
-    """问一次 kubectl auth can-i：(yes | no | missing | error, 原因)。和工具运行时同一个账号（同样的环境变量），
-    只带推出来的动词、资源、子资源和命名空间。"""
-    argv = [shutil.which(binary) or binary, "auth", "can-i", verb, resource]
+def _system_kubectl(binary):
+    """自动检查要启动的 kubectl：只用工具服务 PATH 里按名字找到的那个，申请里写的路径不执行（只 stat）。
+    binary 正好是 kubectl，或者解析出来和系统的 kubectl 是同一个文件，才返回系统那个的路径；否则返回 None。"""
+    system = shutil.which("kubectl")
+    if not system:
+        return None
+    if binary == "kubectl":
+        return system
+    try:
+        named = shutil.which(binary)
+        return system if named and os.path.samefile(named, system) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _kubectl_can_i(kubectl, verb, resource, subresource, scope):
+    """问一次 kubectl auth can-i：(yes | no | missing | error, 原因)。kubectl 是 _system_kubectl 给的系统那个；
+    和工具运行时同一个账号（同样的环境变量），只带推出来的动词、资源、子资源和命名空间。"""
+    argv = [kubectl, "auth", "can-i", verb, resource]
     if subresource:
         argv.append(f"--subresource={subresource}")
     if scope[0] == "all":
@@ -3876,6 +3897,9 @@ def _kubectl_can_i(binary, verb, resource, subresource, scope):
 
 def _kubectl_checks(spec, done):
     title = "只读账号有没有权限（kubectl auth can-i）"
+    kubectl = _system_kubectl(spec["binary"])
+    if kubectl is None:
+        return [_check("kubectl", "skip", title, "没法自动判断：命令不是系统的 kubectl")]
     question, why = _kubectl_question(spec["argv"])
     if question is None:
         return [_check("kubectl", "skip", title, f"没法自动判断：{why}")]
@@ -3883,7 +3907,7 @@ def _kubectl_checks(spec, done):
     answers = []
     for resource in resources:
         done.append("kubectl can-i")
-        answers.append((resource,) + _kubectl_can_i(spec["binary"], verb, resource, subresource, scope))
+        answers.append((resource,) + _kubectl_can_i(kubectl, verb, resource, subresource, scope))
     what = lambda names: f"{verb} {'、'.join(names)}" + (f"（{subresource}）" if subresource else "")
     where = {"all": "所有命名空间", "ns": f"命名空间 {scope[1]}", None: "默认命名空间"}[scope[0]]
     yes = [name for name, answer, _ in answers if answer == "yes"]
@@ -3970,11 +3994,15 @@ def _shebang(path):
     return interpreter, found, os.path.basename(interpreter)
 
 
-def _shell_syntax(interpreter, base, path):
-    """bash -n / sh -n：只解析，不执行。环境只留 PATH 和 LANG：BASH_ENV、ENV 这类会让 shell 先去读别的文件的变量一概不带。"""
+def _shell_syntax(base, path):
+    """bash -n / sh -n：只解析，不执行。用工具服务 PATH 里按名字找到的 shell，#! 后面写的路径不执行（那里只 stat）。
+    环境只留 PATH 和 LANG：BASH_ENV、ENV 这类会让 shell 先去读别的文件的变量一概不带。"""
+    shell = shutil.which(base)
+    if not shell:
+        return _check("syntax", "skip", "语法检查", f"工具服务的 PATH 里没有 {base}，没法自动判断")
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C"}
     try:
-        done = subprocess.run([interpreter] + SYNTAX_SHELLS[base] + [str(path)], stdin=subprocess.DEVNULL,
+        done = subprocess.run([shell] + SYNTAX_SHELLS[base] + [str(path)], stdin=subprocess.DEVNULL,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=PRECHECK_TIMEOUT, env=env,
                               encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
@@ -4009,7 +4037,7 @@ def _python_syntax(path):
 
 
 def _precheck_script_file(path, done):
-    """脚本：#! 指定的解释器在不在，再按它做语法检查。"""
+    """脚本：#! 指定的解释器在不在（只 stat），再按解释器的名字做语法检查（shell 用 PATH 里的，python 在进程内编译）。"""
     try:
         found = _shebang(path)
     except OSError:
@@ -4024,7 +4052,7 @@ def _precheck_script_file(path, done):
     base = re.sub(r"\.exe$", "", name.lower())
     if base in SYNTAX_SHELLS:
         done.append("语法检查")
-        checks.append(_shell_syntax(interpreter, base, path))
+        checks.append(_shell_syntax(base, path))
     elif base in ("python", "python3") or re.fullmatch(r"python3\.\d+", base):
         done.append("语法检查")
         checks.append(_python_syntax(path))
@@ -4343,16 +4371,79 @@ def _precheck_run(label, caller, probe):
 
 
 _precheck_cache = collections.OrderedDict()   # 内容哈希 → 结果
-_precheck_jobs = {}                           # 内容哈希 → 正在做的 Future
+_precheck_jobs = {}                           # 内容哈希 → 正在做（或排队）的 Future
+_precheck_askers = {}                         # 内容哈希 → {在等它的待审申请编号: 什么时候开始等}；草稿、脚本记 None
 _precheck_lock = threading.Lock()
 _precheck_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="precheck")
+_budget_times = collections.deque()           # 最近一个窗口里每次真正试探的时刻
+_budget_lock = threading.Lock()
 
 
 def _precheck_public(result):
     return {key: value for key, value in result.items() if key != "expires"}
 
 
+def _precheck_budget():
+    """(次数, 窗口秒数)：环境变量 OPS_PRECHECK_PER_MINUTE 是正整数就按它（每 60 秒），否则用 PRECHECK_BUDGET。"""
+    try:
+        per_minute = int(os.environ.get("OPS_PRECHECK_PER_MINUTE", "").strip() or 0)
+    except ValueError:
+        per_minute = 0
+    return (per_minute, 60) if per_minute > 0 else PRECHECK_BUDGET
+
+
+def _precheck_slot():
+    """真正试探之前先拿一个名额：所有来源共用一个窗口（_precheck_budget）。拿不到就在后台线程里等（页面照常是「检查中」），
+    不报错。返回拿到名额的时刻，用不上时交给 _precheck_release 还回去。"""
+    waited = 0.0
+    while True:
+        limit, window = _precheck_budget()
+        with _budget_lock:
+            now = time.monotonic()
+            while _budget_times and now - _budget_times[0] >= window:
+                _budget_times.popleft()
+            if len(_budget_times) < limit:
+                _budget_times.append(now)
+                break
+            pause = min(max(window - (now - _budget_times[0]), 0.05), 5.0)
+        time.sleep(pause)
+        waited += pause
+    if waited:
+        print(f"[precheck] 试探太多，排队等了 {waited:.1f}s", flush=True)
+    return now
+
+
+def _precheck_release(stamp):
+    with _budget_lock:
+        with contextlib.suppress(ValueError):
+            _budget_times.remove(stamp)
+
+
+def _precheck_wanted(key):
+    """还有没有人要这份结果：草稿、要重新确认的脚本一直要；待审申请要还在待审里。没人要了就在同一把锁里撤掉这个任务
+    （之后再有人要会重新排）。读待审列表之后才开始等的也算要（分不清是不是刚提交的）。"""
+    since = time.monotonic()
+    try:
+        pending = {str(item.get("id")) for item in list_pending()}
+    except Exception:   # 读不了待审文件：照常做
+        return True
+    with _precheck_lock:
+        askers = _precheck_askers.get(key) or {}
+        if not askers or None in askers or any(asker in pending or at >= since for asker, at in askers.items()):
+            return True
+        _precheck_jobs.pop(key, None)
+        _precheck_askers.pop(key, None)
+        return False
+
+
 def _precheck_job(key, run):
+    """后台做一份检查：等它的申请都撤回、处理掉了就不做；否则拿到名额再试探，做完进缓存。"""
+    if not _precheck_wanted(key):
+        return None
+    stamp = _precheck_slot()
+    if not _precheck_wanted(key):   # 等名额的时候撤回了：名额还回去
+        _precheck_release(stamp)
+        return None
     try:
         result = run()
     except Exception as exc:   # 检查本身出错（不会是申请的内容被执行了）：结论是没法自动判断，日志只记异常类型
@@ -4366,11 +4457,12 @@ def _precheck_job(key, run):
         while len(_precheck_cache) > PRECHECK_CACHE:
             _precheck_cache.popitem(last=False)
         _precheck_jobs.pop(key, None)
+        _precheck_askers.pop(key, None)
     return result
 
 
 def _precheck_wait(key, deadline):
-    """等这个内容的检查做完，最多等到 deadline；做完了返回结果，没做完返回 None。"""
+    """等这个内容的检查做完，最多等到 deadline；做完了返回结果，没做完（或没人要了、没做）返回 None。"""
     with _precheck_lock:
         done = _precheck_cache.get(key)
         future = _precheck_jobs.get(key)
@@ -4382,13 +4474,15 @@ def _precheck_wait(key, deadline):
     if remaining <= 0:
         return None
     try:
-        return _precheck_public(future.result(timeout=remaining))
+        result = future.result(timeout=remaining)
     except FutureTimeout:
         return None
+    return _precheck_public(result) if result is not None else None
 
 
-def _precheck_get(key, run, deadline, fresh):
-    """按内容哈希取结果：缓存里有（没过期）就用；没有就交给后台去做，等到 deadline。fresh 是「重新检查」，不用缓存。"""
+def _precheck_get(key, run, deadline, fresh, asker=None):
+    """按内容哈希取结果：缓存里有（没过期）就用；没有就交给后台去做，等到 deadline。fresh 是「重新检查」，不用缓存。
+    asker：等这份结果的待审申请编号（草稿、要重新确认的脚本是 None）。"""
     with _precheck_lock:
         done = _precheck_cache.get(key)
         if done is not None and (fresh or done.get("expires", float("inf")) < time.monotonic()):
@@ -4397,6 +4491,7 @@ def _precheck_get(key, run, deadline, fresh):
         if done is not None:
             _precheck_cache.move_to_end(key)
             return _precheck_public(done)
+        _precheck_askers.setdefault(key, {})[asker] = time.monotonic()
         if key not in _precheck_jobs:
             _precheck_jobs[key] = _precheck_pool.submit(_precheck_job, key, run)
     result = _precheck_wait(key, time.monotonic() + PRECHECK_WAIT if deadline is None else deadline)
@@ -4441,7 +4536,8 @@ def _precheck(kind, spec, item, script_path, script_digest, caller, deadline, fr
             return [_check("builtin", "ok", "内置函数", "随工具服务发布，不依赖本机装了什么")], ""
         return [_check("kind", "skip", "实现类型", "认不出的实现类型，没法自动判断")], ""
 
-    return _precheck_get(key, lambda: _precheck_run(label, caller, probe), deadline, fresh)
+    return _precheck_get(key, lambda: _precheck_run(label, caller, probe), deadline, fresh,
+                         asker=str(item["id"]) if item.get("id") else None)
 
 
 def _precheck_held(script, path, digest, caller, deadline, fresh):
@@ -4460,9 +4556,10 @@ def _settle(entry, deadline):
     return entry
 
 
-def review_all(caller=""):
-    """/tools/review 的内容：待审申请（带完整内容、风险提示、自动检查）、要重新确认的脚本、审批口令的状态。"""
-    deadline = time.monotonic() + PRECHECK_WAIT
+def review_all(caller="", wait=None):
+    """/tools/review 的内容：待审申请（带完整内容、风险提示、自动检查）、要重新确认的脚本、审批口令的状态。
+    wait：最多等几秒让没做完的检查做完（默认 PRECHECK_WAIT，「待审批」页用）；工作台、导航徽标传 0，不等，没做完的照样交给后台。"""
+    deadline = time.monotonic() + (PRECHECK_WAIT if wait is None else wait)
     pending = list_pending()
     details = [_safe_review(item, caller=caller, deadline=0) for item in pending]
     held = list_held(precheck=True, caller=caller, deadline=0)
@@ -7122,9 +7219,11 @@ class Handler(BaseHTTPRequestHandler):
                                     "directory": str(_scripts_dir())})
         if self.path == "/tools/approval":
             return self._send(200, {"approval": approval_status()})
-        if self.path == "/tools/review":
-            # 页面审批要看的全部：待审申请（带完整内容、风险提示、自动检查）、要重新确认的脚本、审批口令的状态
-            return self._send(200, review_all(self.headers.get(CALLER_HEADER, "")))
+        if self.path in ("/tools/review", "/tools/review?wait=0"):
+            # 页面审批要看的全部：待审申请（带完整内容、风险提示、自动检查）、要重新确认的脚本、审批口令的状态。
+            # 「待审批」页最多等 3 秒；?wait=0 是工作台和导航徽标用的：没做完的检查不等，照样交给后台去做
+            return self._send(200, review_all(self.headers.get(CALLER_HEADER, ""),
+                                              wait=0 if self.path.endswith("?wait=0") else None))
         self._send(404, {"error": "Not found"})
 
     # 页面审批的写操作：批准、重新确认脚本、提交并立即批准要审批口令（工具服务核对），拒绝不要；
