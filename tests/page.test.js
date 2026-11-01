@@ -180,5 +180,39 @@ check('知识库缺口：id 进属性也转义', gap.includes('data-gapopen="g&q
 // 页面上只能选收件组的名字：自动执行页不显示收件地址、SMTP 账号
 check('自动执行页不显示收件地址、SMTP 账号', /\.addresses|mail\.user\b|mail\.password|mail\.host\b/.test(scripts.join('\n')), false);
 
+// 自动检查与模型预审：检查结果、模型说的话一律转义；模型预审的标题固定；开关关着（没有 prereview）时这一块整个不出现
+const checkCode = [/^const esc = .*$/m, /^const PC_ICON = .*$/m, /^const PC_VERDICT_ICON = .*$/m, /^const PRE_DISCLAIMER = .*$/m,
+  /^const PRE_BUSY = .*$/m, /^const apMrHtml = .*$/m].map(lineOf)
+  .concat(['precheckMark', 'precheckHtml', 'prereviewHtml', 'apPcHtml'].map(extract)).join('\n');
+const C = new Function(`${checkCode}\nreturn {precheckMark, precheckHtml, prereviewHtml, apPcHtml, apMrHtml, PRE_DISCLAIMER};`)();
+check('模型预审的标题固定', C.PRE_DISCLAIMER, '模型预审：仅供参考，可能出错，也可能被申请内容误导');
+check('开关关着：没有模型预审这一块', C.apMrHtml(undefined), '');
+check('开关开着：标题写在块上', C.apMrHtml({status: 'queued'}).includes('<h4>模型预审：仅供参考，可能出错，也可能被申请内容误导</h4>'), true);
+const pc = C.precheckHtml({state: 'done', verdict: 'blocked', label: '跑不了', note: evil, at: evil,
+                           checks: [{status: 'fail', title: evil, text: `${evil}"'`}, {status: 'skip', title: '/etc/shadow', text: '敏感位置，不检查'}]});
+check('自动检查：标题、文字、说明都转义', pc.includes('<img'), false);
+check('自动检查：结论在最上面', pc.startsWith('<div class="pc-verdict blocked">⛔ 跑不了'), true);
+check('自动检查：每项一行', (pc.match(/<li /g) || []).length, 2);
+check('自动检查还在做', C.precheckHtml({state: 'checking', key: 'k'}).includes('自动检查进行中'), true);
+check('老工具服务：写明没有自动检查', C.precheckHtml(undefined).includes('工具服务版本较旧'), true);
+check('申请本身不合法：不说成老版本', C.precheckHtml(undefined, '缺少 binary').includes('批不了'), true);
+check('列表上的标记', C.precheckMark({state: 'done', verdict: 'ok', label: '能用'}), ['ok', '能用']);
+check('列表上：检查中', C.precheckMark({state: 'checking'}), ['checking', '检查中']);
+check('列表上：老版本没有标记', C.precheckMark(undefined), null);
+check('重新检查按钮只在有结果时给', C.apPcHtml({}, 'data-recheck="a"').includes('重新检查'), false);
+check('重新检查按钮', C.apPcHtml({precheck: {state: 'done', verdict: 'ok', label: '能用', checks: []}}, 'data-recheck="a"')
+  .includes('data-recheck="a">重新检查</button>'), true);
+const mr = C.prereviewHtml({status: 'done', what: evil, model: evil, notes: [evil],
+  findings: [{level: '注意', type: evil, text: evil}, {level: '提示', type: '其他', text: '小问题'}],
+  duplicates: [{name: evil, label: evil}], suggestions: [evil]});
+check('模型预审：模型说的每一处都转义', mr.includes('<img'), false);
+check('模型预审：注意、提示分级', (mr.match(/class="lv attn"/g) || []).length + (mr.match(/class="lv tip"/g) || []).length, 2);
+check('模型预审：生成中', C.prereviewHtml({status: 'queued', ahead: 2}).includes('生成中…') && C.prereviewHtml({status: 'queued', ahead: 2}).includes('前面还有 2 条'), true);
+check('模型预审：在跑', C.prereviewHtml({status: 'running'}).includes('生成中…'), true);
+check('模型预审：没做成写原因（转义）', C.prereviewHtml({status: 'failed', reason: evil}).includes('模型预审没做成：&lt;img'), true);
+check('模型预审：跳过写原因', C.prereviewHtml({status: 'skipped', reason: '没做'}).includes('没做'), true);
+check('模型预审：没有问题也不说成没有风险', C.prereviewHtml({status: 'done', findings: []}).includes('没有指出问题'), true);
+check('页面上有「检查一下」和重新检查、撤回的入口', ['/api/tools/check', 'id="tlDoCheck"', '/recheck', 'data-withdraw'].every(x => html.includes(x)), true);
+
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

@@ -136,6 +136,14 @@ SOP_PROPOSALS_PER_DAY = int(os.environ.get("SOP_PROPOSALS_PER_DAY", "10"))
 # 启用的 SOP 超过这么多个，项目 Agent 的提示词里只放名称和适用场景，步骤由模型用 sop_get 现取；不到时和以前一样整段放进去
 SOP_PROMPT_MAX = int(os.environ.get("SOP_PROMPT_MAX", "30"))
 
+# --- 工具申请的模型预审（docs/工具.md「自动检查与模型预审」）-------------------------------------
+# 打开后，工具申请（页面提交的、MCP server 发现的）在审批页上多一块「模型预审」：调对话模型（不给任何工具）用大白话说明
+# 这个工具做什么，指出说明和实际行为对不上、会带出敏感信息、和现有工具重复的地方，给出改进建议。只供参考：不打分，
+# 不影响规则风险、自动检查的结论和批准按钮。默认关：关着时页面和以前一样，没有这一块（自动检查由工具服务做，不受它影响）。
+TOOL_PREREVIEW = os.environ.get("TOOL_PREREVIEW", "").strip().lower() in _TRUE
+# 预审用哪个模型；留空用对话模型（页面「设置」里配的那个）
+TOOL_PREREVIEW_MODEL = os.environ.get("TOOL_PREREVIEW_MODEL", "").strip()
+
 # --- 对外 MCP 出口（docs/工具.md「对外 MCP 出口」）-----------------------------------
 # 打开后应用多一个 /mcp：外部智能体（Claude Code、Copilot、Cursor…）凭管理页「对外接入」签发的令牌查知识库、
 # 按 SOP 排查、调宿主机标了 export 的只读数据工具。关着时 /mcp 不存在，应用行为和以前完全一样。

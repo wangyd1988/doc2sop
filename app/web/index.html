@@ -814,6 +814,40 @@ table.pt .rx { display: block; font-size: 11px; color: var(--muted); font-family
 .risk.high b { color: var(--danger); }
 .risk.warn { background: rgba(245,158,11,.08); border-color: rgba(245,158,11,.45); }
 .risk.warn b { color: #b45309; }
+/* 自动检查（工具服务试探：能用 / 有问题 / 跑不了 / 没法自动判断）和模型预审（只供参考） */
+.ap-sec > h4 .btn.sm { margin-left: auto; padding: 2px 10px; font-size: 12px; }
+.pc-verdict { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; padding: 8px 10px; border-radius: 9px;
+              font-size: 13px; font-weight: 650; border: 1px solid var(--border); background: var(--panel-2); }
+.pc-verdict small { font-size: 12px; font-weight: 400; color: var(--muted); }
+.pc-verdict.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 7%, transparent); }
+.pc-verdict.problem { color: #b45309; border-color: rgba(245,158,11,.45); background: rgba(245,158,11,.08); }
+.pc-verdict.blocked { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+                      background: color-mix(in srgb, var(--danger) 7%, transparent); }
+.pc-verdict.unknown, .pc-verdict.checking { color: var(--muted); }
+.pc-list { display: flex; flex-direction: column; gap: 3px; margin: 7px 0 0; padding: 0; list-style: none; }
+.pc-list li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 6px; font-size: 12.5px; line-height: 1.55; }
+.pc-list li b { font-weight: 600; word-break: break-all; margin-right: 4px; }
+.pc-list li.fail b { color: var(--danger); } .pc-list li.warn b { color: #b45309; } .pc-list li.skip { color: var(--muted); }
+.mrow .s .pcm { margin-left: 6px; } .pcm.blocked { color: var(--danger); } .pcm.problem { color: #b45309; } .pcm.ok { color: var(--ok); }
+.mr { border: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 10px; padding: 10px 12px;
+      background: color-mix(in srgb, var(--accent) 4%, transparent); display: flex; flex-direction: column; gap: 8px;
+      font-size: 12.5px; line-height: 1.6; }
+.mr .what { font-size: 13px; }
+.mr .sub { font-size: 11.5px; font-weight: 600; color: var(--muted); }
+.mr .fd { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px; align-items: baseline; }
+.mr .lv { font-size: 11px; font-weight: 600; line-height: 18px; padding: 0 6px; border-radius: 6px; white-space: nowrap; }
+.mr .lv.attn { background: rgba(245,158,11,.16); color: #b45309; } .mr .lv.tip { background: var(--panel-2); color: var(--muted); }
+.mr ul { margin: 0; padding-left: 18px; }
+.mr .notes { font-size: 11.5px; color: var(--muted); }
+.mr.wait { color: var(--muted); }
+.ap-mine { border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); background: var(--accent-soft); border-radius: 10px;
+           padding: 10px 12px; font-size: 12.5px; line-height: 1.65; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.ap-mine span { flex: 1; min-width: 200px; }
+.tl-check { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; border-top: 1px dashed var(--border); padding-top: 10px; }
+.tl-check h5 { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; }
+.dlg .sum .pc-verdict, .dlg .sum .mr { margin-top: 8px; color: var(--text); }
+.dlg .sum .pc-verdict.blocked { color: var(--danger); } .dlg .sum .pc-verdict.problem { color: #b45309; }
+.dlg .sum .pc-verdict.ok { color: var(--ok); } .dlg .sum .pc-verdict.unknown { color: var(--muted); }
 .cli { display: flex; align-items: center; gap: 8px; font: 12px ui-monospace, Consolas, monospace; background: var(--panel-2);
        border-radius: 8px; padding: 7px 10px; color: var(--muted); overflow-x: auto; white-space: nowrap; }
 .ap-bar { position: sticky; bottom: -16px; margin: 0 -16px -16px; padding: 12px 16px 16px; background: var(--panel);
@@ -2253,6 +2287,8 @@ let tlScripts = [], tlScriptSel = '', tlScriptDir = '';
 let tlHost = {}, tlConns = {};
 // 主机清单（配了 hosts 才有）：命令型工具逐台显示能不能跑；申请命令工具时可以填适用分组
 let tlHosts = {configured: false};
+// 打开了模型预审（TOOL_PREREVIEW）没有：/api/tools 告诉页面；关着时页面上不出现模型预审的任何字样
+let tlPrereview = false;
 
 /* MCP 工具的只读依据：server 自己声明的，还是管理员批准时确认的。两者都没有的不能执行。 */
 const TL_RO = {declared: ['ok', '只读 · server 声明'], attested: ['ok', '只读 · 管理员确认'], none: ['warn', '未确认只读']};
@@ -2492,9 +2528,10 @@ function tlProposeForm() {
     note = `工具名会作为函数名发给模型，按 function calling 规范<b>只能用英文</b>；中文写在「显示名」里。<br>
             命令里用 <code>{参数名}</code> 表示由模型填的参数，每个参数要选类型：模型填进来的值会按类型校验，不合法就拒绝执行。
             不能含管道、重定向和写操作动词。要跑一段逻辑，请改用「脚本」。<br>
-            提交时<b>不检查</b>工具服务所在机器装没装这个命令。批准后，系统和「适用系统」不符的显示「不适用于这台机器」，
+            工具服务所在机器缺这个命令，不会挡住提交；提交后（或先点「检查一下」）<b>自动检查</b>会看本机有没有这个命令、
+            写死的文件读不读得到、kubectl 的只读账号有没有权限——只试探，不执行。批准后，系统和「适用系统」不符的显示「不适用于这台机器」，
             缺命令的显示「本机没有…」。${tlHosts.configured ? `<br>配了主机清单：批准后它会多一个 <code>target</code> 参数（在哪台主机上跑），
-            受控模式的主机要等管理员 <code>push</code> 白名单后才能跑，各主机能不能跑在工具卡片上逐台显示。` : ''}`;
+            受控模式的主机要等管理员 <code>push</code> 白名单后才能跑，各主机能不能跑在工具卡片上逐台显示；远程主机自动检查暂不检查。` : ''}`;
   }
 
   return `<div class="pb-pick tl-pick">
@@ -2504,16 +2541,19 @@ function tlProposeForm() {
     ${common}
     ${body}
     <div class="tl-note">${note}<br>提交后<b>还不能用</b>：要在「待审批」里看过完整内容再批准，批准时要输<b>审批口令</b>（不是网页登录密码）。
-      自己申请、自己审批时，点「提交并立即批准」一步做完。<br>
+      自己申请、自己审批时，点「提交并立即批准」一步做完（输口令之前会先给你看自动检查的结果）。<br>
+      想先看看能不能用，点「<b>检查一下</b>」：风险提示和自动检查（能用 / 有问题 / 跑不了 / 没法自动判断）${tlPrereview ? '，还有模型预审' : ''}，不会提交。<br>
       <b>MCP 工具和内置函数不在这里申请</b>：管理员在宿主机配置里声明 MCP server 后，它上面的工具会自动出现在「待审批」里，批准后才可用；
       内置函数随工具服务的代码发布，管理员在配置里按名字引用即可。</div>
     <div class="pb-edit"><div class="row">
       <button class="ok" id="tlDoPropose">提交申请</button>
       <button class="ok" id="tlDoProposeApprove" style="background:#f59e0b" ${approvalInfo().configured ? ''
         : 'disabled title="还没有设置审批口令：先在「设置 → 审批口令」里设置（或在宿主机上执行 set-approval-passphrase）"'}>提交并立即批准…</button>
+      <button class="cancel" id="tlDoCheck" title="只做风险提示和自动检查，不提交">检查一下</button>
       <button class="cancel" id="tlCancelPropose">取消</button>
     </div></div>
     <div class="pb-err" id="tlProposeErr" hidden></div>
+    <div class="tl-check" id="tlCheckOut" hidden></div>
   </div>`;
 }
 
@@ -2616,41 +2656,132 @@ $('tlPanel').addEventListener('click', async e => {
     return loadTools();
   }
 
-  if (e.target.id === 'tlDoPropose' || e.target.id === 'tlDoProposeApprove') {
+  if (e.target.id === 'tlDoPropose' || e.target.id === 'tlDoProposeApprove' || e.target.id === 'tlDoCheck') {
     const err = $('tlProposeErr');
     const fail = msg => { err.hidden = false; err.textContent = msg; };
     err.hidden = true;
     let payload;
     try { payload = tlProposalPayload(); } catch (ex) { return fail(ex.message); }
+    const mine = () => ({kind: tlProposeKind, payload, params: JSON.parse(JSON.stringify(tlParamState))});
+    if (e.target.id === 'tlDoCheck') return tlDraftCheck(payload, e.target);
     if (e.target.id === 'tlDoPropose') {
       try {
         const d = await tlSend('/api/tools/propose', payload);
-        tlProposing = false;
-        toast(`申请已提交（编号 ${d.pending.id}）。批准之后才能用：在「待审批」里看完整内容再批。`, 'ok', 7000);
+        tlProposing = false; tlChecked = null;
+        apMine.set(d.pending.id, mine());
+        toast(`申请已提交（编号 ${d.pending.id}）。批准之后才能用：在「待审批」里看自动检查${tlPrereview ? '、模型预审' : ''}和完整内容再批。`, 'ok', 7000);
         openPending(d.pending.id);
       } catch (e2) { fail('提交失败：' + e2.message); }
       return;
     }
     // 提交并立即批准：同一个人申请、同一个人审批，不用跑两趟。工具服务先核对口令，对了才提交并批准；
-    // 口令不对什么都不提交。批准没写成时申请留在待审（错误里带着它的编号），关掉对话框就跳过去
+    // 口令不对什么都不提交。输口令之前先给申请人看自动检查（「检查一下」：只试探、不入队；表单没改过就用上一次的结果）。
+    // 批准没写成时申请留在待审（错误里带着它的编号），关掉对话框就跳过去
     const script = tlProposeKind === 'script' ? tlScripts.find(s => s.name === payload.script) : null;
+    const button = e.target;
+    let check = tlChecked && tlChecked.sig === JSON.stringify(payload) ? tlChecked.result : null;
+    if (!check) {
+      button.disabled = true; button.textContent = '先检查一下…';
+      check = await tlDraftCheck(payload);
+      button.disabled = false; button.textContent = '提交并立即批准…';
+      if (!check && tlCheckFailed?.status === 400) return;   // 草稿本身不合规：原因在表单下面，改好再来
+    }
     let queued = null;
     askPassphrase({
       title: `提交并批准「${payload.label || payload.name}」`,
-      summary: proposalSummary(payload, script),
+      summary: proposalSummary(payload, script) + dlgCheckHtml(check),
       confirm: '提交并批准',
       run: passphrase => postJson('/api/tools/propose-approve', {tool: payload, passphrase, script_sha256: script?.sha256 || ''})
         .catch(err => { if (err.pending) queued = err.pending; throw err; }),
-      done: result => { tlProposing = false; apResults[result.id] = result; openPending(result.id); refreshBadges(); },
+      done: result => { tlProposing = false; tlChecked = null; apResults[result.id] = result; openPending(result.id); refreshBadges(); },
       cancel: () => {
         if (!queued) return;
-        tlProposing = false;
+        tlProposing = false; tlChecked = null;
+        apMine.set(queued, mine());
         toast(`申请已提交（编号 ${queued}），还没有批准：在「待审批」里看原因再批`, '', 7000);
         openPending(queued); refreshBadges();
       },
     });
   }
 });
+
+/* 「检查一下」：对表单里的草稿做风险提示和自动检查（工具服务只试探、不执行），打开了模型预审时再排一份预审。
+   不入队、什么都不写；限频。结果显示在表单下面，模型预审生成中就每 3 秒取一次。 */
+let tlChecked = null, tlDraftTimer = null, tlCheckFailed = null;
+async function tlDraftCheck(payload, btn) {
+  const out = $('tlCheckOut');
+  if (!out) return null;
+  out.hidden = false;
+  out.innerHTML = '<div class="pc-verdict checking">⏳ 检查中…<small>工具服务在试探，不执行申请的内容</small></div>';
+  if (btn) btn.disabled = true;
+  tlCheckFailed = null;
+  try {
+    const d = await postJson('/api/tools/check', payload);
+    tlChecked = {sig: JSON.stringify(payload), result: d};
+    out.innerHTML = tlCheckHtml(d);
+    tlPollDraft(d.prereview);
+    return d;
+  } catch (err) {
+    tlChecked = null; tlCheckFailed = err;
+    out.innerHTML = `<div class="pb-err">检查没做成：${esc(err.message)}</div>`;
+    return null;
+  } finally { if (btn) btn.disabled = false; }
+}
+function tlCheckHtml(c) {
+  const d = c.detail || {};
+  const risks = (d.risks || []).length ? `<div class="risks">${d.risks.map(riskHtml).join('')}</div>`
+    : '<div class="note" style="margin:0">没有检测到风险。自动检测只是辅助。</div>';
+  return `<div><h5>风险提示（规则检测）</h5>${risks}</div>
+    <div><h5>自动检查（只试探，不执行）</h5>${precheckHtml(d.precheck, d.invalid)}</div>
+    ${c.prereview ? `<div id="tlCheckMr" data-key="${esc(c.prereview.key || '')}"><h5>${PRE_DISCLAIMER}</h5>${prereviewHtml(c.prereview)}</div>` : ''}
+    <div class="tl-note" style="padding:0">只是检查，没有提交。改了表单要再点一次「检查一下」。</div>`;
+}
+// 「提交并立即批准」的口令框上方：这份草稿的自动检查（和模型预审），看过再输口令
+function dlgCheckHtml(c) {
+  if (!c) return '<div style="margin-top:8px">自动检查没做成（原因在表单下面），仍然可以提交并批准。</div>';
+  const d = c.detail || {};
+  return `<div style="margin-top:10px"><b>输口令之前，先看看自动检查</b>（只试探，不执行）${precheckHtml(d.precheck, d.invalid)}
+    ${c.prereview ? `<div id="dlgMr" data-key="${esc(c.prereview.key || '')}" style="margin-top:8px"><b>${PRE_DISCLAIMER}</b>${prereviewHtml(c.prereview)}</div>` : ''}</div>`;
+}
+function tlPollDraft(r) {
+  clearTimeout(tlDraftTimer);
+  if (!r || !r.key || !PRE_BUSY.includes(r.status)) return;
+  tlDraftTimer = setTimeout(async () => {
+    const next = await fetch(`/api/tools/prereview/${encodeURIComponent(r.key)}`).then(x => x.ok ? x.json() : null).catch(() => null);
+    if (!next) return;
+    if (tlChecked?.result.prereview?.key === next.key) tlChecked.result.prereview = next;
+    const box = $('tlCheckMr');
+    if (box && box.dataset.key === next.key) box.innerHTML = `<h5>${PRE_DISCLAIMER}</h5>${prereviewHtml(next)}`;
+    const dlg = $('dlgMr');
+    if (dlg && dlg.dataset.key === next.key) dlg.innerHTML = `<b>${PRE_DISCLAIMER}</b>${prereviewHtml(next)}`;
+    tlPollDraft(next);
+  }, 3000);
+}
+// 撤回之后把原来的内容填回表单（renderDetail 画完表单后调）
+function tlApplyPrefill() {
+  const d = tlPrefill; tlPrefill = null;
+  if (!d) return;
+  const set = (id, value) => { const el = $(id); if (el && value != null) el.value = value; };
+  set('tlNewName', d.name); set('tlNewLabel', d.label); set('tlNewDesc', d.desc);
+  let text = '', sql = false;
+  if (tlProposeKind === 'command') {
+    set('tlNewCmd', (d.argv || []).join(' '));
+    $('tlPanel').querySelectorAll('[data-tlos]').forEach(box => { box.checked = (d.os || []).includes(box.dataset.tlos); });
+    set('tlNewGroups', (d.groups || []).join(', '));
+    text = $('tlNewCmd')?.value || '';
+  } else if (tlProposeKind === 'http') {
+    const http = d.http || {}, query = Object.entries(http.query || {}).map(([k, v]) => `${k}=${v}`).join('&');
+    set('tlNewConn', http.conn || '');
+    set('tlNewUrl', (http.url || '') + (query ? '?' + query : ''));
+    text = $('tlNewUrl')?.value || '';
+  } else if (tlProposeKind === 'sql') {
+    const im = d.impl || {};
+    set('tlNewConn', im.conn); set('tlNewSql', im.query); set('tlNewRows', im.max_rows);
+    text = im.query || ''; sql = true;
+  }
+  const box = $('tlParams');
+  if (box) box.innerHTML = tlParamRows(text, sql);
+}
 
 /* 申请表单 → 发给 /api/tools/propose 的内容。按实现类型分栏填写，发出去的是老写法（新老工具服务都认）；
    SQL 只有新写法 impl = {type: sql, conn, query, max_rows}。填得不对就抛错，错误文字直接给人看。 */
@@ -3309,7 +3440,7 @@ async function renderManage() {
     const [d] = await Promise.all([fetch(LAZY[cfg.panel].url).then(r => r.json()), mTab === 'sop' ? loadRunSummary() : null]);
     groups = d.groups || []; live = d.live || 0; count = d.count || 0;
     if (mTab === 'sop') { pbTools = d.tools || {}; pbOrigins = d.origins || null; paintTop(); }
-    if (mTab === 'tools') { tlHost = d.host || {}; tlConns = d.connections || {}; tlHosts = d.hosts || {configured: false}; }
+    if (mTab === 'tools') { tlHost = d.host || {}; tlConns = d.connections || {}; tlHosts = d.hosts || {configured: false}; tlPrereview = !!d.prereview; }
     if (d.error) toast('工具接口不可用：' + d.error, 'err');
   }
   // 从工作台、对话里点过来的条目：先选中它所在的组
@@ -3373,7 +3504,7 @@ async function renderDetail() {
     const p = mount('tlPanel');
     if (tlProposing) {
       if (tlProposeKind === 'script') { const s = await (await fetch('/api/tools/scripts')).json().catch(() => ({})); tlScripts = s.scripts || []; tlScriptDir = s.directory || ''; }
-      p.innerHTML = tlProposeForm(); $('tlNewName')?.focus(); return;
+      p.innerHTML = tlProposeForm(); tlApplyPrefill(); $('tlNewName')?.focus(); return;
     }
     const hit = mCache['tl:' + mItem];
     if (!hit) { p.hidden = true; return empty('从左侧选择一个工具<br>查看命令、参数，或改名、改说明、启停'); }
@@ -3434,13 +3565,61 @@ function riskMark(risks) {
   return high ? ['high', `⛔ ${high} 项高风险`] : warn ? ['warn', `⚠ ${warn} 项注意`] : ['', '没有检测到风险'];
 }
 const riskHtml = r => `<div class="risk ${esc(r.level)}"><span>${r.level === 'high' ? '⛔' : r.level === 'warn' ? '⚠️' : 'ℹ️'}</span><div><b>${esc(r.title)}</b>${esc(r.text)}</div></div>`;
+
+/* 自动检查：工具服务试探（命令在不在、文件读不读得到、脚本语法、SQL 的 EXPLAIN、kubectl can-i），不执行申请的内容。
+   结论（能用 / 有问题 / 跑不了 / 没法自动判断）只由检查得出。模型预审（TOOL_PREREVIEW 打开时申请上才有 prereview）
+   只供参考，标题固定写 PRE_DISCLAIMER；它的文字和检查结果一样，一律转义后再进页面。 */
+const PC_ICON = {ok: '✅', warn: '⚠️', fail: '⛔', skip: '➖'};
+const PC_VERDICT_ICON = {ok: '✅', problem: '⚠️', blocked: '⛔', unknown: '❔'};
+const PRE_DISCLAIMER = '模型预审：仅供参考，可能出错，也可能被申请内容误导';
+const PRE_BUSY = ['queued', 'running', 'waiting'];
+function precheckMark(p) {
+  if (!p) return null;
+  return p.state === 'done' ? [p.verdict, p.label] : ['checking', '检查中'];
+}
+function precheckHtml(p, invalid) {
+  if (!p) return invalid ? '<div class="note" style="margin:0">申请本身现在批不了（原因见上面），没做自动检查。</div>'
+    : '<div class="note" style="margin:0">工具服务版本较旧，没有自动检查：升级宿主机上的 ops_readonly.py（和 ops_exec.py 一起拷）后就有。</div>';
+  if (p.state !== 'done') return '<div class="pc-verdict checking">⏳ 自动检查进行中…<small>做完自动刷新</small></div>';
+  const items = (p.checks || []).map(c => `<li class="${esc(c.status)}"><span>${PC_ICON[c.status] || '•'}</span><div><b>${esc(c.title)}</b>${esc(c.text)}</div></li>`).join('');
+  return `<div class="pc-verdict ${esc(p.verdict)}">${PC_VERDICT_ICON[p.verdict] || ''} ${esc(p.label)}${p.note ? `<small>${esc(p.note)}</small>` : ''}${p.at ? `<small>${esc(p.at)} 检查</small>` : ''}</div>`
+    + (items ? `<ul class="pc-list">${items}</ul>` : '');
+}
+function prereviewHtml(r) {
+  if (!r) return '';
+  if (PRE_BUSY.includes(r.status)) {
+    const why = r.status === 'waiting' ? (r.reason || '等自动检查做完再预审') : r.status === 'running' ? '模型正在读这条申请'
+      : `排队中${r.ahead ? `（前面还有 ${r.ahead} 条）` : ''}`;
+    return `<div class="mr wait">⏳ 生成中…<span class="notes">${esc(why)}；做完自动刷新</span></div>`;
+  }
+  if (r.status === 'failed') return `<div class="mr wait">模型预审没做成：${esc(r.reason || '原因不明')}<span class="notes">过一会儿重新打开这一页会再试；不影响审批。</span></div>`;
+  if (r.status !== 'done') return `<div class="mr wait">${esc(r.reason || '没做模型预审')}</div>`;
+  const fds = (r.findings || []).map(f => `<div class="fd"><span class="lv ${f.level === '注意' ? 'attn' : 'tip'}">${esc(f.level)}</span><div>${
+    f.type && f.type !== '其他' ? `<b>${esc(f.type)}</b>：` : ''}${esc(f.text)}</div></div>`).join('');
+  const dups = (r.duplicates || []).map(x => `<code>${esc(x.name)}</code>${x.label ? `（${esc(x.label)}）` : ''}`).join('、');
+  const sugs = (r.suggestions || []).map(s => `<li>${esc(s)}</li>`).join('');
+  const notes = (r.notes || []).map(esc).concat(r.model ? [`模型 ${esc(r.model)}`] : []);
+  return `<div class="mr">${r.what ? `<div class="what">${esc(r.what)}</div>` : ''}
+    ${fds ? `<div><div class="sub">指出的问题</div>${fds}</div>` : '<div class="notes">没有指出问题。模型预审只是辅助，可能漏看。</div>'}
+    ${dups ? `<div><div class="sub">和这些现有工具重复</div>${dups}</div>` : ''}
+    ${sugs ? `<div><div class="sub">改进建议</div><ul>${sugs}</ul></div>` : ''}
+    ${notes.length ? `<div class="notes">${notes.join('；')}</div>` : ''}</div>`;
+}
+// 审批详情里「风险提示」下面依次是自动检查、模型预审。开关关着时没有 prereview，模型预审这一块整个不出现
+function apPcHtml(d, recheck) {
+  return `<div class="ap-sec" id="apPc"><h4>自动检查 <small>工具服务试探，不执行申请的内容</small>${
+    recheck && d.precheck ? `<button class="btn sm" ${recheck}>重新检查</button>` : ''}</h4>${precheckHtml(d.precheck, d.invalid)}</div>`;
+}
+const apMrHtml = r => r ? `<div class="ap-sec" id="apMr"><h4>${PRE_DISCLAIMER}</h4>${prereviewHtml(r)}</div>` : '';
 function apRow(it) {
   const t = it.tool || {}, d = it.detail || {};
   const st = it.detail ? riskMark(d.risks) : ['', '工具服务没给内容'];
   const mcp = String(it.author || '').startsWith('mcp:');
+  const pm = precheckMark(d.precheck);
   return `<div class="mrow ${mItem === it.id ? 'on' : ''}" data-mitem="${esc(it.id)}">
     <div class="t">${esc(t.label || t.name)}<code>${esc(t.name)}</code></div>
-    <div class="s"><span class="kd ${esc(d.kind)}">${esc(d.kind_label || d.kind || '申请')}</span>${mcp ? `MCP server ${esc(it.author.slice(4))} 发现` : `${esc(it.author || '')} 申请`} · ${esc(ago(it.created_at))}</div>
+    <div class="s"><span class="kd ${esc(d.kind)}">${esc(d.kind_label || d.kind || '申请')}</span>${mcp ? `MCP server ${esc(it.author.slice(4))} 发现` : `${esc(it.author || '')} 申请`} · ${esc(ago(it.created_at))}${
+      pm ? `<span class="pcm ${esc(pm[0])}" title="自动检查">· ${esc(pm[1])}</span>` : ''}</div>
     <span class="st ${st[0]}">${st[1]}</span></div>`;
 }
 function heldRow(s) {
@@ -3457,6 +3636,11 @@ async function renderPending() {
   const p = await fetch('/api/tools/pending').then(r => r.json()).catch(() => ({pending: [], held: []}));
   apState = {pending: p.pending || [], held: p.held || [], approval: p.approval || apState.approval};
   $('mtool').innerHTML = `<span class="ttl">待审批<small>批准要输审批口令；拒绝不用</small></span>${passLine()}`;
+  apPaintRows();
+  renderApDetail();
+  apPoll(true);
+}
+function apPaintRows() {
   const done = Object.values(apResults).filter(r => !apState.pending.some(x => x.id === r.id));
   const ids = [...apState.pending.map(x => x.id), ...apState.held.map(s => 'script:' + s.script), ...done.map(r => r.id)];
   if (!ids.includes(mItem)) mItem = ids[0] || null;
@@ -3466,7 +3650,71 @@ async function renderPending() {
         <div class="t">${esc(r.tool.label || r.tool.name)}<code>${esc(r.tool.name)}</code></div><div class="s">已写进配置，马上能用</div>
         <span class="st ok">已批准</span></div>`).join('')}` : '')
     + (!ids.length ? '<div class="empty">✓ 没有待审批的申请<br><br>页面上提交的工具申请、MCP server 新发现的工具、内容变了的脚本，都会出现在这里</div>' : '');
-  renderApDetail();
+}
+/* 自动检查还在做、模型预审还在生成时，每 3 秒取一次新状态：只换列表和详情里这两块，不打断正在看的内容（最多等 3 分钟） */
+let apPollTimer = null, apPollLeft = 0;
+const apBusy = () => apState.pending.some(it => (it.detail?.precheck && it.detail.precheck.state !== 'done') || PRE_BUSY.includes(it.prereview?.status))
+  || apState.held.some(s => s.precheck && s.precheck.state !== 'done');
+function apPoll(reset) {
+  clearTimeout(apPollTimer);
+  if (reset) apPollLeft = 60;
+  if (!apBusy() || apPollLeft-- <= 0) return;
+  apPollTimer = setTimeout(async () => {
+    if (!(page === 'tools' && tlTab === 'pending')) return;
+    const p = await fetch('/api/tools/pending').then(r => r.ok ? r.json() : null).catch(() => null);
+    if (!p || !(page === 'tools' && tlTab === 'pending')) return apPoll();
+    apState = {pending: p.pending || [], held: p.held || [], approval: p.approval || apState.approval};
+    const scroll = $('mrows').scrollTop;
+    apPaintRows();
+    $('mrows').scrollTop = scroll;
+    apRefreshChecks();
+    apPoll();
+  }, 3000);
+}
+function apRefreshChecks() {
+  const it = apState.pending.find(x => x.id === mItem), held = apState.held.find(s => 'script:' + s.script === mItem);
+  const pc = $('apPc'), mr = $('apMr');
+  if (it && it.detail) {
+    if (pc) pc.outerHTML = apPcHtml(it.detail, `data-recheck="${esc(it.id)}"`);
+    if (mr && it.prereview) mr.outerHTML = apMrHtml(it.prereview);
+  } else if (held && pc) pc.outerHTML = apPcHtml(held, `data-recheckscript="${esc(held.script)}"`);
+}
+async function recheckFlow(btn, id, script) {
+  btn.disabled = true; btn.textContent = '检查中…';
+  try {
+    const d = await postJson(script ? `/api/tools/scripts/${encodeURIComponent(script)}/recheck` : `/api/tools/pending/${encodeURIComponent(id)}/recheck`);
+    if (script && d.held) apState.held = apState.held.map(s => s.script === script ? d.held : s);
+    if (!script && d.pending) apState.pending = apState.pending.map(x => x.id === id ? {...x, ...d.pending} : x);
+    toast('重新检查完了', 'ok');
+  } catch (err) { toast('重新检查没做成：' + err.message, 'err'); }
+  apPaintRows();
+  apRefreshChecks();
+  apPoll(true);
+}
+// 这个页面里刚提交的申请：id → 当时表单的内容。撤回（= 拒绝自己的申请，不用口令）后原样填回表单，改好再交
+const apMine = new Map();
+let tlPrefill = null;
+function mineHtml(it) {
+  return `<div class="ap-mine"><span>📝 <b>这是你刚提交的申请。</b>先看看下面的自动检查${it.prereview ? '和模型预审' : ''}：
+    发现问题可以撤回，改好再交（撤回就是拒绝自己的申请，不用口令）。</span>
+    <button class="btn sm" data-withdraw="${esc(it.id)}">撤回并修改</button></div>`;
+}
+async function withdrawFlow(id) {
+  const it = apState.pending.find(x => x.id === id); if (!it) return;
+  if (!confirm(`撤回「${it.tool?.label || it.tool?.name}」？申请会被删掉；表单里留着原来的内容，改好再提交。`)) return;
+  try { await postJson(`/api/tools/pending/${encodeURIComponent(id)}/reject`); }
+  catch (err) { return toast('撤回失败：' + err.message, 'err'); }
+  const draft = apMine.get(id);
+  apMine.delete(id);
+  toast('已撤回：改好再提交', 'ok');
+  refreshBadges();
+  if (!draft) { mItem = null; return renderManage(); }
+  tlTab = 'all'; mGroup = null; mItem = null; mSearch = ''; tlEditing = null; pbEditing = null; pbPicking = false;
+  tlProposing = true; tlProposeKind = draft.kind; tlParamState = JSON.parse(JSON.stringify(draft.params || {}));
+  if (draft.kind === 'script') tlScriptSel = draft.payload.script || tlScriptSel;
+  tlPrefill = draft.payload; tlChecked = null;
+  syncUrl(true); paintTop(); await renderManage();
+  document.body.classList.add('detail');
 }
 function renderApDetail() {
   const det = $('mdetail');
@@ -3545,12 +3793,14 @@ function apDetail(it) {
         <button class="btn danger" data-apreject="${esc(it.id)}">拒绝</button>
         <button class="btn warn" data-approve="${esc(it.id)}" ${blocked ? 'disabled' : ''}>批准…</button></div></div>`;
   return `<div class="ap">
+    ${apMine.has(it.id) ? mineHtml(it) : ''}
     <div class="ap-hd"><div class="nm">${esc(t.label || t.name)}<code>${esc(t.name)}</code></div>
       <div class="meta">${meta.join('<span>·</span>')}</div>${t.desc ? `<div class="desc">${esc(t.desc)}</div>` : ''}</div>
     <div class="ap-sec"><h4>${KIND_RUN[d.kind] || '内容'}</h4>${run}</div>
     <div class="ap-sec"><h4>参数 <small>模型只能按这些格式填值，填错直接拒绝执行</small></h4>${params}</div>
     <div class="ap-sec"><h4>在哪里跑</h4>${where}</div>
     <div class="ap-sec"><h4>风险提示 <small>${(d.risks || []).length ? `${d.risks.length} 条 · ` : ''}自动检测，只是辅助</small></h4>${risks}</div>
+    ${apPcHtml(d, `data-recheck="${esc(it.id)}"`)}${apMrHtml(it.prereview)}
     <div class="ap-sec"><h4>也可以在宿主机上批准</h4><div class="cli">$ ${esc(cli)}</div></div>
     ${bar}</div>`;
 }
@@ -3560,6 +3810,7 @@ function heldDetail(s) {
       <div class="meta"><span class="kd script">脚本型</span>${s.state === 'changed' ? '脚本内容和登记的哈希对不上，工具已暂停' : '脚本还没确认过，工具暂不生效'}</div></div>
     <div class="ap-sec"><h4>现在的内容 <small>sha256 ${esc(s.sha256.slice(0, 16))}…${s.trusted_sha256 ? `，登记的是 ${esc(s.trusted_sha256.slice(0, 16))}…` : ''}</small></h4>${scriptFacts(s)}<pre class="code">${esc(s.content)}</pre>${tooLongHtml(s)}</div>
     <div class="ap-sec"><h4>风险提示 <small>${(s.risks || []).length} 条 · 自动检测，只是辅助</small></h4><div class="risks">${(s.risks || []).map(riskHtml).join('')}</div></div>
+    ${apPcHtml(s, `data-recheckscript="${esc(s.script)}"`)}
     <div class="ap-sec"><h4>也可以在宿主机上确认</h4><div class="cli">$ ${esc(s.cli)}</div></div>
     <div class="ap-bar">${ap.configured ? '' : nopassHtml(s.cli, '确认')}${ap.configured && ap.locked ? lockedHtml(ap) : ''}<div class="row"><span class="grow">确认后登记这份内容的哈希，引用它的工具恢复可用</span>
       <button class="btn warn" data-trust="${esc(s.script)}" ${ap.configured && !ap.locked && !s.too_long ? '' : 'disabled'}>重新确认…</button></div></div></div>`;
@@ -3674,7 +3925,7 @@ function approveFlow(id) {
 async function rejectFlow(id) {
   const it = apState.pending.find(x => x.id === id); if (!it) return;
   if (!confirm(`拒绝「${it.tool?.label || it.tool?.name}」？申请会被删掉，不会写进配置。`)) return;
-  try { await postJson(`/api/tools/pending/${encodeURIComponent(id)}/reject`); toast('已拒绝', 'ok'); }
+  try { await postJson(`/api/tools/pending/${encodeURIComponent(id)}/reject`); toast('已拒绝', 'ok'); apMine.delete(id); }
   catch (err) { toast('拒绝失败：' + err.message, 'err'); }
   mItem = null; renderManage(); refreshBadges();
 }
@@ -4288,6 +4539,9 @@ $('mdetail').addEventListener('click', async e => {
   const ok = e.target.closest('[data-approve]'); if (ok) return approveFlow(ok.dataset.approve);
   const no = e.target.closest('[data-apreject]'); if (no) return rejectFlow(no.dataset.apreject);
   const tr = e.target.closest('[data-trust]'); if (tr) return trustFlow(tr.dataset.trust);
+  const rc = e.target.closest('[data-recheck]'); if (rc) return recheckFlow(rc, rc.dataset.recheck, '');
+  const rs = e.target.closest('[data-recheckscript]'); if (rs) return recheckFlow(rs, '', rs.dataset.recheckscript);
+  const wd = e.target.closest('[data-withdraw]'); if (wd) return withdrawFlow(wd.dataset.withdraw);
   if (e.target.closest('[data-setpass]')) return openPassDialog();
   const see = e.target.closest('[data-seetool]');
   if (see) { tlTab = 'all'; mGroup = null; return go('tools', {item: see.dataset.seetool}); }

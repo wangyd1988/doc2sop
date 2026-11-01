@@ -118,9 +118,9 @@ def override(name: str, enabled_flag=None, desc=None, label=None, reset=False) -
     return _request("/tools/override", payload).get("tool", {})
 
 
-def propose(tool: dict, author: str = "web") -> dict:
+def propose(tool: dict, author: str = "web", caller: str = "") -> dict:
     """Queue a new tool for host-side review. It is inert until approved."""
-    return _request("/tools/propose", {"tool": tool, "author": author})
+    return _request("/tools/propose", {"tool": tool, "author": author}, headers=_caller_headers(caller))
 
 
 # --- 页面审批 ---------------------------------------------------------------------------
@@ -129,6 +129,7 @@ def propose(tool: dict, author: str = "web") -> dict:
 OLD_SERVICE = "工具服务版本较旧，不支持页面审批：升级宿主机上的 ops_readonly.py（和 ops_exec.py 一起拷）"
 OLD_SERVICE_SET = ("工具服务版本较旧，页面上不能设置审批口令：升级宿主机上的 ops_readonly.py（和 ops_exec.py 一起拷），"
                    "或在宿主机上用 set-approval-passphrase 设置")
+OLD_SERVICE_CHECK = "工具服务版本较旧，没有自动检查：升级宿主机上的 ops_readonly.py（和 ops_exec.py 一起拷）后才能用"
 
 
 def _caller_headers(caller):
@@ -150,14 +151,14 @@ def approval_status() -> dict:
         return _no_approval(OLD_SERVICE if exc.status == 404 else str(exc))
 
 
-def review() -> dict:
-    """页面审批要看的：待审申请（带完整内容和风险提示）、要重新确认的脚本、审批口令的状态。
+def review(caller: str = "") -> dict:
+    """页面审批要看的：待审申请（带完整内容、风险提示和自动检查）、要重新确认的脚本、审批口令的状态。
 
-    老工具服务没有 /tools/review：退回只有待审列表，页面上能看能拒绝、不能批。"""
+    老工具服务没有 /tools/review：退回只有待审列表，页面上能看能拒绝、不能批。caller 只进工具服务的 [precheck] 日志。"""
     if not enabled():
         return {"pending": [], "held": [], "approval": _no_approval("未配置只读工具接口（OPS_URL / OPS_TOKEN）")}
     try:
-        data = _request("/tools/review", timeout=20)
+        data = _request("/tools/review", timeout=20, headers=_caller_headers(caller))
     except OpsUnavailable as exc:
         if exc.status == 404:
             return {"pending": list_pending(), "held": [], "approval": _no_approval(OLD_SERVICE)}
@@ -203,6 +204,17 @@ def set_passphrase(new: str, current: str = "", caller="") -> dict:
     if current:
         payload["current"] = current
     return _action("/tools/set-passphrase", payload, caller, old=OLD_SERVICE_SET)
+
+
+def check_draft(tool: dict, author: str = "web", caller="") -> dict:
+    """「检查一下」：工具服务对表单里的草稿做风险提示和自动检查，不入队。工具服务限频（429）。"""
+    return _action("/tools/check", {"tool": tool, "author": author}, caller, old=OLD_SERVICE_CHECK)
+
+
+def recheck(ident: str = "", script: str = "", caller="") -> dict:
+    """「重新检查」：一条待审申请（ident），或一个要重新确认的脚本（script），不用缓存再试探一遍。"""
+    payload = {"script": script} if script else {"id": ident}
+    return _action("/tools/recheck", payload, caller, old=OLD_SERVICE_CHECK)
 
 
 def execute(name: str, args: dict) -> dict:

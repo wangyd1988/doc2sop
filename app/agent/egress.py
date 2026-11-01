@@ -122,6 +122,42 @@ def screen_url(url, tokens=True) -> None:
         screen(text, subject="链接", action="读取", url=True, tokens=tokens)
 
 
+# --- 遮掉疑似密钥、令牌（发给模型之前）------------------------------------------------
+# 工具申请的模型预审（app/agent/prereview.py）把脚本原文、命令、SQL、说明发给对话模型，发之前用这里遮一遍：
+# 认令牌的规则和上面 screen() 是同一套（疑似密钥的前缀写法、32 个字符以上的字母数字串；用连字符、下划线连起来的
+# 长标识符不算，和查链接时一样）；另外把 password=、token=、secret= 这类赋值右边的值也遮掉（写死在脚本里的口令）。
+
+REDACTED = "[已遮盖]"
+_ASSIGNED_SECRET = re.compile(
+    r"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key))"
+    r"(\s*[=:]\s*)(['\"]?)([^\s'\"$;&|\x7f-\uffff]{4,})")
+
+
+def redact_tokens(text) -> tuple:
+    """(遮过的文本, 遮了几处)。只遮，不拒绝：模型要读懂申请，其余内容原样保留。"""
+    count = 0
+
+    def mask(match, label):
+        nonlocal count
+        if label == TOKEN_LABEL and _slug(match.group()):
+            return match.group()
+        count += 1
+        return REDACTED
+
+    for pattern, label in LEAK_PATTERNS:
+        if label in ("疑似密钥", TOKEN_LABEL):
+            text = pattern.sub(lambda match, label=label: mask(match, label), text)
+
+    def assigned(match):
+        nonlocal count
+        if match.group(4) == REDACTED or REDACTED in match.group(4):
+            return match.group(0)
+        count += 1
+        return match.group(1) + match.group(2) + match.group(3) + REDACTED
+
+    return _ASSIGNED_SECRET.sub(assigned, text), count
+
+
 # --- 链接：规范化与来源 -------------------------------------------------------------
 
 _URL = re.compile(r"https?://[^\s<>\"'`，。；：！？、（）【】《》「」『』“”‘’…]+", re.I)

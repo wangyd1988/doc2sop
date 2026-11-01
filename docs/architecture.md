@@ -265,9 +265,11 @@ app/
 │   ├── tools.py       按 JSON Schema 生成工具签名（契约里的 inputSchema；老工具服务按 params 推）
 │   ├── extract.py     从文档抽取 SOP
 │   ├── grow.py        从一次自由排查长出 SOP 提议（回答后后台判断、生成、去重）
+│   ├── prereview.py   工具申请的模型预审（TOOL_PREREVIEW）：遮令牌、随机标记分隔申请内容、只取约定字段、丢掉结论句；
+│   │                  按内容哈希缓存、后台最多 2 个并发，只供参考，不改规则风险和自动检查的结论
 │   ├── web_search.py  联网搜索（经网关）
 │   ├── web_fetch.py   读网页正文（WEB_FETCH）：只读搜索结果和用户给的链接，防 SSRF、限大小和类型、HTML 转正文
-│   ├── egress.py      统一出网规则：搜索词、链接和外部工具参数的静态拦截、污点拦截、链接来源、严格模式
+│   ├── egress.py      统一出网规则：搜索词、链接和外部工具参数的静态拦截、污点拦截、链接来源、严格模式；发给模型前遮掉疑似令牌
 │   ├── sandbox.py     计算类工具 python_exec（SANDBOX_URL）：本轮数据的完整返回作为文件发给沙箱服务，说明每次现算
 │   └── ops_client.py  只读接口客户端
 ├── rag/
@@ -291,7 +293,9 @@ deploy/
 │                      SQL 工具：只读查询模板，驱动按需从 vendor/ 导入；按地址判断工具是否「外部」；
 │                      内置标准库手写的 MCP 客户端（stdio 子进程、远程 Streamable HTTP），发现的工具进待审、批准后写 ops_tools.mcp.yaml；
 │                      主机清单 hosts：命令型工具经系统 ssh 在远程 Linux 主机上跑（target 参数、@组并发），
-│                      enroll / push / status 接入和检查主机
+│                      enroll / push / status 接入和检查主机；
+│                      页面审批（/tools/review 等）：待审申请的完整内容、风险提示和自动检查（只试探不执行：which、stat、
+│                      bash -n / compile()、只读连接上的 EXPLAIN、kubectl auth can-i；按内容缓存、限频、[precheck] 日志）
 ├── ops_exec.py        命令型工具的执行核心（参数校验、argv、写动词黑名单、超时与输出上限），工具服务在本机执行就用它；
 │                      也是受控模式装在远程主机上的执行器（强制命令 --stdio，按 root 所有的 allowlist.json 执行）。
 │                      只用标准库、兼容 Python 3.6

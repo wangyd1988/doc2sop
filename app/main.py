@@ -24,7 +24,7 @@ from app import automation_api
 from app.agent import grow
 from app.agent import loop as agent_loop
 from app.agent import modes as answer_modes
-from app.agent import ops_client, registry, web_search
+from app.agent import ops_client, prereview, registry, web_search
 from app.agent.extract import extract as extract_playbooks
 from app.config import (AGENT_MODE, ALLOWED_SUFFIXES, CATEGORY_MAX, BOT_NAME, DATA_DIR, EVAL_TOKEN,
                         FILES_DIR, IMAGE_SUFFIXES, KB_RETRIEVAL_MODE, KB_TOOLS, MAX_FILE_BYTES, MCP_ENABLED,
@@ -632,7 +632,7 @@ def tools_overview(q: str = "", group: str = "", offset: int = 0, limit: int = c
             "mcp_servers": detail.get("mcp_servers", {}),
             "connections": detail.get("connections", {}), "host": detail.get("host", {}),
             "hosts": detail.get("hosts", {"configured": False}),
-            "error": detail.get("error", ""), "agent_mode": AGENT_MODE}
+            "error": detail.get("error", ""), "agent_mode": AGENT_MODE, "prereview": prereview.enabled()}
 
 
 @app.get("/api/tools/scripts")
@@ -655,9 +655,18 @@ def tools_override(body: ToolOverride):
 
 
 @app.get("/api/tools/pending")
-def tools_pending():
-    """待审批：申请的完整内容和风险提示、内容变了要重新确认的脚本、审批口令的状态（都由工具服务给）。"""
-    return ops_client.review()
+def tools_pending(request: Request):
+    """待审批：申请的完整内容、风险提示和自动检查，内容变了要重新确认的脚本、审批口令的状态（都由工具服务给）。
+    打开了模型预审（TOOL_PREREVIEW）时，每条申请再附上 prereview：没跑过的这时排进队（MCP 发现的、以前就在的申请也补上）。"""
+    data = ops_client.review(_approval_caller(request))
+    if prereview.enabled():
+        prereview.attach(data, _existing_tools)
+    return data
+
+
+def _existing_tools() -> dict:
+    """模型预审查重复用的现有工具（名字、显示名、说明，含停用的）。"""
+    return ops_client.describe_tools().get("tools") or {}
 
 
 def _proposal_payload(body: "ToolProposal") -> dict:
@@ -678,13 +687,18 @@ def _proposal_payload(body: "ToolProposal") -> dict:
 
 
 @app.post("/api/tools/propose")
-def tools_propose(body: ToolProposal):
-    """提交新工具申请。申请不会生效，要在「待审批」里批准（审批口令），或在宿主机上批准。"""
+def tools_propose(body: ToolProposal, request: Request):
+    """提交新工具申请。申请不会生效，要在「待审批」里批准（审批口令），或在宿主机上批准。
+    提交后工具服务在后台做自动检查；打开了模型预审时，这里也在后台把预审排上（不等它）。"""
+    caller = _approval_caller(request)
     try:
-        result = ops_client.propose(_proposal_payload(body), author=WEB_USER)
+        result = ops_client.propose(_proposal_payload(body), author=WEB_USER, caller=caller)
     except ops_client.OpsUnavailable as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     log.info("tool proposal queued: %s", body.name)
+    pending_id = (result.get("pending") or {}).get("id")
+    if prereview.enabled() and pending_id:
+        prereview.after_submit(pending_id, lambda: ops_client.review(caller), _existing_tools)
     return result
 
 
@@ -694,7 +708,7 @@ def tools_propose(body: ToolProposal):
 # （它的 422 会回显输入）。拒绝不要口令。
 
 APPROVAL_BODY_MAX = 64 * 1024
-OPS_REFUSALS = (400, 403, 404, 409, 423, 501)
+OPS_REFUSALS = (400, 403, 404, 409, 423, 429, 501)
 
 
 async def _json_body(request: Request) -> dict:
@@ -811,12 +825,93 @@ async def tools_propose_approve(request: Request):
     return result
 
 
+# --- 自动检查与模型预审 -----------------------------------------------------------------
+# 自动检查由工具服务做（只试探，不执行申请的内容），这里转交；模型预审在应用里做（TOOL_PREREVIEW，默认关）。
+# 「检查一下」对表单里的草稿做一遍，不入队：申请人在提交、在「提交并立即批准」输口令之前就能看到。它会让工具服务去试探、
+# 让模型跑一次，所以限频（每个来源地址每分钟 DRAFT_CHECKS 次，工具服务那边还有总的限频），每次记一行日志（不记内容）。
+
+DRAFT_CHECKS = (6, 60)
+_draft_hits: dict = {}
+_draft_lock = threading.Lock()
+
+
+def _draft_wait(address: str) -> int:
+    """这个来源地址还要等几秒才能再「检查一下」；0 表示现在就行（并记一次）。"""
+    limit, window = DRAFT_CHECKS
+    now = time.monotonic()
+    with _draft_lock:
+        for key in [key for key, hits in _draft_hits.items() if not hits or now - hits[-1] >= window]:
+            del _draft_hits[key]
+        hits = [at for at in _draft_hits.get(address, []) if now - at < window]
+        if len(hits) >= limit:
+            _draft_hits[address] = hits
+            return int(window - (now - hits[0])) + 1
+        _draft_hits[address] = hits + [now]
+    return 0
+
+
+@app.post("/api/tools/check")
+def tools_check(body: ToolProposal, request: Request):
+    """「检查一下」：对表单里的草稿做风险提示和自动检查（工具服务），打开了模型预审时再排一份预审。不入队，什么都不写。"""
+    address = request.client.host if request.client else "-"
+    wait = _draft_wait(address)
+    if wait:
+        log.info("tool draft check refused: too frequent (ip=%s)", address)
+        raise HTTPException(429, f"「检查一下」太频繁了：{wait} 秒后再试")
+    tool = _proposal_payload(body)
+    try:
+        result = ops_client.check_draft(tool, WEB_USER, _approval_caller(request))
+    except ops_client.OpsUnavailable as exc:
+        log.info("tool draft check failed (ip=%s): %s", address, exc.status or "unreachable")
+        return _ops_refused(exc)
+    detail = result.get("detail") or {}
+    out = {"detail": detail}
+    if prereview.enabled():
+        out["prereview"] = prereview.for_item({"tool": tool, "detail": detail}, _existing_tools, label="草稿")
+    log.info("tool draft check (ip=%s): %s%s", address, (detail.get("precheck") or {}).get("label") or "没有自动检查",
+             f", prereview {out['prereview'].get('status')}" if "prereview" in out else "")
+    return out
+
+
+@app.get("/api/tools/prereview/{key}")
+def tools_prereview(key: str):
+    """一份模型预审现在的状态（「检查一下」之后页面拿它等结果）。key 是内容哈希。"""
+    found = prereview.state(key) if prereview.enabled() and re.fullmatch(r"[0-9a-f]{64}", key) else None
+    if found is None:
+        raise HTTPException(404, "没有这份模型预审")
+    return prereview.view(key, found)
+
+
+@app.post("/api/tools/pending/{pending_id}/recheck")
+def tools_recheck(pending_id: str, request: Request):
+    """「重新检查」：工具服务不用缓存再试探一遍（限频）。自动检查的结果变了，模型预审跟着重跑。"""
+    try:
+        result = ops_client.recheck(ident=pending_id, caller=_approval_caller(request))
+    except ops_client.OpsUnavailable as exc:
+        return _ops_refused(exc)
+    item = result.get("pending") or {}
+    if prereview.enabled() and item:
+        item["prereview"] = prereview.for_item(item, _existing_tools)
+    log.info("tool request rechecked: %s → %s", pending_id, ((item.get("detail") or {}).get("precheck") or {}).get("label"))
+    return result
+
+
+@app.post("/api/tools/scripts/{script}/recheck")
+def tools_recheck_script(script: str, request: Request):
+    try:
+        result = ops_client.recheck(script=script, caller=_approval_caller(request))
+    except ops_client.OpsUnavailable as exc:
+        return _ops_refused(exc)
+    log.info("held script rechecked: %s", script)
+    return result
+
+
 # --- Workbench ------------------------------------------------------------------
 
 @app.get("/api/overview")
-def overview():
+def overview(request: Request):
     """工作台：四张状态卡、待处理、示例问题、最近的对话；左侧导航的徽标也用它。"""
-    return workbench.overview(usable_tools())
+    return workbench.overview(usable_tools(), caller=_approval_caller(request))
 
 
 # --- Conversations -----------------------------------------------------------
