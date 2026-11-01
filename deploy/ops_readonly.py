@@ -1206,10 +1206,10 @@ def _tool_external(spec, servers, problems=None, in_main=True):
 # ---- 可选依赖：数据库驱动 ------------------------------------------------------------
 # 不配数据库连接，就什么都不导入：工具服务照旧只用标准库 + PyYAML。用到哪种数据库才导入它的驱动，缺了只影响
 # 用这种连接的工具（不下发、页面写明原因和装法），不影响别的。驱动可以装在系统里，也可以装在本文件旁边的 vendor/：
-#     python3 -m pip install --target /opt/ops/vendor 'psycopg[binary]>=3.1,<4' 'PyMySQL>=1.1,<2'
+#     python3 -m pip install --target /opt/ops/vendor 'psycopg[binary]>=3.1,<4' 'PyMySQL>=1.2,<2'
 
 DRIVERS = {"postgres": ("psycopg", "psycopg[binary]>=3.1,<4", "PostgreSQL"),
-           "mysql": ("pymysql", "PyMySQL>=1.1,<2", "MySQL"),
+           "mysql": ("pymysql", "PyMySQL>=1.2,<2", "MySQL"),
            "sqlite": ("sqlite3", "", "SQLite")}
 _vendor = {"path": "", "used": False, "problem": ""}
 _drivers = {}
@@ -1265,6 +1265,12 @@ def _driver(kind):
             result = (None, f"工具服务这台机器没有 {label} 驱动 {module}（{exc.__class__.__name__}）{hint}")
         _drivers[kind] = result
         return result
+
+
+def _sql_unusable(conn):
+    """数据库连接用不了的原因：缺驱动，或者它要求的加密这台机器做不到名副其实（见 _db_tls_problem）。用得了是空串。"""
+    module, reason = _driver(conn["type"])
+    return reason if module is None else _db_tls_problem(conn, module)
 
 
 # ---- 主机清单（hosts）---------------------------------------------------------------
@@ -2038,7 +2044,7 @@ def _runnable(spec):
     if spec.get("type") in ("http", "builtin"):
         return True
     if spec.get("type") == "sql":
-        return _driver(spec["connection"]["type"])[0] is not None
+        return not _sql_unusable(spec["connection"])
     if spec.get("type") == "mcp":
         return _mcp_state(spec)[0]
     if _hosts() is not None:
@@ -2057,7 +2063,7 @@ def _unusable_reason(spec):
     if spec.get("type") in ("http", "builtin"):
         return ""
     if spec.get("type") == "sql":
-        return _driver(spec["connection"]["type"])[1]
+        return _sql_unusable(spec["connection"])
     if spec.get("type") == "mcp":
         return _mcp_state(spec)[1]
     cfg = _hosts()
@@ -4334,6 +4340,8 @@ def _sql_probe(spec, module):
         SQL_EXPLAINERS[connection["type"]](probe, module, spec["sql"]["segments"], params, [], spec["sql"]["query"])
     except _SqlProbe as exc:
         return exc.category, exc.reason
+    except DbTlsRefused as exc:   # 要求加密而做不到的前面查过；这里是 ca 文件用不了之类
+        return "unreachable", str(exc)
     except ValueError:   # 凭据没配置（前面查过，这里兜底）
         return "unreachable", "连接要用的凭据还没配置"
     return "ok", ""
@@ -4353,6 +4361,9 @@ def _precheck_sql(spec, done):
     if module is None:
         return checks + [_check("driver", "fail", "数据库驱动",
                                 f"工具服务这台机器没有 {DRIVERS[connection['type']][2]} 驱动：批了也用不了")]
+    problem = _db_tls_problem(connection, module)
+    if problem:
+        return checks + [_check("tls", "fail", "加密连接", f"批了也用不了：{problem}")]
     done.append("EXPLAIN")
     category, reason = _sql_probe(spec, module)
     check = _check("sql", SQL_PROBE_STATUS[category], "在只读连接上 EXPLAIN（只编译，不执行）",
@@ -5187,6 +5198,58 @@ def _sqlite_query(conn, module, segments, params, max_rows, used):
     return columns, rows[:max_rows], len(rows) > max_rows
 
 
+# ---- 数据库连接的 TLS：名副其实 ------------------------------------------------------
+# require、verify 说了要加密就得做到：服务器不支持加密就不连（一个认证包都不发）；verify 还要校验证书和主机名。
+#   MySQL：PyMySQL 的 ssl_verify_cert、ssl_verify_identity 都是假时等于没要求加密（1.2 起服务器支持才顺带加密，更早的根本不加密），
+#     verify 没写 ca 时也不核对主机名。所以 require、verify 由我们自己建 SSLContext，用 ssl= 交给它，驱动因此「要求」加密：
+#     服务器不支持，就在发出任何认证信息之前断开。这是 PyMySQL 1.2 起才有的，更早的版本会悄悄改用明文，所以要 1.2 以上，
+#     不然直接拒绝。版本看 VERSION（元组），不看 __version__：那是冒充 mysqlclient 的数（1.2.3 的是 "2.2.8"）。
+#   PostgreSQL：libpq 本来就这样（sslmode 是 require 起，服务器不支持加密就不连）。页面上的连接没有 ca 可填，verify 用系统根证书。
+#     不用 libpq 的 sslrootcert=system：psycopg[binary] 自带的 OpenSSL 编译时定死的目录（OPENSSLDIR）是打包机上的路径，
+#     在这台机器上找不到根证书，verify 永远校验不过。所以给出系统根证书文件的路径（见 _system_ca_file），哪个版本的 libpq 都认。
+MYSQL_TLS_SINCE = (1, 2)
+SYSTEM_CA_FILES = ("/etc/ssl/certs/ca-certificates.crt",                 # Debian、Ubuntu
+                   "/etc/pki/tls/certs/ca-bundle.crt",                   # RHEL、CentOS、Fedora
+                   "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",  # RHEL 7 起
+                   "/etc/ssl/ca-bundle.pem",                             # openSUSE
+                   "/etc/ssl/cert.pem")                                  # Alpine 等
+PG_NO_ROOTS = ("tls: verify 要用系统根证书校验数据库的证书，这台机器上找不到系统根证书文件"
+               f"（比如 {SYSTEM_CA_FILES[0]}）：用 require，或在主配置里配 ca")
+
+
+class DbTlsRefused(ValueError):
+    """连接要求的加密这台机器做不到名副其实，或者 ca 文件用不了：不连。原因是我们自己写的话，调用结果、测试、自动检查照登。"""
+
+
+def _system_ca_file():
+    """系统根证书文件的路径：先看 Python 的 ssl 用的那个（跟着系统的 OpenSSL，也认 SSL_CERT_FILE），再按各发行版的惯例找。
+    找不到是空串。"""
+    candidates = [ssl.get_default_verify_paths().cafile, *SYSTEM_CA_FILES]
+    return next((path for path in candidates if path and os.path.isfile(path)), "")
+
+
+def _pymysql_version(module):
+    try:
+        return tuple(int(part) for part in module.VERSION[:3])
+    except Exception:
+        return ()
+
+
+def _db_tls_problem(conn, module):
+    """连接要求的加密这台机器做不到名副其实时，返回原因；做得到、或者没要求，是空串。"""
+    tls = conn.get("tls")
+    if conn["type"] == "mysql" and tls in ("require", "verify"):
+        version = _pymysql_version(module)
+        if version[:2] < MYSQL_TLS_SINCE:
+            found = f"这台机器上的是 {'.'.join(map(str, version))}" if version else "这台机器上的版本不明"
+            return (f"tls: {tls} 要 PyMySQL 1.2 以上，{found}：更早的版本在服务器不支持加密时会改用明文连接，"
+                    "账号密码照发。请装 PyMySQL>=1.2,<2")
+    if (conn["type"] == "postgres" and tls == "verify" and conn.get("origin") in ("page", "draft")
+            and not _system_ca_file()):
+        return PG_NO_ROOTS
+    return ""
+
+
 # 页面上加的 PostgreSQL 连接（还有「测试」的草稿）只能用页面上为它输入的凭据。参数里没给的，libpq 会自己去找：
 # 环境变量（PGPASSWORD、PGSSLCERT……）、密码文件（PGPASSFILE、~/.pgpass）、service 文件、客户端证书
 # （~/.postgresql/postgresql.crt）、Kerberos 票据——这些都是服务器上的凭据。所以这类连接的参数里一律显式给出：
@@ -5227,10 +5290,17 @@ def _postgres_kwargs(conn, used, module=None):
                          f"-c idle_in_transaction_session_timeout={millis * 2}"}
     origin = conn.get("origin")
     if origin in ("page", "draft"):
+        roots = ""
+        if conn["tls"] == "verify":       # 页面上没有 ca 可填：用系统根证书（见上面 TLS 的说明），找不到就不连，也不取凭据
+            roots = _system_ca_file()
+            if not roots:
+                raise DbTlsRefused(PG_NO_ROOTS)
         # 页面上加的连接：密码只从页面凭据文件里它自己那一条取，去向对不上就不给（见 _page_credential）；
         # 草稿的密码由调用方换成这次输入的。别的一概不让 libpq 自己去找（见 PG_NO_FILE）
         kwargs["password"] = _page_credential(conn, used, optional=True) if origin == "page" else ""
         kwargs.update(_pg_isolated(module))
+        if roots:
+            kwargs["sslrootcert"] = roots
     elif conn["password"]:
         kwargs["password"] = _resolve(conn["password"], used)
     if conn["ca"]:
@@ -5267,6 +5337,7 @@ def _postgres_query(conn, module, segments, params, max_rows, used):
 
 def _mysql_kwargs(conn, module, used):
     """连 MySQL 的参数：查询和自动检查的 EXPLAIN 用同一套。"""
+    tls = _mysql_tls(conn, module, used)      # 先看加密：做不到就不取凭据、不连
     kwargs = {"host": _resolve(conn["host"], used), "port": conn["port"], "user": _resolve(conn["user"], used),
               "password": _resolve(conn["password"], used) if conn["password"] else
               _page_credential(conn, used, optional=True) if conn.get("origin") == "page" else "",
@@ -5275,11 +5346,31 @@ def _mysql_kwargs(conn, module, used):
               "autocommit": False, "local_infile": False,
               # 不缓冲的游标：只取要的那几行，不把整个结果集读进工具服务
               "cursorclass": module.cursors.SSCursor}
-    if conn["tls"] != "disable":
-        kwargs.update(ssl_verify_cert=conn["tls"] == "verify", ssl_verify_identity=conn["tls"] == "verify")
-        if conn["ca"]:
-            kwargs["ssl_ca"] = _resolve(conn["ca"], used)
+    kwargs.update(tls)
     return kwargs
+
+
+def _mysql_tls(conn, module, used):
+    """tls 的参数（见上面 TLS 的说明）。disable：什么都不给，不要求加密（PyMySQL 1.2 起服务器支持就顺带加密，不支持就明文）。
+    require：只加密、不校验证书——防窃听，不防冒充。verify：校验证书（系统根证书；主配置写了 ca 就只认它）并核对主机名。"""
+    if conn["tls"] == "disable":
+        return {}
+    problem = _db_tls_problem(conn, module)
+    if problem:
+        raise DbTlsRefused(problem)
+    if conn["tls"] == "require":
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return {"ssl": context}
+    ca = _resolve(conn["ca"], used) if conn["ca"] else None
+    try:
+        context = ssl.create_default_context(cafile=ca)
+    except OSError as exc:                    # ca 文件不存在、读不了、不是证书（ssl.SSLError 也是 OSError）
+        raise DbTlsRefused(f"tls: verify 的 ca 文件用不了（{exc.__class__.__name__}）") from None
+    # 和 PyMySQL 自己建的一样不开 X509_STRICT（Python 3.13 起默认开）：不少自建 CA 签的证书过不了，以前连得上的别因此连不上
+    context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    return {"ssl": context}
 
 
 def _mysql_limits(cursor, module, conn):
@@ -8144,10 +8235,13 @@ def _page_db_checks(conn, secret, use_stored, done):
     module, reason = _driver(conn["type"])
     if module is None:
         return [_check("driver", "fail", "数据库驱动", reason)]
-    done.append("连库")
     probe = dict(conn, timeout=min(conn["timeout"], PRECHECK_SQL_TIMEOUT))
     if not use_stored:
         probe["origin"] = "draft"        # 草稿：不去取存着的凭据，也不让驱动自己去找服务器上的（见 _postgres_kwargs）
+    problem = _db_tls_problem(probe, module)
+    if problem:
+        return [_check("tls", "fail", "加密连接", problem)]
+    done.append("连库")
     title = "连上数据库，在只读事务里执行 SELECT 1"
     used = []
     try:

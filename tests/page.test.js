@@ -297,6 +297,9 @@ check('页面上的动作都走 /api/tools/config', ['connection-save', 'connect
 check('口令、凭据不进 localStorage', /localStorage\.setItem\([^)]*(secret|token|password)/i.test(html), false);
 check('不拿「口令一泄露」当理由：审批口令本来就等同 root，页面上照实写', [html.includes('口令一泄露'),
   html.includes('审批口令等同工具服务那台机器的 root')], [false, true]);
+check('MySQL 的 disable 写「不要求加密」（服务器支持时 PyMySQL 会顺带加密），TLS 下面说清 require 不防冒充',
+  [html.includes("['disable', 'disable（不要求加密）'], ['require'"), html.includes('require 只防窃听，不防冒充；跨公网请用 verify')],
+  [true, true]);
 
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

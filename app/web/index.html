@@ -952,6 +952,7 @@ table.pt .rx { display: block; font-size: 11px; color: var(--muted); font-family
 .dlg.ic { width: min(620px, 100%); gap: 10px; max-height: calc(100vh - 32px); overflow-y: auto; }
 .dlg.ic [hidden] { display: none !important; }
 .dlg.ic .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.dlg.ic .grid2 > .wide { grid-column: 1 / -1; margin-bottom: 4px; }
 .dlg.ic .fld { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); min-width: 0; }
 .dlg.ic .fld select, .dlg.ic .fld input { font: inherit; font-size: 14px; font-weight: 400; padding: 8px 10px; border-radius: 10px;
   border: 1.5px solid var(--border); background: var(--panel-2); color: var(--text); outline: none; min-width: 0; }
@@ -4441,7 +4442,7 @@ function icNewUsers(wrap, data, title) {
 const IC_CONN_USERS = '在用这个连接的已批准工具：改了它们会受影响';
 const IC_MCP_USERS = '这个 server 上已批准的工具：改了它们会受影响';
 const IC_TLS = {postgres: [['prefer', 'prefer（有就用）'], ['require', 'require（必须加密）'], ['verify', 'verify（加密并校验证书）'], ['disable', 'disable（不加密）']],
-                mysql: [['disable', 'disable（不加密）'], ['require', 'require（必须加密）'], ['verify', 'verify（加密并校验证书）']]};
+                mysql: [['disable', 'disable（不要求加密）'], ['require', 'require（必须加密）'], ['verify', 'verify（加密并校验证书）']]};
 function icConnDialog(name) {
   const x = name ? (infra.c.connections || []).find(i => i.name === name && i.origin === 'page') : null;
   if (name && !x) return toast('页面上没有这个连接了，刷新看看', 'err');
@@ -4472,6 +4473,7 @@ function icConnDialog(name) {
         <label class="fld">账号（只读账号）<input data-f="user" value="${esc(f.user || '')}"></label>
         <label class="fld">TLS<select data-f="tls"></select></label>
         <label class="fld">语句超时（秒）<input data-f="timeout" value="${esc(f.timeout || '')}" inputmode="numeric" placeholder="5"></label>
+        <div class="hint wide">require 只防窃听，不防冒充；跨公网请用 verify（按工具服务那台机器的系统根证书校验证书和主机名）</div>
       </div>
       <label class="fld">密码<input type="password" data-f="password" autocomplete="new-password" spellcheck="false" placeholder="${keep ? '留空就不改' : ''}"><span class="hint">${secretHint}</span></label>
     </div>

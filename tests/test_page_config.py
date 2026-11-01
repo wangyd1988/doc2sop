@@ -4,6 +4,8 @@
 另外：凭据只写不读（接口、日志、错误信息、/tools/full 里都没有值），扩大能力的要审批口令（和批准共用输错计数、锁定），
 sqlite、服务器文件路径、stdio MCP 一律不收，不能把外部改标成内部，和主配置重名的不收，host key 不核对就不登记，
 私钥不出工具服务，安装包和 push --print 一样，旁路文件坏了照常启动，什么都没在页面上配时输出和以前一样。
+数据库的 tls 名副其实：MySQL 的 require、verify 交给驱动的是自己建的 SSLContext（PyMySQL 1.2 以前直接拒绝），服务器不支持加密就
+什么都不发；页面上 PostgreSQL 的 verify 按系统根证书文件校验，找不到就不连。
 """
 import base64
 import contextlib
@@ -12,6 +14,7 @@ import json
 import os
 import queue
 import socket
+import ssl
 import stat
 import struct
 import subprocess
@@ -45,6 +48,11 @@ try:     # 真的 psycopg（带 libpq）：装进 OPS_VENDOR_DIR 才有，平时
     import psycopg as PSYCOPG
 except Exception:
     PSYCOPG = None
+
+try:     # 真的 PyMySQL：同上
+    import pymysql as PYMYSQL
+except Exception:
+    PYMYSQL = None
 
 POSIX = os.name == "posix"
 PASS = "correct horse battery staple"
@@ -89,6 +97,17 @@ def status_of(exc):
         if isinstance(exc, kind):
             return code
     return 400 if isinstance(exc, ops.ConfigError) else 500
+
+
+def tls_files(case, folder):
+    """测试用的 CA 和 127.0.0.1 的服务器证书（借 test_data_sources 的 make_tls）；没有 cryptography 就跳过这个用例。"""
+    from tests.test_data_sources import make_tls
+
+    Path(folder).mkdir(parents=True, exist_ok=True)
+    try:
+        return make_tls(folder)
+    except ImportError:
+        case.skipTest("没有 cryptography")
 
 
 class FakeSsh:
@@ -155,6 +174,8 @@ class FakeDriver:
         self.errors = types.SimpleNamespace(QueryCanceled=type("QueryCanceled", (Exception,), {}))
         self.cursors = types.SimpleNamespace(SSCursor=object)
         self.Error = Exception
+        self.VERSION = (1, 2, 3, "final")       # PyMySQL 的版本号；__version__ 是冒充 mysqlclient 的数
+        self.__version__ = "2.2.8"
 
     def connect(self, **kwargs):
         self.connects.append(kwargs)
@@ -257,6 +278,15 @@ class _Config(unittest.TestCase):
         if secret is not None:
             payload["secret"] = secret
         return self.ok(ops.page_connection_save, payload)
+
+    def precheck(self, conn="cmdb"):
+        """在连接 conn 上申请一个 SQL 工具，等自动检查做完（会在只读连接上 EXPLAIN），返回检查的结果。"""
+        item = ops.propose_tool({"name": f"{conn}_status", "desc": "按状态计数", "params": {},
+                                 "impl": {"type": "sql", "conn": conn, "query": "SELECT status FROM assets"}})
+        state = ops.review_pending(item, caller="web user=admin ip=10.1.2.3", deadline=time.monotonic() + 30,
+                                   fresh=True)["precheck"]
+        self.assertEqual(state["state"], "done", state)
+        return state
 
     def everything_said(self):
         """工具服务对外说过的一切：日志、旁路文件、变更记录、/tools、/tools/full、/tools/pending、/tools/config。"""
@@ -412,6 +442,76 @@ class ConnectionTests(_Config):
                          ["", ops.PG_NO_FILE, ops.PG_NO_FILE, ops.PG_NO_FILE])
         if PSYCOPG.pq.version() >= 160000:
             self.assertEqual(parsed["require_auth"], "!gss,!sspi")
+
+    def test_page_postgres_verify_checks_against_the_system_roots(self):
+        """页面上没有 ca 可填：verify 按系统根证书校验，sslrootcert 给的是系统根证书文件的路径（不用 libpq 的 system：
+        psycopg[binary] 自带的 OpenSSL 找不到这台机器的根证书）。保存后的测试、查询、测试草稿、自动检查的 EXPLAIN 都一样；
+        别的 TLS 方式、主配置的连接都不加。"""
+        roots = str(self.dir / "system-roots.pem")
+        fields = {"name": "cmdb", "type": "postgres", "host": "db.example.internal", "database": "cmdb",
+                  "user": "doc2sop_ro", "tls": "verify"}
+
+        def sent_with_roots():
+            sent = self.driver.connects[-1]
+            self.assertEqual((sent["sslmode"], sent["sslrootcert"]), ("verify-full", roots))
+
+        with patch.object(ops, "_system_ca_file", lambda: roots):
+            self.assertEqual(self.add_pg(tls="verify")["test"]["verdict"], "ok")
+            sent_with_roots()                                           # 保存之后的测试
+            self.assertTrue(ops.run_tool("cmdb_count", {})["ok"])
+            sent_with_roots()                                           # 查询
+            self.ok(ops.page_connection_test, {"connection": fields, "secret": "typed", "passphrase": PASS})
+            sent_with_roots()                                           # 测试草稿
+            self.precheck()
+            sent_with_roots()                                           # 自动检查的 EXPLAIN
+            draft = dict(ops._state["connections"]["cmdb"], origin="draft")
+            for tls in ("disable", "prefer", "require"):
+                self.assertNotIn("sslrootcert", ops._postgres_kwargs(dict(draft, tls=tls), [], self.driver))
+            main = ops._state["connections"]["litellm_db"]
+            for tls in ops.DB_TLS["postgres"]:
+                self.assertNotIn("sslrootcert", ops._postgres_kwargs(dict(main, tls=tls), [], self.driver))
+
+    def test_page_postgres_verify_without_system_roots_is_refused(self):
+        """这台机器上找不到系统根证书文件：verify 不连、也不取凭据，原因写明。存得下（装上根证书就能用），
+        保存后的测试、查询、页面上的工具列表、自动检查都照登；require 照常。"""
+        with patch.object(ops, "_system_ca_file", lambda: ""):
+            result = self.add_pg(tls="verify")
+            check = result["test"]["checks"][-1]
+            self.assertEqual((check["key"], check["status"]), ("tls", "fail"))
+            self.assertEqual(check["text"], ops.PG_NO_ROOTS)
+            self.assertIn("用 require，或在主配置里配 ca", check["text"])
+            run = ops.run_tool("cmdb_count", {})
+            self.assertEqual((run["ok"], run["error"]), (False, ops.PG_NO_ROOTS))
+            described = ops.describe_tools()["cmdb_count"]
+            self.assertEqual((described["runnable"], described["reason"]), (False, ops.PG_NO_ROOTS))
+            self.assertNotIn("cmdb_count", ops.available_tools())       # 不下发给模型
+            checks = {check["key"]: check for check in self.precheck()["checks"]}
+            self.assertEqual(checks["tls"]["status"], "fail")
+            self.assertIn(ops.PG_NO_ROOTS, checks["tls"]["text"])
+            with self.assertRaises(ops.DbTlsRefused):
+                ops._postgres_kwargs(ops._state["connections"]["cmdb"], [], self.driver)
+            self.assertEqual(self.driver.connects, [])
+            self.ok(ops.page_connection_save, {"original": "cmdb", "passphrase": PASS, "confirm": ["cmdb_count"],
+                                               "secret": DB_SECRET,
+                                               "connection": {"name": "cmdb", "type": "postgres", "tls": "require",
+                                                              "host": "db.example.internal", "database": "cmdb",
+                                                              "user": "doc2sop_ro"}})
+            self.assertTrue(ops.run_tool("cmdb_count", {})["ok"])
+            self.assertEqual(self.driver.connects[-1]["sslmode"], "require")
+
+    def test_the_system_roots_are_found_where_the_os_keeps_them(self):
+        """先看 Python 的 ssl 用的那个文件（也认 SSL_CERT_FILE），再按发行版的惯例找；都没有是空串。"""
+        python_default, debian = self.dir / "python-default.pem", self.dir / "ca-certificates.crt"
+        debian.write_text("x", encoding="utf-8")
+        paths = ssl.DefaultVerifyPaths(str(python_default), None, "SSL_CERT_FILE", "", "SSL_CERT_DIR", "")
+        with patch.object(ops.ssl, "get_default_verify_paths", lambda: paths), \
+                patch.object(ops, "SYSTEM_CA_FILES", (str(self.dir / "missing.pem"), str(debian))):
+            self.assertEqual(ops._system_ca_file(), str(debian))
+            python_default.write_text("x", encoding="utf-8")
+            self.assertEqual(ops._system_ca_file(), str(python_default))
+        with patch.object(ops.ssl, "get_default_verify_paths", lambda: paths._replace(cafile=None)), \
+                patch.object(ops, "SYSTEM_CA_FILES", (str(self.dir),)):     # 目录不算
+            self.assertEqual(ops._system_ca_file(), "")
 
     def test_ports_must_be_1_to_65535(self):
         """地址里的端口保存时就查（连接和 MCP 都是），免得存下来、到测试和调用时才出错；手改旁路文件写错的照样跳过。"""
@@ -654,11 +754,247 @@ class ConnectionTests(_Config):
                                                 "secret": DB_SECRET, "passphrase": PASS}, 409)
 
 
-class FakePostgres:
-    """假的 PostgreSQL：收下启动包（SSL、GSS 加密一律回「不支持」），要明文密码，记下客户端发来的密码，然后拒绝。
-    客户端手里没有密码时，libpq 根本不发（「no password supplied」）就断开：记 None。"""
+SHOP = ("  - {{name: shop, type: mysql, host: 127.0.0.1, port: {port}, database: shop, user: doc2sop_ro, "
+        "password: '${{litellm_db_password}}', tls: {tls}{ca}}}\n")
+SHOP_TOOL = ('  - {name: shop_count, desc: 订单数, impl: {type: sql, conn: shop, query: "SELECT count(*) AS n FROM orders"},'
+             ' params: {}}\n')
+PLAIN_MYSQL_KWARGS = ["autocommit", "charset", "connect_timeout", "cursorclass", "database", "host", "local_infile",
+                      "password", "port", "read_timeout", "user", "write_timeout"]
 
-    def __init__(self):
+
+class _MysqlConfig(_Config):
+    """页面上加的 MySQL 连接 cmdb（主配置里的工具 cmdb_count 用它），主配置里的 MySQL 连接 shop（工具 shop_count）。"""
+
+    def setUp(self):
+        super().setUp()
+        self.set_passphrase()
+
+    def add_mysql(self, tls, port=3306, secret=DB_SECRET, **extra):
+        payload = {"connection": {"name": "cmdb", "type": "mysql", "host": "127.0.0.1", "port": port,
+                                  "database": "cmdb", "user": "doc2sop_ro", "tls": tls}, "passphrase": PASS, **extra}
+        if secret is not None:
+            payload["secret"] = secret
+        return self.ok(ops.page_connection_save, payload)
+
+    def main_mysql(self, tls, port=3306, ca=""):
+        extra = f", ca: '{ca}'" if ca else ""
+        self.main.write_text(self.CONFIG.replace("tools:\n", SHOP.format(port=port, tls=tls, ca=extra) + "tools:\n", 1)
+                             + SHOP_TOOL, encoding="utf-8")
+        ops.refresh(force=True)
+        self.assertIn("shop_count", ops.all_tools(), ops._state["problems"])
+        return ops._state["connections"]["shop"]
+
+
+class MysqlTlsTests(_MysqlConfig):
+    """MySQL 的 tls 名副其实（假驱动，看交给驱动的参数）：require、verify 交给 PyMySQL 的是我们自己建的 SSLContext，
+    它因此要求加密，服务器不支持就不连；verify 校验证书和主机名，require 不校验。页面上加的和主配置的连接走同一条路；
+    disable 和以前一样；PyMySQL 1.2 以前的 require、verify 直接拒绝。"""
+
+    def test_require_and_verify_hand_the_driver_our_own_ssl_context(self):
+        with patch.object(ops.ssl, "create_default_context", wraps=ssl.create_default_context) as created:
+            self.add_mysql("require")                                       # 页面上加的：保存之后的测试
+            sent = self.driver.connects[-1]
+            self.assertEqual((sent["ssl"].verify_mode, sent["ssl"].check_hostname), (ssl.CERT_NONE, False))
+            self.assertEqual(sorted(sent), sorted(PLAIN_MYSQL_KWARGS + ["ssl"]))    # 没有 ssl_verify_cert 那几项
+            created.assert_not_called()                                         # require 不校验，不加载根证书
+            self.add_mysql("verify", original="cmdb", confirm=["cmdb_count"])
+            context = self.driver.connects[-1]["ssl"]
+            self.assertEqual((context.verify_mode, context.check_hostname), (ssl.CERT_REQUIRED, True))
+            self.assertEqual(created.call_args_list, [unittest.mock.call(cafile=None)])   # 系统根证书
+            self.assertFalse(context.verify_flags & ssl.VERIFY_X509_STRICT)     # 和 PyMySQL 自己建的一样
+            self.assertTrue(ops.run_tool("cmdb_count", {})["ok"])
+            self.assertEqual(self.driver.connects[-1]["ssl"].verify_mode, ssl.CERT_REQUIRED)
+        # 主配置的连接走同一条路；写了 ca 就只认它
+        paths = tls_files(self, self.dir / "tls")
+        shop = self.main_mysql("verify", ca=str(paths["ca"]))
+        self.assertTrue(ops.run_tool("shop_count", {})["ok"])
+        sent = self.driver.connects[-1]
+        self.assertEqual((sent["ssl"].verify_mode, sent["ssl"].check_hostname, sent["password"]),
+                         (ssl.CERT_REQUIRED, True, SERVER_SECRET))
+        self.assertEqual([dict(part[0] for part in cert["subject"])["commonName"] for cert in sent["ssl"].get_ca_certs()],
+                         ["doc2sop test CA"])
+        context = ops._mysql_kwargs(dict(shop, tls="require", ca=""), self.driver, [])["ssl"]
+        self.assertEqual((context.verify_mode, context.check_hostname), (ssl.CERT_NONE, False))
+
+    def test_disable_is_unchanged(self):
+        """disable：参数和以前一模一样（不要求加密：PyMySQL 1.2 起服务器支持就顺带加密，不支持就明文）；老版本照样能用。"""
+        self.driver.VERSION = (1, 1, 1, "final")
+        self.add_mysql("disable")
+        self.assertEqual(sorted(self.driver.connects[-1]), PLAIN_MYSQL_KWARGS)
+        shop = self.main_mysql("disable")
+        self.assertTrue(ops.run_tool("shop_count", {})["ok"])
+        self.assertEqual(sorted(self.driver.connects[-1]), PLAIN_MYSQL_KWARGS)
+        self.assertEqual(ops._sql_unusable(shop), "")
+
+    def test_pymysql_before_1_2_is_refused_for_require_and_verify(self):
+        """1.2 以前的 PyMySQL 在服务器不支持加密时会悄悄改用明文：require、verify 直接拒绝，一个连接都不建，原因写清楚。
+        版本看 VERSION，不看 __version__（冒充 mysqlclient 的 2.2.8）。"""
+        self.driver.VERSION = (1, 1, 1, "final")
+        check = self.add_mysql("require")["test"]["checks"][-1]
+        self.assertEqual((check["key"], check["status"]), ("tls", "fail"))
+        for words in ("tls: require 要 PyMySQL 1.2 以上", "这台机器上的是 1.1.1", "改用明文连接", "PyMySQL>=1.2,<2"):
+            self.assertIn(words, check["text"])
+        run = ops.run_tool("cmdb_count", {})
+        self.assertEqual((run["ok"], run["error"]), (False, check["text"]))
+        described = ops.describe_tools()["cmdb_count"]
+        self.assertEqual((described["runnable"], described["reason"]), (False, check["text"]))
+        self.assertNotIn("cmdb_count", ops.available_tools())             # 不下发给模型
+        shop = self.main_mysql("verify")
+        run = ops.run_tool("shop_count", {})
+        self.assertFalse(run["ok"])
+        self.assertIn("tls: verify 要 PyMySQL 1.2 以上", run["error"])
+        checks = {item["key"]: item for item in self.precheck("shop")["checks"]}
+        self.assertEqual(checks["tls"]["status"], "fail")
+        self.assertIn("tls: verify 要 PyMySQL 1.2 以上", checks["tls"]["text"])
+        self.assertEqual(self.driver.connects, [])
+        del self.driver.VERSION
+        self.assertIn("这台机器上的版本不明", ops._sql_unusable(shop))
+        self.driver.VERSION = (1, 2, 0, "final")
+        self.assertEqual(ops._sql_unusable(shop), "")
+
+    def test_an_unusable_ca_file_is_reported_not_raised(self):
+        """主配置的 ca 加载时查过；用的时候文件没了：这次不连，原因写明，查询和自动检查都照常返回。"""
+        paths = tls_files(self, self.dir / "tls")
+        shop = dict(self.main_mysql("verify", ca=str(paths["ca"])), ca=str(self.dir / "gone.pem"))
+        spec = dict(ops.all_tools()["shop_count"], connection=shop)
+        result = ops._run_sql(spec, {})
+        self.assertEqual((result["ok"], result["error"]), (False, "tls: verify 的 ca 文件用不了（FileNotFoundError）"))
+        self.assertEqual(ops._sql_probe(spec, self.driver), ("unreachable", result["error"]))
+        self.assertEqual(self.driver.connects, [])
+
+
+class FakeMysql:
+    """假的 MySQL：发握手包（tls 决定能力位里有没有 CLIENT_SSL），收下客户端发来的第一个包就断开。
+    每次连接记一条：客户端一个字节都没发就断开是 None，否则是 (序号, 内容)。"""
+
+    CLIENT_SSL = 0x800
+    # LONG_PASSWORD、LONG_FLAG、CONNECT_WITH_DB、PROTOCOL_41、TRANSACTIONS、SECURE_CONNECTION、PLUGIN_AUTH
+    CAPS = 0x1 | 0x4 | 0x8 | 0x200 | 0x2000 | 0x8000 | 0x80000
+
+    def __init__(self, tls):
+        self.caps = self.CAPS | (self.CLIENT_SSL if tls else 0)
+        self.listener = socket.create_server(("127.0.0.1", 0))
+        self.port = self.listener.getsockname()[1]
+        self.accepted = 0
+        self.results = queue.Queue()
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    def close(self):
+        self.listener.close()
+
+    def greeting(self):
+        body = (b"\x0a8.0.36-fake\x00" + struct.pack("<I", 7) + b"abcdefgh\x00"
+                + struct.pack("<HBHH", self.caps & 0xFFFF, 45, 2, self.caps >> 16) + bytes([21]) + bytes(10)
+                + b"ijklmnopqrst\x00" + b"mysql_native_password\x00")
+        return len(body).to_bytes(3, "little") + b"\x00" + body
+
+    def serve(self):
+        while True:
+            try:
+                client, _ = self.listener.accept()
+            except OSError:
+                return
+            self.accepted += 1
+            with client:
+                client.settimeout(15)
+                try:
+                    client.sendall(self.greeting())
+                    header = FakePostgres.read(client, 4)
+                    self.results.put((header[3], FakePostgres.read(client, int.from_bytes(header[:3], "little"))))
+                except (OSError, EOFError):
+                    self.results.put(None)
+
+    def next(self):
+        return self.results.get(timeout=20)
+
+
+@unittest.skipUnless(PYMYSQL, "没有 PyMySQL：把 PyMySQL 装进 OPS_VENDOR_DIR 才跑")
+class PyMysqlTests(_MysqlConfig):
+    """真的 PyMySQL 连一个假的 MySQL。服务器不支持加密：require、verify 一个字节都不发（没有账号，也没有密码的哈希）；
+    支持：第一个包是 SSLRequest（带 CLIENT_SSL，不带账号）。页面上加的、主配置的连接，查询、测试、自动检查都一样。"""
+
+    def setUp(self):
+        super().setUp()
+        real = patch.object(ops, "_driver", lambda kind: (PYMYSQL, "") if kind == "mysql" else (self.driver, ""))
+        real.start()
+        self.addCleanup(real.stop)
+
+    def server(self, tls):
+        server = FakeMysql(tls)
+        self.addCleanup(server.close)
+        return server
+
+    def every_way(self, tls, server):
+        """每条路连一次，返回服务器每次收到的：页面连接保存后的测试、测试草稿、查询；主配置连接的查询、自动检查的 EXPLAIN。"""
+        draft = {"name": "cmdb", "type": "mysql", "host": "127.0.0.1", "port": server.port, "database": "cmdb",
+                 "user": "doc2sop_ro", "tls": tls}
+        self.add_mysql(tls, port=server.port)
+        seen = [server.next()]
+        self.ok(ops.page_connection_test, {"connection": draft, "secret": "typed-in-the-dialog", "passphrase": PASS})
+        seen.append(server.next())
+        self.assertFalse(ops.run_tool("cmdb_count", {})["ok"])
+        seen.append(server.next())
+        self.main_mysql(tls, port=server.port)
+        self.assertFalse(ops.run_tool("shop_count", {})["ok"])
+        seen.append(server.next())
+        self.precheck("shop")
+        seen.append(server.next())
+        self.assertEqual(server.accepted, 5)
+        self.assertTrue(server.results.empty())
+        return seen
+
+    def assertSslRequests(self, seen):
+        for seq, payload in seen:
+            flags = struct.unpack("<I", payload[:4])[0]
+            self.assertEqual((seq, len(payload), bool(flags & FakeMysql.CLIENT_SSL)), (1, 32, True))
+            self.assertNotIn(b"doc2sop_ro", payload)
+
+    def test_require_sends_nothing_when_the_server_cannot_encrypt(self):
+        self.assertEqual(self.every_way("require", self.server(False)), [None] * 5)
+
+    def test_verify_sends_nothing_when_the_server_cannot_encrypt(self):
+        self.assertEqual(self.every_way("verify", self.server(False)), [None] * 5)
+
+    def test_require_starts_with_an_ssl_request(self):
+        self.assertSslRequests(self.every_way("require", self.server(True)))
+
+    def test_verify_starts_with_an_ssl_request(self):
+        self.assertSslRequests(self.every_way("verify", self.server(True)))
+
+    def test_disable_is_unchanged(self):
+        """disable 和以前一样：服务器不支持加密就明文登录，第一个包就是带账号的登录包。"""
+        server = self.server(False)
+        self.add_mysql("disable", port=server.port)
+        seq, payload = server.next()
+        self.assertEqual(seq, 1)
+        self.assertIn(b"doc2sop_ro\x00", payload)
+        self.main_mysql("disable", port=server.port)
+        self.assertFalse(ops.run_tool("shop_count", {})["ok"])
+        self.assertIn(b"doc2sop_ro\x00", server.next()[1])
+
+    def test_pymysql_before_1_2_never_connects(self):
+        server = self.server(False)
+        with patch.object(PYMYSQL, "VERSION", (1, 1, 1, "final")):
+            check = self.add_mysql("require", port=server.port)["test"]["checks"][-1]
+            self.assertEqual((check["key"], check["status"]), ("tls", "fail"))
+            self.assertIn("tls: require 要 PyMySQL 1.2 以上，这台机器上的是 1.1.1", check["text"])
+            self.main_mysql("verify", port=server.port)
+            self.assertIn("tls: verify 要 PyMySQL 1.2 以上", ops.run_tool("shop_count", {})["error"])
+        self.assertEqual(server.accepted, 0)
+
+
+class FakePostgres:
+    """假的 PostgreSQL：收下启动包，要明文密码，记下客户端发来的密码，然后拒绝。
+    客户端手里没有密码时，libpq 根本不发（「no password supplied」）就断开：记 None。
+    SSLRequest 默认回「不支持」（N）；给了 tls（服务器端的 SSLContext）就回 S、握手，之后都走加密通道（encrypted 记下每次连接
+    是不是加密的）。GSSENCRequest 一律回 N。客户端没发启动包就断开记 NO_STARTUP，握手失败记 BAD_HANDSHAKE。"""
+
+    NO_STARTUP = "closed before the startup packet"
+    BAD_HANDSHAKE = "tls handshake failed"
+
+    def __init__(self, tls=None):
+        self.tls = tls
+        self.encrypted = []
         self.listener = socket.create_server(("127.0.0.1", 0))
         self.port = self.listener.getsockname()[1]
         self.results = queue.Queue()
@@ -675,6 +1011,7 @@ class FakePostgres:
                 return
             with client:
                 client.settimeout(15)
+                self.encrypted.append(False)
                 try:
                     self.results.put(self.handle(client))
                 except (OSError, EOFError, struct.error) as exc:
@@ -691,21 +1028,36 @@ class FakePostgres:
         return data
 
     def handle(self, client):
-        while True:
-            length, code = struct.unpack("!ii", self.read(client, 8))
-            self.read(client, length - 8)
-            if code not in (80877103, 80877104):       # SSLRequest、GSSENCRequest：回 N（不支持），客户端接着发启动包
-                break
-            client.sendall(b"N")
-        client.sendall(b"R" + struct.pack("!ii", 8, 3))  # AuthenticationCleartextPassword
         try:
-            kind = self.read(client, 1)
-        except (EOFError, ConnectionError):
-            return None
-        payload = self.read(client, struct.unpack("!i", self.read(client, 4))[0] - 4)
-        error = b"SFATAL\0VFATAL\0C28P01\0Mpassword authentication failed\0\0"
-        client.sendall(b"E" + struct.pack("!i", len(error) + 4) + error)
-        return payload.rstrip(b"\0").decode("utf-8") if kind == b"p" else f"unexpected {kind!r}"
+            while True:
+                try:
+                    length, code = struct.unpack("!ii", self.read(client, 8))
+                except (EOFError, OSError):
+                    return self.NO_STARTUP
+                self.read(client, length - 8)
+                if code == 80877103 and self.tls is not None and not self.encrypted[-1]:
+                    client.sendall(b"S")
+                    try:
+                        client = self.tls.wrap_socket(client, server_side=True)
+                    except OSError:
+                        return self.BAD_HANDSHAKE
+                    self.encrypted[-1] = True
+                    continue
+                if code not in (80877103, 80877104):   # SSLRequest、GSSENCRequest：回 N（不支持），客户端接着发启动包
+                    break
+                client.sendall(b"N")
+            client.sendall(b"R" + struct.pack("!ii", 8, 3))  # AuthenticationCleartextPassword
+            try:
+                kind = self.read(client, 1)
+            except (EOFError, ConnectionError):
+                return None
+            payload = self.read(client, struct.unpack("!i", self.read(client, 4))[0] - 4)
+            error = b"SFATAL\0VFATAL\0C28P01\0Mpassword authentication failed\0\0"
+            client.sendall(b"E" + struct.pack("!i", len(error) + 4) + error)
+            return payload.rstrip(b"\0").decode("utf-8") if kind == b"p" else f"unexpected {kind!r}"
+        finally:
+            if isinstance(client, ssl.SSLSocket):
+                client.close()
 
     def next(self):
         return self.results.get(timeout=20)
@@ -774,6 +1126,50 @@ class LibpqTests(_Config):
             ops.review_pending(item, caller="web user=admin ip=10.1.2.3", deadline=time.monotonic() + 30, fresh=True)
             self.assertEqual(self.server.next(), DB_SECRET)          # 自动检查的 EXPLAIN
         self.assertTrue(self.server.results.empty())
+
+    def test_page_verify_fails_closed_when_the_server_cannot_encrypt(self):
+        """verify：服务器回「不支持加密」（SSLRequest 回 N），libpq 不发启动包就断开，账号、密码都没出去。"""
+        fields = dict(self.fields, tls="verify")
+        with patch.object(ops, "_system_ca_file", lambda: str(self.dir / "system-roots.pem")):
+            check = self.ok(ops.page_connection_save, {"connection": fields, "secret": DB_SECRET,
+                                                       "passphrase": PASS})["test"]["checks"][-1]
+            self.assertEqual(self.server.next(), FakePostgres.NO_STARTUP)    # 保存之后的测试
+            self.assertIn("TLS 不通", check["text"])
+            self.assertFalse(ops.run_tool("cmdb_count", {})["ok"])
+            self.assertEqual(self.server.next(), FakePostgres.NO_STARTUP)    # 查询
+            self.ok(ops.page_connection_test, {"connection": fields, "secret": "typed-in-the-dialog",
+                                               "passphrase": PASS})
+            self.assertEqual(self.server.next(), FakePostgres.NO_STARTUP)    # 测试草稿
+            self.precheck()
+            self.assertEqual(self.server.next(), FakePostgres.NO_STARTUP)    # 自动检查的 EXPLAIN
+        self.assertEqual(self.server.encrypted, [False] * 4)
+        self.assertTrue(self.server.results.empty())
+
+    def test_page_verify_really_checks_the_certificate_and_the_host_name(self):
+        """证书由「系统根证书」里的 CA 签发、主机名对得上，启动包和密码才走加密通道发出去；
+        根证书里没有签它的 CA，或者主机名对不上：握手失败，或者握手完就断开，什么都不发。"""
+        paths, other = tls_files(self, self.dir / "tls"), tls_files(self, self.dir / "other")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(paths["cert"], paths["key"])
+        server = FakePostgres(tls=context)
+        self.addCleanup(server.close)
+        fields = dict(self.fields, port=server.port, tls="verify")
+        with patch.object(ops, "_system_ca_file", lambda: str(paths["ca"])):
+            self.ok(ops.page_connection_save, {"connection": fields, "secret": DB_SECRET, "passphrase": PASS})
+            self.assertEqual((server.next(), server.encrypted[-1]), (DB_SECRET, True))
+            kwargs = dict(ops._postgres_kwargs(ops._state["connections"]["cmdb"], [], PSYCOPG),
+                          host="localhost", hostaddr="127.0.0.1")              # 证书是给 127.0.0.1 的
+            with self.assertRaises(PSYCOPG.Error) as caught:
+                PSYCOPG.connect(autocommit=False, **kwargs).close()
+            self.assertIn('does not match host name "localhost"', str(caught.exception))
+            # 服务器那边是握手没做完还是做完就断，看时机；反正启动包、密码都没发
+            self.assertIn(server.next(), (FakePostgres.BAD_HANDSHAKE, FakePostgres.NO_STARTUP))
+        with patch.object(ops, "_system_ca_file", lambda: str(other["ca"])):
+            run = ops.run_tool("cmdb_count", {})
+            self.assertFalse(run["ok"])
+            self.assertIn("SSL error", run["error"])          # 证书校验不过（两个测试 CA 同名，报的是签名不对）
+            self.assertEqual(server.next(), FakePostgres.BAD_HANDSHAKE)
+        self.assertTrue(server.results.empty())
 
 
 class McpServerTests(_Config):

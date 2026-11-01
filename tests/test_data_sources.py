@@ -456,7 +456,7 @@ class SqlRunTests(_Configured):
                 patch.object(ops.importlib, "import_module", side_effect=ImportError("No module named 'pymysql'")):
             module, reason = ops._driver("mysql")
         self.assertIsNone(module)
-        self.assertIn("PyMySQL>=1.1,<2", reason)
+        self.assertIn("PyMySQL>=1.2,<2", reason)
 
     def test_the_page_can_propose_a_sql_tool_on_an_existing_connection(self):
         self.config("  - {name: one, impl: {type: sql, conn: assets, query: 'SELECT 1'}}\n")
