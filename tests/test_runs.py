@@ -64,6 +64,23 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(judge(ALL_OK), ("ok", ""))
         self.assertEqual(runs.parse(ALL_OK)["followups"], [])
 
+    def test_followup_phrasings_seen_in_real_answers(self):
+        cases = [
+            ("**需要跟进**\n\n- 先看日志\n- 核对镜像地址\n", ["先看日志", "核对镜像地址"]),
+            ("需要跟进：\n1. **修正 selector**：改成 order-web\n2. 顺带核对 user-api\n", ["修正 selector：改成 order-web", "顺带核对 user-api"]),
+            ("## ⚠️ 需要跟进的事项\n\n**容器 `kb-app` 刚启动**\n\n别的段落\n", ["容器 kb-app 刚启动"]),
+            ("需要跟进的事项如下：\n- a\n\n- b\n\n结束语\n", ["a", "b"]),
+            ("需要跟进（2 项）：\n- a\n- b\n", ["a", "b"]),
+            ("**需要跟进**：先清理根分区\n", ["先清理根分区"]),
+            ("**需要跟进**：无。\n\n补充一点观察：kb-app 刚重启过\n", []),
+            ("需要跟进：无，各项均在阈值内。\n\n- 另外顺带一提\n", []),
+            ("目前没有需要跟进的地方。\n", []),
+            ("需要跟进：无法访问 registry，先查 DNS\n", ["无法访问 registry，先查 DNS"]),
+        ]
+        for text, want in cases:
+            with self.subTest(text=text):
+                self.assertEqual(runs.followups(text), want)
+
     def test_table_variants(self):
         """不带首尾竖线、表头加粗、对齐冒号、单元格里转义的竖线、❌ 严重、多张表合起来，都认。"""
         answer = ("**步骤** | **查看** | **实际数据** | **结论**\n:--- | :---: | --- | ---:\n"

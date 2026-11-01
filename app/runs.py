@@ -41,8 +41,11 @@ _SEPARATOR = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
 _STEP_NO = re.compile(r"^\D{0,3}?(\d{1,2})(?!\d)")
 _EMPHASIS = re.compile(r"\*\*|__|`|~~")
 _BREAK = re.compile(r"<br\s*/?>", re.IGNORECASE)
-_NONE = re.compile(r"^[（(]?(无|暂无|没有|无需跟进|不需要|全部正常)[）)]?[。.！!]?$")
-_LIST_ITEM = re.compile(r"^(?:[-*•·]|\d{1,2}[.、)）])\s*(.+)$")
+_NONE = re.compile(r"^[（(]?(?:无|暂无|没有|无需跟进|无需|不需要|全部正常)(?:$|[）)，,。.！!；;：:（(\s])")
+# 「需要跟进」后面跟着的标题字样：「的事项如下（共 2 项）：」这类不是一条
+_HEADING_TAIL = re.compile(r"^(?:的)?(?:事项|项目|问题|内容|建议|动作|地方|事)?(?:如下)?\s*(?:[（(][^）)]{0,12}[）)])?\s*[：:]?\s*")
+_NEGATED = re.compile(r"(?:没有|暂无|无|不需要|不用|无需)\s*$")
+_LIST_ITEM = re.compile(r"^(?:[-*](?=\s)|[•·]|\d{1,2}[.、)）])\s*(.+)$")
 COLUMN_KEYS = {"verdict": ("结论", "判断"), "step": ("步骤", "序号", "#"), "check": ("查看", "检查"),
                "value": ("实际数据", "实际", "数据")}
 
@@ -139,20 +142,30 @@ def parse(answer) -> dict:
 
 
 def followups(answer) -> list:
-    """「需要跟进」一段里的条目；写「无」的是空列表。"""
+    """「需要跟进」一段里的条目；写「无」（「无，各项均正常」「没有需要跟进的」也算）的是空列表。
+    同一行里冒号后面的算一条；「## 需要跟进的事项」这样的小标题本身不算。"""
     lines = str(answer or "").splitlines()
     for index, line in enumerate(lines):
         if "需要跟进" not in line or "|" in line:
             continue
+        head, _, tail = line.partition("需要跟进")
+        if _NEGATED.search(_plain(head)):
+            return []
         items = []
-        rest = _plain(line.split("需要跟进", 1)[1]).strip(" ：:#*")
+        rest = _HEADING_TAIL.sub("", _plain(tail).strip(" #*"), count=1).strip(" ：:#*")
+        if rest and _NONE.match(rest):
+            return []
         if rest:
             items.append(rest)
-        for following in lines[index + 1:]:
-            text = following.strip()
+        following = lines[index + 1:]
+        for position, raw in enumerate(following):
+            text = raw.strip()
             if not text:
                 if items:
-                    break
+                    # 条目之间隔着空行的列表照样往下读；空行后面不是列表项就到头了
+                    upcoming = next((rest.strip() for rest in following[position + 1:] if rest.strip()), "")
+                    if not _LIST_ITEM.match(upcoming):
+                        break
                 continue
             if text.startswith(("#", "|")):
                 break
