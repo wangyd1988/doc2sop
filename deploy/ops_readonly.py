@@ -30,6 +30,7 @@ to this file); a missing driver disables only the tools that need it.
 import argparse
 import atexit
 import base64
+import collections
 import contextlib
 import datetime
 import glob
@@ -53,7 +54,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -3505,10 +3508,10 @@ def _review_hosts(spec, kind):
 LEVELS = {"high": 0, "warn": 1, "info": 2}
 
 
-def _safe_review(item):
-    """review_pending，但一条手改坏了的申请不能让整个列表出不来。"""
+def _safe_review(item, **precheck):
+    """review_pending，但一条手改坏了的申请不能让整个列表出不来。precheck：caller、deadline、fresh，见 review_pending。"""
     try:
-        return review_pending(item)
+        return review_pending(item, **precheck)
     except Exception as exc:
         reason = f"这条申请读不懂（{exc.__class__.__name__}: {exc}）"
         return {"kind": "", "kind_label": "未知", "invalid": reason, "params": [], "os": [], "groups": [],
@@ -3517,15 +3520,19 @@ def _safe_review(item):
                 "risks": [_risk("high", "现在批不了", reason)]}
 
 
-def review_pending(item):
-    """一条待审申请给审批人看的全部内容：会执行什么、参数、在哪里跑、内部还是外部、风险提示。"""
+def review_pending(item, caller="", deadline=None, fresh=False):
+    """一条待审申请给审批人看的全部内容：会执行什么、参数、在哪里跑、内部还是外部、风险提示，以及自动检查（precheck）。
+
+    自动检查按内容缓存，没做过的交给后台去做：deadline（time.monotonic() 的时刻）之前做完就带上结果，否则先带「检查中」；
+    不给就最多等 PRECHECK_WAIT 秒。caller 只进 [precheck] 日志；fresh 是「重新检查」：不用缓存。草稿（没有 id）也走这里。"""
     tool = item.get("tool") or {}
     kind = _proposal_kind(tool)
     out = {"kind": kind, "kind_label": KIND_LABELS.get(kind, kind or "未知"), "risks": [], "params": [], "os": [],
            "groups": [], "hosts": [], "external": False, "external_why": "",
            "source": "mcp" if str(item.get("author", "")).startswith("mcp:") else "web",
-           "cli": _cli_command("approve", item.get("id", ""))}
+           "cli": _cli_command("approve", item.get("id", "")) if item.get("id") else ""}
     risks = out["risks"]
+    script_path, script_digest = None, ""
     try:
         spec = _bind_connection(_check_tool(tool), _state.get("connections", {}))
     except ConfigError as exc:
@@ -3549,6 +3556,7 @@ def review_pending(item):
             risks.append(_risk("high", "现在批不了", out["invalid"]))
             return out
         summary, found = _script_review(content, size)
+        script_path, script_digest = _scripts_dir() / spec["script"], digest
         out["script"] = {"name": spec["script"], "path": str(_scripts_dir() / spec["script"]), "sha256": digest,
                          "size": size, "content": content, "too_long": size > PAGE_SCRIPT_MAX, **summary}
         risks.extend(found)
@@ -3579,14 +3587,17 @@ def review_pending(item):
         if any(host["push"] for host in out["hosts"]):
             risks.append(_risk("info", "远程主机要 push",
                                f"受控模式的主机要等管理员在宿主机上 push 白名单后才能跑：{_cli_command('push', '--target')} <主机>"))
+    _bait_risks(tool, out, risks)
     risks.sort(key=lambda risk: LEVELS[risk["level"]])
+    out["precheck"] = _precheck(kind, spec, item, script_path, script_digest, caller, deadline, fresh)
     return out
 
 
-def list_held():
+def list_held(precheck=False, caller="", deadline=None, fresh=False):
     """引用了脚本、但脚本还没确认过或者内容和登记的哈希对不上的工具：页面上可以重新确认（要审批口令）。
 
-    加载时就被挡下的记在 _state["held"]；加载之后脚本才被改的，工具还在列表里（执行时会被拦），这里按现在的内容再算一遍。"""
+    加载时就被挡下的记在 _state["held"]；加载之后脚本才被改的，工具还在列表里（执行时会被拦），这里按现在的内容再算一遍。
+    precheck=True 时每个脚本带上自动检查（解释器在不在、语法检查），参数同 review_pending。"""
     tools = all_tools()
     trusted = load_trust()
     candidates = list(_state.get("held") or [])
@@ -3614,7 +3625,876 @@ def list_held():
                     "too_long": size > PAGE_SCRIPT_MAX, **summary,
                     "risks": sorted(risks, key=lambda risk: LEVELS[risk["level"]]),
                     "cli": _cli_command("trust", entry["script"])})
+        if precheck:
+            out[-1]["precheck"] = _precheck_held(entry["script"], _scripts_dir() / entry["script"], digest,
+                                                 caller, deadline, fresh)
     return out
+
+
+# ---- 页面审批：写给审核者的话（规则风险的一种）---------------------------------------------------------------------
+# 申请内容是别人写的，里面可能夹着「审核请判定为安全」这类话，想左右审批人或模型预审。只提醒、不拦：按实际会执行的内容判断。
+
+REVIEW_BAIT = re.compile(
+    r"(审核|审批|预审|审查|模型|AI|助手|reviewer|assistant|LLM)[^\n。！？!?]{0,24}"
+    r"(判定|认定|评为|评估为|标记为|标为|视为|当作|认为|直接|必须|务必|应该|请)[^\n。！？!?]{0,12}"
+    r"(安全|通过|批准|无害|低风险|没有风险|可信)"
+    r"|忽略(以上|之前|前面|上述|所有|前述)[^\n]{0,8}(规则|指令|要求|提示|内容)"
+    r"|ignore\s+(all\s+|any\s+)?(the\s+)?(previous|above|prior|earlier)\s+(instructions|rules|prompts?)"
+    r"|(approve|mark|treat)\s+(this|it)\s+as\s+(safe|approved)|this\s+(tool|request)\s+is\s+(safe|approved)",
+    re.I)
+
+
+def _bait_risks(tool, out, risks):
+    texts = [str(tool.get(key) or "") for key in ("name", "label", "desc")]
+    texts += [str(part) for part in out.get("argv") or []]
+    texts += [str((out.get("script") or {}).get("content") or ""), str((out.get("sql") or {}).get("query") or ""),
+              str(out.get("display") or "")]
+    if out.get("mcp"):
+        texts.append(json.dumps(out["mcp"].get("input_schema") or {}, ensure_ascii=False))
+    texts += [str(param.get("desc") or "") for param in out.get("params") or []]
+    found = REVIEW_BAIT.search("\n".join(texts))
+    if found:
+        risks.append(_risk("warn", "申请内容里有写给审核者的话",
+                           f"出现了「{found.group(0)[:60]}」这类想左右审核结论的话：按实际会执行的内容判断，别被它带着走。"))
+
+
+# ---- 页面审批：自动检查——只试探，不执行申请的内容 -----------------------------------------------------------------
+# 风险提示回答「危不危险」，这里回答「能不能用」。只做下面这几种试探，绝不执行申请里的命令、脚本、HTTP 请求和 SQL 查询本身：
+#   · 命令在不在（which）；argv 里写死的路径 stat / access；
+#   · 脚本按 shebang 只做语法检查：bash、sh 用 -n（只解析不执行），python 在进程内 compile()，别的写「不支持语法检查」；
+#   · SQL 在只读连接上 EXPLAIN（不带 ANALYZE），照常在只读事务和语句超时里跑；MySQL 只对 5.7 以上做（更老的版本
+#     EXPLAIN 会执行 FROM 里的子查询），MariaDB 只对 10 以上做；
+#   · kubectl 用 auth can-i 问只读账号有没有这个权限：动词、资源、命名空间从 argv 推出来，推不出来写「没法自动判断」；
+#   · 连接要用的凭据变量有没有设（只看设没设，不读出值）；MCP 工具还在不在 server 的工具列表里。
+# 远程主机这次不查（要改执行器），每台写「没检查（远程主机暂不支持）」。
+#
+# 有网页密码就能提交申请、打开审批页，所以试探的结果谁都看得到——它不能变成探测服务器的工具：
+#   · 放凭据的位置（SENSITIVE_PATH，解开符号链接之后落在那里的也算）不检查，写「敏感位置，不检查」；
+#   · 文件只报「能读」「不存在或读不了」两种；
+#   · SQL 只报类别（能编译 / 语法错误 / 表或列不存在 / 没有权限 / 连不上 / 超时）加一句我们自己写的短原因：执行计划读出来就丢，
+#     数据库的原始报错也不转述（里面可能有申请人没写过的表名、列名），只在报错点到的名字原样出现在申请人自己的查询里时说出它；
+#   · kubectl 只带推出来的动词、资源、命名空间：--server、--kubeconfig、--token、--as 这类连接、身份参数一律不跟，
+#     跟了就可能把只读账号的令牌发到申请人指定的地方。
+# 每次试探记一行 [precheck] 日志：谁、哪条申请、做了哪几项，不记内容。结果按内容缓存（同一份申请、同一份脚本、同一个连接上
+# 不重复试探）；连不上、MCP server 离线这类暂时的结果一分钟后作废。页面上可以「重新检查」；「检查一下」（表单里的草稿，
+# 不入队）和「重新检查」合起来限频。结论（能用 / 有问题 / 跑不了 / 没法自动判断）只由这里的检查得出，模型预审不参与。
+
+PRECHECK_VERSION = 1
+PRECHECK_TIMEOUT = 8          # 每一项试探（子进程、连库）最多等几秒
+PRECHECK_SQL_TIMEOUT = 5      # EXPLAIN 的语句超时上限（秒）：连接自己配的更短就用它的
+PRECHECK_WAIT = 3             # 打开审批页时最多等几秒：没做完的先显示「检查中」，后台做完进缓存
+PRECHECK_ON_DEMAND = 20       # 「检查一下」「重新检查」最多等几秒（应用等它 60 秒）
+PRECHECK_CACHE = 256          # 最多缓存多少份结果
+PRECHECK_RETRY = 60           # 暂时的结果（连不上、离线）多少秒后作废、重新试探
+PRECHECK_RATE = (12, 60)      # 「检查一下」和「重新检查」加起来：每 60 秒最多 12 次
+PRECHECK_PATHS = 10           # 一条命令最多查几个写死的路径
+PYTHON_SYNTAX_MAX = 1024 * 1024
+VERDICTS = {"ok": "能用", "problem": "有问题", "blocked": "跑不了", "unknown": "没法自动判断"}
+SQL_PROBE_LABELS = {"ok": "能编译", "syntax": "语法错误", "missing": "表或列不存在", "denied": "没有权限",
+                    "unreachable": "连不上", "timeout": "超时", "unknown": "没法自动判断"}
+SQL_PROBE_STATUS = {"ok": "ok", "syntax": "fail", "missing": "fail", "denied": "fail", "timeout": "warn",
+                    "unreachable": "skip", "unknown": "skip"}
+# kubectl auth can-i 只认得这些参数；带值的、不带值的分开（-n x 和 -n=x 都行）。连接、身份类的参数单独列出来，说清为什么不跟
+KUBECTL_VALUE_FLAGS = frozenset({
+    "-n", "--namespace", "-o", "--output", "-l", "--selector", "--field-selector", "-c", "--container", "--sort-by",
+    "--tail", "--since", "--since-time", "-L", "--label-columns", "--limit-bytes", "--max-log-requests", "--chunk-size",
+    "--request-timeout", "--template", "--subresource"})
+KUBECTL_BOOL_FLAGS = frozenset({
+    "-A", "--all-namespaces", "-w", "--watch", "--watch-only", "--show-labels", "--no-headers", "-p", "--previous",
+    "--timestamps", "--all-containers", "--show-kind", "--ignore-not-found", "--prefix", "--show-managed-fields"})
+KUBECTL_IDENTITY_FLAGS = frozenset({
+    "-s", "--server", "--kubeconfig", "--context", "--cluster", "--user", "--token", "--as", "--as-group", "--as-uid",
+    "--username", "--password", "--certificate-authority", "--client-certificate", "--client-key",
+    "--insecure-skip-tls-verify", "--tls-server-name", "--raw", "-f", "--filename", "-k", "--kustomize"})
+KUBECTL_TOP = {"pod": "pods.metrics.k8s.io", "pods": "pods.metrics.k8s.io", "po": "pods.metrics.k8s.io",
+               "node": "nodes.metrics.k8s.io", "nodes": "nodes.metrics.k8s.io", "no": "nodes.metrics.k8s.io"}
+K8S_RESOURCE = re.compile(r"^[a-z][a-z0-9.-]{0,62}$")
+# 语法检查：只解析不执行。bash 带上 extglob：脚本里 shopt -s extglob 之后的写法，-n 时那句 shopt 不会执行
+SYNTAX_SHELLS = {"bash": ["-O", "extglob", "-n"], "sh": ["-n"], "dash": ["-n"]}
+
+
+class RateLimited(ConfigError):
+    """「检查一下」「重新检查」太频繁：页面审批的接口回 429。"""
+
+
+_probe_times = collections.deque()
+_probe_lock = threading.Lock()
+
+
+def _probe_allowed():
+    limit, window = PRECHECK_RATE
+    now = time.monotonic()
+    with _probe_lock:
+        while _probe_times and now - _probe_times[0] >= window:
+            _probe_times.popleft()
+        if len(_probe_times) >= limit:
+            raise RateLimited(f"检查得太频繁了：{int(window - (now - _probe_times[0])) + 1} 秒后再试")
+        _probe_times.append(now)
+
+
+def _check(key, status, title, text, essential=True, transient=False):
+    """一项检查。status：ok / warn / fail / skip。essential=False 的 skip 不影响结论（比如本机查过了，远程主机没查）；
+    transient：结果是暂时的（连不上、离线），缓存一分钟后作废。"""
+    item = {"key": key, "status": status, "title": title, "text": text}
+    if not essential:
+        item["essential"] = False
+    if transient:
+        item["transient"] = True
+    return item
+
+
+def _verdict(checks):
+    """结论只由检查得出：有 fail 跑不了；有 warn 有问题；一项都没查成、或者关键的项没查，没法自动判断；否则能用。"""
+    states = [check["status"] for check in checks]
+    if "fail" in states:
+        return "blocked"
+    if "warn" in states:
+        return "problem"
+    if "ok" not in states or any(check["status"] == "skip" and check.get("essential", True) for check in checks):
+        return "unknown"
+    return "ok"
+
+
+def _path_state(path):
+    """写死的路径：ok（能读）/ missing（不存在或读不了）/ sensitive（放凭据的位置，解开符号链接后落在那里也算，不查）。"""
+    if SENSITIVE_PATH.search(path):
+        return "sensitive"
+    try:
+        real = os.path.realpath(path)
+    except (OSError, ValueError):
+        real = path
+    if real != path and SENSITIVE_PATH.search(real.replace(os.sep, "/")):
+        return "sensitive"
+    try:
+        return "ok" if os.path.exists(path) and os.access(path, os.R_OK) else "missing"
+    except (OSError, ValueError):
+        return "missing"
+
+
+def _command_paths(spec):
+    """argv 里写死的路径，按出现顺序去重。"""
+    return list(dict.fromkeys(_argv_paths(spec["argv"][1:])))
+
+
+def _kubectl_question(argv):
+    """从 kubectl 的 argv 推出要问 can-i 的 (动词, [资源], 子资源, 范围)；推不出来返回 (None, 原因)。
+
+    范围：("ns", 名字) 写死的命名空间；("all", "") 带了 -A；("all", "model") 命名空间由模型填（问整个集群）；
+    (None, "") 用 kubeconfig 的默认命名空间。认不出的参数一律不猜，宁可说没法判断。"""
+    positional, namespace, every = [], None, False
+    args, index = [str(arg) for arg in argv[1:]], 0
+    while index < len(args):
+        arg = args[index]
+        index += 1
+        if not arg.startswith("-") or arg == "-":
+            positional.append(arg)
+            continue
+        name, has_value, value = arg.partition("=")
+        if name in KUBECTL_IDENTITY_FLAGS:
+            return None, f"命令里带了 {name}：自动检查不跟着用连接、身份这类参数"
+        if name in KUBECTL_BOOL_FLAGS and not has_value:
+            every = every or name in ("-A", "--all-namespaces")
+            continue
+        if name in KUBECTL_VALUE_FLAGS:
+            if not has_value:
+                if index >= len(args):
+                    return None, f"{name} 后面没有值"
+                value = args[index]
+                index += 1
+            if name in ("-n", "--namespace"):
+                namespace = value
+            continue
+        return None, f"命令里有自动检查认不出的参数 {name[:40]}"
+    if not positional:
+        return None, "认不出 kubectl 的子命令"
+    sub, rest = positional[0], positional[1:]
+    subresource = ""
+    if sub in ("get", "describe"):
+        if not rest:
+            return None, f"kubectl {sub} 后面没有资源类型"
+        kind = rest[0]
+        if PLACEHOLDER.match(kind):
+            return None, "资源类型由模型填：各类资源的权限不一样"
+        named = "/" in kind or len(rest) > 1
+        resources = [part for part in kind.split("/", 1)[0].split(",") if part]
+        verb = "get" if named else "list"
+    elif sub == "logs":
+        target = rest[0] if rest else ""
+        if "/" in target and target.split("/", 1)[0] not in ("pod", "pods", "po"):
+            return None, "日志来自 Pod 以外的对象（比如 deploy/x），要的权限不止一种"
+        verb, resources, subresource = "get", ["pods"], "log"
+    elif sub == "top":
+        resource = KUBECTL_TOP.get(rest[0] if rest else "")
+        if resource is None:
+            return None, "kubectl top 后面要是 pod 或 node"
+        verb, resources = "list", [resource]
+    else:
+        return None, f"kubectl {sub[:20]} 要什么权限推不出来"
+    if not resources or not all(K8S_RESOURCE.match(resource) for resource in resources):
+        return None, "认不出资源类型"
+    if every:
+        scope = ("all", "")
+    elif namespace is None:
+        scope = (None, "")
+    elif PLACEHOLDER.match(namespace):
+        scope = ("all", "model")
+    elif PATTERNS["k8s_name"].match(namespace):
+        scope = ("ns", namespace)
+    else:
+        return None, "认不出命名空间"
+    return (verb, resources[:5], subresource, scope), ""
+
+
+def _kubectl_can_i(binary, verb, resource, subresource, scope):
+    """问一次 kubectl auth can-i：(yes | no | missing | error, 原因)。和工具运行时同一个账号（同样的环境变量），
+    只带推出来的动词、资源、子资源和命名空间。"""
+    argv = [shutil.which(binary) or binary, "auth", "can-i", verb, resource]
+    if subresource:
+        argv.append(f"--subresource={subresource}")
+    if scope[0] == "all":
+        argv.append("--all-namespaces")
+    elif scope[0] == "ns":
+        argv += ["--namespace", scope[1]]
+    argv.append(f"--request-timeout={PRECHECK_TIMEOUT - 2}s")
+    try:
+        done = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=PRECHECK_TIMEOUT, encoding="utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        return "error", "kubectl 超时（多半是连不上集群）"
+    except OSError:
+        return "error", "kubectl 起不来"
+    if "doesn't have a resource type" in (done.stderr or ""):
+        return "missing", ""
+    lines = (done.stdout or "").strip().splitlines()
+    answer = lines[0].strip().lower() if lines else ""
+    if answer == "yes":
+        return "yes", ""
+    if answer == "no" or answer.startswith("no "):
+        return "no", ""
+    return "error", "kubectl 没给出 yes / no（多半是连不上集群）"
+
+
+def _kubectl_checks(spec, done):
+    title = "只读账号有没有权限（kubectl auth can-i）"
+    question, why = _kubectl_question(spec["argv"])
+    if question is None:
+        return [_check("kubectl", "skip", title, f"没法自动判断：{why}")]
+    verb, resources, subresource, scope = question
+    answers = []
+    for resource in resources:
+        done.append("kubectl can-i")
+        answers.append((resource,) + _kubectl_can_i(spec["binary"], verb, resource, subresource, scope))
+    what = lambda names: f"{verb} {'、'.join(names)}" + (f"（{subresource}）" if subresource else "")
+    where = {"all": "所有命名空间", "ns": f"命名空间 {scope[1]}", None: "默认命名空间"}[scope[0]]
+    yes = [name for name, answer, _ in answers if answer == "yes"]
+    no = [name for name, answer, _ in answers if answer == "no"]
+    missing = [name for name, answer, _ in answers if answer == "missing"]
+    errors = [reason for _, answer, reason in answers if answer == "error"]
+    if missing:
+        return [_check("kubectl", "fail", title, f"集群里没有 {'、'.join(missing)} 这类资源：批了也查不到")]
+    if errors and not (yes or no):
+        return [_check("kubectl", "skip", title, f"没法自动判断：{errors[0]}", transient=True)]
+    if no and scope[1] == "model":
+        return [_check("kubectl", "skip", title,
+                       f"只读账号不能在所有命名空间 {what(no)}；命名空间由模型填，各命名空间的权限可能不一样，没法自动判断")]
+    if no:
+        return [_check("kubectl", "warn" if yes else "fail", title,
+                       f"只读账号在{where}不能 {what(no)}" + ("：批了也查不到" if not yes else f"（{what(yes)} 可以）"))]
+    if errors:
+        return [_check("kubectl", "skip", title, f"{what(yes)} 可以；其余没法自动判断：{errors[0]}", transient=True)]
+    return [_check("kubectl", "ok", title, f"只读账号在{where}能 {what(yes)}")]
+
+
+def _precheck_command(spec, done):
+    """命令型：在哪些主机上适用、本机命令在不在、写死的路径、kubectl 的权限。远程主机只列出来，不查。"""
+    checks, remote, binary = [], [], spec["binary"]
+    cfg = _hosts()
+    if cfg is None:
+        reason = _not_here(spec)
+        if reason:
+            return [_check("os", "fail", "适用系统", f"{reason}：批了也不会在这台机器上跑")], ""
+    else:
+        local_host = _local_host()
+        local = local_host is not None and _applicable(spec, local_host)[0]
+        remote = [name for name, host in cfg["hosts"].items() if host["via"] != "local" and _applicable(spec, host)[0]]
+        skipped = [_check(f"host:{name}", "skip", f"主机 {name}", "没检查（远程主机暂不支持）", essential=not local)
+                   for name in remote]
+        if not local:
+            if not remote:
+                return [_check("hosts", "fail", "在哪里跑", "没有适用的主机（系统、分组或主机开放的工具对不上）：批了也没地方跑")], ""
+            return skipped, ""
+    done.append("命令在不在")
+    if not shutil.which(binary):
+        checks.append(_check("which", "warn" if remote else "fail", f"本机有没有 {binary}",
+                             f"本机没有 {binary}" + ("：只能在远程主机上跑（远程主机没检查）" if remote else "：批了也跑不了")))
+    else:
+        checks.append(_check("which", "ok", f"本机有没有 {binary}", f"本机有 {binary}"))
+        paths = _command_paths(spec)
+        reader = os.path.basename(binary).lower() in READ_BINARIES
+        for path in paths[:PRECHECK_PATHS]:
+            state = _path_state(path)
+            if state == "sensitive":
+                checks.append(_check("path", "skip", path, "敏感位置，不检查"))
+                continue
+            done.append("路径")
+            if state == "ok":
+                checks.append(_check("path", "ok", path, "能读"))
+            else:
+                checks.append(_check("path", "fail" if reader else "warn", path,
+                                     "不存在或读不了" + ("：这个命令就是读它，批了也读不出来" if reader else "")))
+        if len(paths) > PRECHECK_PATHS:
+            checks.append(_check("path", "skip", "其余路径", f"还有 {len(paths) - PRECHECK_PATHS} 个路径没检查"))
+        if os.path.basename(binary).lower() in ("kubectl", "kubectl.exe"):
+            checks += _kubectl_checks(spec, done)
+    if cfg is not None:
+        checks += skipped
+    return checks, "只检查了本机，远程主机暂不支持" if remote else ""
+
+
+def _shebang(path):
+    """脚本第一行 #! 指定的解释器：(给人看的写法, 解释器的实际路径或 None, 名字)；没有 #! 时返回 None。"""
+    with open(path, "rb") as handle:
+        head = handle.readline(512)
+    if not head.startswith(b"#!"):
+        return None
+    words = head[2:].decode("utf-8", "replace").split()
+    if not words:
+        return None
+    interpreter, rest = words[0], words[1:]
+    if os.path.basename(interpreter) == "env":
+        names = [word for word in rest if not word.startswith("-") and "=" not in word]
+        if not names:
+            return None
+        return f"env {names[0]}", shutil.which(names[0]), os.path.basename(names[0])
+    found = interpreter if os.path.isfile(interpreter) and os.access(interpreter, os.X_OK) else None
+    return interpreter, found, os.path.basename(interpreter)
+
+
+def _shell_syntax(interpreter, base, path):
+    """bash -n / sh -n：只解析，不执行。环境只留 PATH 和 LANG：BASH_ENV、ENV 这类会让 shell 先去读别的文件的变量一概不带。"""
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C"}
+    try:
+        done = subprocess.run([interpreter] + SYNTAX_SHELLS[base] + [str(path)], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=PRECHECK_TIMEOUT, env=env,
+                              encoding="utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        return _check("syntax", "skip", "语法检查", f"{base} -n 超时，没法自动判断")
+    except OSError:
+        return _check("syntax", "skip", "语法检查", f"{base} 起不来，没法自动判断")
+    if done.returncode == 0:
+        return _check("syntax", "ok", "语法检查", f"{base} -n 通过（只解析，不执行）")
+    lines = (done.stderr or "").strip().splitlines()
+    message = (lines[0] if lines else f"退出码 {done.returncode}").replace(str(path), "脚本")
+    return _check("syntax", "fail", "语法检查", f"{base} -n 报错：{message[:200]}")
+
+
+def _python_syntax(path):
+    """python 脚本在进程内 compile()：只编译，不执行（也不导入它 import 的东西）。"""
+    try:
+        with open(path, "rb") as handle:
+            source = handle.read(PYTHON_SYNTAX_MAX + 1)
+    except OSError:
+        return _check("syntax", "skip", "语法检查", "读不了脚本，没法自动判断")
+    if len(source) > PYTHON_SYNTAX_MAX:
+        return _check("syntax", "skip", "语法检查", "脚本太大，没做语法检查")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            compile(source, str(path), "exec", dont_inherit=True)
+    except SyntaxError as exc:
+        return _check("syntax", "fail", "语法检查", f"python 编译不过：第 {exc.lineno} 行 {exc.msg}")
+    except (ValueError, RecursionError, MemoryError) as exc:
+        return _check("syntax", "fail", "语法检查", f"python 编译不过（{exc.__class__.__name__}）")
+    return _check("syntax", "ok", "语法检查", "python 编译通过（只编译，不执行）")
+
+
+def _precheck_script_file(path, done):
+    """脚本：#! 指定的解释器在不在，再按它做语法检查。"""
+    try:
+        found = _shebang(path)
+    except OSError:
+        return [_check("script", "fail", "脚本", "读不了这个脚本：批了也跑不了")]
+    if found is None:
+        return [_check("shebang", "fail", "解释器", "第一行没有 #! 写明解释器：直接执行会报 Exec format error，批了也跑不了")]
+    shown, interpreter, name = found
+    done.append("解释器在不在")
+    if not interpreter:
+        return [_check("shebang", "fail", "解释器", f"#! 指定的 {shown} 在本机找不到：批了也跑不了")]
+    checks = [_check("shebang", "ok", "解释器", f"本机有 {shown}")]
+    base = re.sub(r"\.exe$", "", name.lower())
+    if base in SYNTAX_SHELLS:
+        done.append("语法检查")
+        checks.append(_shell_syntax(interpreter, base, path))
+    elif base in ("python", "python3") or re.fullmatch(r"python3\.\d+", base):
+        done.append("语法检查")
+        checks.append(_python_syntax(path))
+    else:
+        checks.append(_check("syntax", "skip", "语法检查", f"不支持语法检查（{base[:20]}）"))
+    return checks
+
+
+def _precheck_script(spec, path, done):
+    """脚本型只在本机跑：先看本机适不适用，再看脚本本身。"""
+    reason = _not_here(spec)
+    if reason:
+        return [_check("os", "fail", "适用系统", f"{reason}：批了也不会在这台机器上跑")]
+    cfg = _hosts()
+    if cfg is not None:
+        local = _local_host()
+        if local is None:
+            return [_check("hosts", "fail", "在哪里跑", "脚本型工具只能在本机跑，而主机清单里没有本机：批了也没地方跑")]
+        ok, reason = _applicable(spec, local)
+        if not ok:
+            return [_check("hosts", "fail", "在哪里跑", f"{reason}：批了也没地方跑")]
+    return _precheck_script_file(path, done)
+
+
+def _conn_refs(conn):
+    """连接要用的凭据引用（${名字}），按出现顺序去重。"""
+    refs = []
+    if conn["type"] == "http":
+        found = ENV_BASE.match(conn.get("base") or "")
+        if found:
+            refs.append(found.group(1))
+        for value in (conn.get("headers") or {}).values():
+            refs += SECRET_REF.findall(str(value))
+        fields = ("bearer", "bearer_file", "ca")
+    else:
+        fields = ("path", "host", "database", "user", "password", "ca")
+    for field in fields:
+        found = KEY_REF.match(str(conn.get(field) or ""))
+        if found:
+            refs.append(found.group(1))
+    return list(dict.fromkeys(refs))
+
+
+def _refs_check(conn, done):
+    """连接的凭据变量设没设：只看环境变量是不是空的，不读出值、不显示值。"""
+    refs = _conn_refs(conn)
+    if not refs:
+        return None
+    done.append("凭据变量")
+    title = f"连接 {conn['name']} 的凭据"
+    missing = [ref for ref in refs if not os.environ.get(_secret_env(ref) or "")]
+    if missing:
+        shown = "、".join("${" + ref + "}" for ref in missing)
+        return _check("conn", "fail", title, f"要用的 {shown} 在宿主机上还没配置（只看了变量设没设）：批了也用不了")
+    return _check("conn", "ok", title, f"要用的 {len(refs)} 个凭据变量都设了（只看了设没设，没读值）")
+
+
+class _SqlProbe(Exception):
+    """EXPLAIN 的结果类别和短原因（我们自己写的话）。"""
+
+    def __init__(self, category, reason=""):
+        super().__init__(category)
+        self.category, self.reason = category, reason
+
+
+_SQL_NAMED = re.compile(r"\"([^\"]{1,128})\"|'([^']{1,128})'|`([^`]{1,128})`|:\s*([A-Za-z_][\w.$]{0,127})\s*$"
+                        r"|\bfor\s+(?:table|view|relation|schema|function|sequence|column)\s+([A-Za-z_][\w.$]{0,127})")
+
+
+def _sql_named(message, query):
+    """报错点到的名字：只在它原样出现在申请人自己写的查询里时才说出来——不替数据库说出申请人没写过的表名、列名。"""
+    for found in _SQL_NAMED.finditer(str(message or "")):
+        name = next(group for group in found.groups() if group).split(".")[-1].strip()
+        if name and re.search(rf"(?<![\w$]){re.escape(name)}(?![\w$])", query, re.I):
+            return name[:60]
+    return ""
+
+
+def _sql_reason(category, name):
+    if category == "syntax":
+        return f"在 {name} 附近写得不对" if name else "查询写得不对（数据库编译不过）"
+    if category == "missing":
+        return (f"找不到 {name}（表、视图、列或函数）" if name else "查询里用到的表、视图、列或函数在库里找不到") + \
+            "，或者这个账号看不到：批了也查不到"
+    if category == "denied":
+        return f"只读账号没有 {name} 的权限：批了也查不到" if name else "只读账号没有这条查询要的权限：批了也查不到"
+    if category == "type":
+        return "写法或类型对不上（比如拿文本和数字比、分组写得不对）"
+    return ""
+
+
+def _sql_category(kind, exc, query):
+    """数据库报错 → (类别, 短原因)。按错误码分类，原始报错不往外带。"""
+    message = _sql_first_line(exc)
+    if kind == "postgres":
+        state = str(getattr(exc, "sqlstate", "") or "")
+        diag = getattr(exc, "diag", None)
+        primary = getattr(diag, "message_primary", None) or message
+        name = _sql_named(primary, query)
+        if state == "57014":
+            return "timeout", ""
+        if state == "42501":
+            return "denied", _sql_reason("denied", name)
+        if state in ("42P01", "42703", "42883", "42704", "3F000", "42P02"):
+            return "missing", _sql_reason("missing", name)
+        if state == "42601":
+            return "syntax", _sql_reason("syntax", name)
+        if state.startswith("42"):
+            return "syntax", _sql_reason("type", "")
+        if state.startswith("08"):
+            return "unreachable", "连不上数据库"
+        return "unknown", "数据库报了别的错（没法归类，不转述原文）"
+    if kind == "mysql":
+        code = exc.args[0] if getattr(exc, "args", None) and isinstance(exc.args[0], int) else None
+        name = _sql_named(message, query)
+        if code in (3024, 1969, 1317) or "timed out" in message.lower():
+            return "timeout", ""
+        if code in (1142, 1143, 1044, 1227, 1370):
+            return "denied", _sql_reason("denied", name)
+        if code in (1146, 1054, 1305, 1051, 1356, 1049):
+            return "missing", _sql_reason("missing", name)
+        if code in (1064, 1149):
+            return "syntax", _sql_reason("syntax", name)
+        if code in (2003, 2005, 2006, 2013, 1045):
+            return "unreachable", "连不上数据库"
+        return "unknown", "数据库报了别的错（没法归类，不转述原文）"
+    lowered = message.lower()
+    name = _sql_named(message, query)
+    if "no such table" in lowered or "no such column" in lowered or "no such function" in lowered:
+        return "missing", _sql_reason("missing", name)
+    if "not authorized" in lowered or "prohibited" in lowered:
+        return "denied", _sql_reason("denied", "")
+    if "syntax error" in lowered or "incomplete input" in lowered or "unrecognized token" in lowered:
+        return "syntax", _sql_reason("syntax", name)
+    if "unable to open" in lowered:
+        return "unreachable", "打不开数据库文件"
+    return "unknown", "数据库报了别的错（没法归类，不转述原文）"
+
+
+def _sqlite_explain(conn, module, segments, params, used, query):
+    """sqlite：和查询同样的只读打开、query_only、授权回调、超时，只做 EXPLAIN QUERY PLAN（编译，不执行）。"""
+    try:
+        db, late = _sqlite_open(conn, module, used)
+    except SqlError:
+        raise _SqlProbe("unreachable", "数据库文件不存在或打不开") from None
+    try:
+        _sqlite_guard(db, module, conn, late)
+        db.execute("EXPLAIN QUERY PLAN " + _sql_render(segments, "named"), params).fetchall()   # 计划读出来就丢
+    except module.Error as exc:
+        if late:
+            raise _SqlProbe("timeout", "") from None
+        raise _SqlProbe(*_sql_category("sqlite", exc, query)) from None
+    finally:
+        db.close()
+
+
+def _postgres_explain(conn, module, segments, params, used, query):
+    """PostgreSQL：和查询同一套连接参数（默认只读事务、语句超时），再 read_only；只 EXPLAIN，不带 ANALYZE。"""
+    kwargs = _postgres_kwargs(conn, used)
+    try:
+        db = module.connect(autocommit=False, **kwargs)
+    except Exception:
+        raise _SqlProbe("unreachable", "连不上数据库（地址、账号、密码不对，或者网络不通）") from None
+    try:
+        db.read_only = True
+        cursor = db.cursor()
+        cursor.execute("EXPLAIN " + _sql_render(segments, "pyformat"), params)
+        cursor.fetchall()   # 计划读出来就丢：不回显行数估计、索引名
+        db.rollback()
+    except Exception as exc:
+        raise _SqlProbe(*_sql_category("postgres", exc, query)) from None
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def _mysql_version_ok(version):
+    """MySQL 5.7 以前的 EXPLAIN 可能执行 FROM 里的子查询（物化派生表）：只对 5.7 以上做；MariaDB 按 10 以上。"""
+    text = str(version or "").lower()
+    mariadb = "mariadb" in text
+    if mariadb and text.startswith("5.5.5-"):
+        text = text[len("5.5.5-"):]
+    found = re.match(r"(\d+)\.(\d+)", text)
+    if not found:
+        return False
+    major, minor = int(found.group(1)), int(found.group(2))
+    return major >= 10 if mariadb else (major, minor) >= (5, 7)
+
+
+def _mysql_explain(conn, module, segments, params, used, query):
+    """MySQL：和查询同一套连接参数，先看版本，再在只读事务里 EXPLAIN（不带 ANALYZE）。"""
+    kwargs = _mysql_kwargs(conn, module, used)
+    try:
+        db = module.connect(**kwargs)
+    except Exception:
+        raise _SqlProbe("unreachable", "连不上数据库（地址、账号、密码不对，或者网络不通）") from None
+    try:
+        cursor = db.cursor()
+        cursor.execute("SELECT VERSION()")
+        rows = cursor.fetchall()
+        if not _mysql_version_ok(rows[0][0] if rows else ""):
+            raise _SqlProbe("unknown", "MySQL 5.7、MariaDB 10 以前的版本 EXPLAIN 可能执行 FROM 里的子查询：不做")
+        _mysql_limits(cursor, module, conn)
+        cursor.execute("START TRANSACTION READ ONLY")
+        cursor.execute("EXPLAIN " + _sql_render(segments, "pyformat"), params)
+        cursor.fetchall()   # 计划读出来就丢
+    except _SqlProbe:
+        raise
+    except Exception as exc:
+        raise _SqlProbe(*_sql_category("mysql", exc, query)) from None
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+SQL_EXPLAINERS = {"sqlite": _sqlite_explain, "postgres": _postgres_explain, "mysql": _mysql_explain}
+
+
+def _sql_sample(param):
+    """EXPLAIN 时参数填的示例值：和真实调用一样由驱动绑定，按类型给一个合法的值，不让「示例值格式不对」冒充查询有错。"""
+    if param["type"] == "int":
+        value = param.get("default", param.get("min", 1))
+        return max(param.get("min", value), min(int(value), param.get("max", value)))
+    if param.get("default"):
+        return param["default"]
+    return {"date": time.strftime("%Y-%m-%d"), "resource": "pod"}.get(param.get("pattern"), "x")
+
+
+def _sql_probe(spec, module):
+    """(类别, 短原因)：在只读连接上 EXPLAIN 一次。"""
+    connection = spec["connection"]
+    probe = dict(connection, timeout=min(connection["timeout"], PRECHECK_SQL_TIMEOUT))
+    params = {key: _sql_sample(param) for key, param in spec["params"].items()}
+    try:
+        SQL_EXPLAINERS[connection["type"]](probe, module, spec["sql"]["segments"], params, [], spec["sql"]["query"])
+    except _SqlProbe as exc:
+        return exc.category, exc.reason
+    except ValueError:   # 凭据没配置（前面查过，这里兜底）
+        return "unreachable", "连接要用的凭据还没配置"
+    return "ok", ""
+
+
+def _precheck_sql(spec, done):
+    connection = spec.get("connection")
+    if connection is None:
+        return [_check("conn", "fail", "连接", f"连接 {spec['sql']['conn']} 不存在：批了也用不了")]
+    checks = []
+    refs = _refs_check(connection, done)
+    if refs:
+        checks.append(refs)
+        if refs["status"] == "fail":
+            return checks
+    module, _ = _driver(connection["type"])
+    if module is None:
+        return checks + [_check("driver", "fail", "数据库驱动",
+                                f"工具服务这台机器没有 {DRIVERS[connection['type']][2]} 驱动：批了也用不了")]
+    done.append("EXPLAIN")
+    category, reason = _sql_probe(spec, module)
+    check = _check("sql", SQL_PROBE_STATUS[category], "在只读连接上 EXPLAIN（只编译，不执行）",
+                   SQL_PROBE_LABELS[category] + (f"：{reason}" if reason else ""),
+                   transient=category in ("unreachable", "timeout"))
+    check["category"] = category
+    return checks + [check]
+
+
+def _precheck_http(spec, done):
+    checks = []
+    connection = spec.get("connection")
+    if spec["http"].get("conn") and connection is None:
+        return [_check("conn", "fail", "连接", f"连接 {spec['http']['conn']} 不存在：批了也用不了")]
+    if connection:
+        refs = _refs_check(connection, done)
+        if refs:
+            checks.append(refs)
+    checks.append(_check("request", "skip", "接口能不能用", "自动检查不发请求：接口通不通、返回什么，批准后第一次调用才知道"))
+    return checks
+
+
+def _precheck_mcp(spec, schema_hash, done):
+    ident, raw_name = spec["mcp"]["server"], spec["mcp"]["tool"]
+    title = f"MCP server {ident} 上还有没有这个工具"
+    server = _mcp.get(ident)
+    if server is None:
+        return [_check("mcp", "fail", title, f"配置里没有声明 MCP server {ident}：批了也用不了")]
+    done.append("MCP 工具列表")
+    if not (server.online and server.alive()):
+        return [_check("mcp", "skip", title, f"MCP server {ident} 现在没连上，没法判断", transient=True)]
+    live = server.tools.get(raw_name)
+    if live is None:
+        return [_check("mcp", "fail", title, f"server 上已经没有 {raw_name} 这个工具：批了也用不了")]
+    if (live.get("annotations") or {}).get("destructiveHint") is True:
+        return [_check("mcp", "fail", title, "server 把它标成了破坏性操作：批了也不会提供")]
+    if schema_hash and _mcp_hash(live) != schema_hash:
+        return [_check("mcp", "warn", title, "server 上的参数形状和这条申请里的不一样：server 刚改过，待审会随下一次发现更新")]
+    return [_check("mcp", "ok", title, "server 上有这个工具，参数形状和申请里的一致")]
+
+
+def _precheck_run(label, caller, probe):
+    """跑一遍检查（probe(done) → (checks, note)），算出结论，记一行日志：谁、哪条申请、做了哪几项，不记内容。"""
+    started, done = time.monotonic(), []
+    checks, note = probe(done)
+    verdict = _verdict(checks)
+    counts = collections.Counter(done)
+    what = "、".join(f"{name}×{count}" if count > 1 else name for name, count in counts.items()) or "没有要试探的"
+    print(f"[precheck] {label} caller={_caller(caller) or '-'} 做了：{what} → {VERDICTS[verdict]}"
+          f"（{time.monotonic() - started:.1f}s）", flush=True)
+    result = {"state": "done", "verdict": verdict, "label": VERDICTS[verdict], "note": note, "checks": checks,
+              "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    if any(check.get("transient") for check in checks):
+        result["expires"] = time.monotonic() + PRECHECK_RETRY
+    return result
+
+
+_precheck_cache = collections.OrderedDict()   # 内容哈希 → 结果
+_precheck_jobs = {}                           # 内容哈希 → 正在做的 Future
+_precheck_lock = threading.Lock()
+_precheck_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="precheck")
+
+
+def _precheck_public(result):
+    return {key: value for key, value in result.items() if key != "expires"}
+
+
+def _precheck_job(key, run):
+    try:
+        result = run()
+    except Exception as exc:   # 检查本身出错（不会是申请的内容被执行了）：结论是没法自动判断，日志只记异常类型
+        print(f"[precheck] 出错：{exc.__class__.__name__}", flush=True)
+        result = {"state": "done", "verdict": "unknown", "label": VERDICTS["unknown"], "note": "",
+                  "checks": [_check("error", "skip", "自动检查", f"自动检查出错（{exc.__class__.__name__}），没法自动判断")],
+                  "at": time.strftime("%Y-%m-%d %H:%M:%S"), "expires": time.monotonic() + PRECHECK_RETRY}
+    with _precheck_lock:
+        _precheck_cache[key] = result
+        _precheck_cache.move_to_end(key)
+        while len(_precheck_cache) > PRECHECK_CACHE:
+            _precheck_cache.popitem(last=False)
+        _precheck_jobs.pop(key, None)
+    return result
+
+
+def _precheck_wait(key, deadline):
+    """等这个内容的检查做完，最多等到 deadline；做完了返回结果，没做完返回 None。"""
+    with _precheck_lock:
+        done = _precheck_cache.get(key)
+        future = _precheck_jobs.get(key)
+    if done is not None and future is None:
+        return _precheck_public(done)
+    if future is None:
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None
+    try:
+        return _precheck_public(future.result(timeout=remaining))
+    except FutureTimeout:
+        return None
+
+
+def _precheck_get(key, run, deadline, fresh):
+    """按内容哈希取结果：缓存里有（没过期）就用；没有就交给后台去做，等到 deadline。fresh 是「重新检查」，不用缓存。"""
+    with _precheck_lock:
+        done = _precheck_cache.get(key)
+        if done is not None and (fresh or done.get("expires", float("inf")) < time.monotonic()):
+            _precheck_cache.pop(key, None)
+            done = None
+        if done is not None:
+            _precheck_cache.move_to_end(key)
+            return _precheck_public(done)
+        if key not in _precheck_jobs:
+            _precheck_jobs[key] = _precheck_pool.submit(_precheck_job, key, run)
+    result = _precheck_wait(key, time.monotonic() + PRECHECK_WAIT if deadline is None else deadline)
+    return result or {"state": "checking", "key": key}
+
+
+def _precheck_key(*parts):
+    basis = json.dumps([PRECHECK_VERSION, str(_state.get("path"))] + list(parts), sort_keys=True,
+                       ensure_ascii=False, default=str)
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()
+
+
+def _hosts_signature():
+    cfg = _hosts()
+    if cfg is None:
+        return None
+    return [cfg.get("local")] + [[name, host["via"], _host_os_of(host), host.get("groups"), host.get("tools")]
+                                 for name, host in cfg["hosts"].items()]
+
+
+def _precheck(kind, spec, item, script_path, script_digest, caller, deadline, fresh):
+    """一条申请（或草稿）的自动检查。按内容缓存：申请本身、脚本的哈希、用到的连接、主机清单，任何一样变了就重做。"""
+    tool = item.get("tool") or {}
+    extra = {"script": script_digest} if kind == "script" else \
+        {"connection": spec.get("connection")} if kind in ("sql", "http") else \
+        {"hosts": _hosts_signature()} if kind == "command" else {}
+    key = _precheck_key("pending", kind, tool, extra)
+    label = f"申请 {item['id']} {spec.get('name', '')}" if item.get("id") else f"草稿 {spec.get('name', '')}"
+
+    def probe(done):
+        if kind == "command":
+            return _precheck_command(spec, done)
+        if kind == "script":
+            return _precheck_script(spec, script_path, done), ""
+        if kind == "sql":
+            return _precheck_sql(spec, done), ""
+        if kind == "http":
+            return _precheck_http(spec, done), ""
+        if kind == "mcp":
+            return _precheck_mcp(spec, tool.get("schema_hash"), done), ""
+        if kind == "builtin":
+            return [_check("builtin", "ok", "内置函数", "随工具服务发布，不依赖本机装了什么")], ""
+        return [_check("kind", "skip", "实现类型", "认不出的实现类型，没法自动判断")], ""
+
+    return _precheck_get(key, lambda: _precheck_run(label, caller, probe), deadline, fresh)
+
+
+def _precheck_held(script, path, digest, caller, deadline, fresh):
+    """要重新确认的脚本：解释器在不在、语法检查。"""
+    key = _precheck_key("held", script, digest)
+    return _precheck_get(key, lambda: _precheck_run(f"要重新确认的脚本 {script}", caller,
+                                                    lambda done: (_precheck_script_file(path, done), "")),
+                         deadline, fresh)
+
+
+def _settle(entry, deadline):
+    """/tools/review：先把所有条目的检查都交给后台，再统一等到 deadline，没做完的留着「检查中」。"""
+    state = entry.get("precheck")
+    if isinstance(state, dict) and state.get("state") == "checking":
+        entry["precheck"] = _precheck_wait(state["key"], deadline) or state
+    return entry
+
+
+def review_all(caller=""):
+    """/tools/review 的内容：待审申请（带完整内容、风险提示、自动检查）、要重新确认的脚本、审批口令的状态。"""
+    deadline = time.monotonic() + PRECHECK_WAIT
+    pending = list_pending()
+    details = [_safe_review(item, caller=caller, deadline=0) for item in pending]
+    held = list_held(precheck=True, caller=caller, deadline=0)
+    details = [_settle(detail, deadline) for detail in details]
+    held = [_settle(entry, deadline) for entry in held]
+    return {"pending": [{**item, "detail": detail} for item, detail in zip(pending, details)],
+            "held": held, "approval": approval_status()}
+
+
+def page_check(payload, caller=""):
+    """「检查一下」：对表单里的草稿做一遍风险提示和自动检查，不入队。草稿不合规时和提交一样当场报错。限频。"""
+    _probe_allowed()
+    raw = payload.get("tool") if isinstance(payload.get("tool"), dict) else {}
+    _check_proposal(raw)
+    item = {"id": "", "author": str(payload.get("author") or "web")[:40], "tool": raw}
+    return {"detail": review_pending(item, caller=caller, deadline=time.monotonic() + PRECHECK_ON_DEMAND)}
+
+
+def page_recheck(payload, caller=""):
+    """「重新检查」：不用缓存，再试探一遍。一条待审申请（id），或者一个要重新确认的脚本（script）。限频。"""
+    _probe_allowed()
+    deadline = time.monotonic() + PRECHECK_ON_DEMAND
+    script = str(payload.get("script") or "")
+    if script:
+        held = [entry for entry in list_held() if entry["script"] == script]
+        if not held:
+            raise NotFound(f"没有要重新确认的脚本 {script[:80]}")
+        entry = held[0]
+        entry["precheck"] = _precheck_held(script, _scripts_dir() / script, entry["sha256"], caller, deadline, True)
+        return {"held": entry}
+    item = _find_pending(str(payload.get("id") or ""))
+    return {"pending": {**item, "detail": _safe_review(item, caller=caller, deadline=deadline, fresh=True)}}
 
 
 # ---- 页面审批：批准、拒绝、重新确认脚本、提交并立即批准 ----------------------------------------------------------
@@ -4122,12 +5002,22 @@ def _sqlite_authorizer(module):
     return authorize
 
 
-def _sqlite_query(conn, module, segments, params, max_rows, used):
+def _sqlite_open(conn, module, used):
+    """只读打开 sqlite（mode=ro）：(连接, 超时标记)。文件不在、打不开抛 SqlError。超时由 _sqlite_guard 装上的进度回调掐。"""
     path = _resolve(conn["path"], used)
     if not os.path.isfile(path):
         raise SqlError(f"连接 {conn['name']} 的数据库文件不存在")
+    try:
+        db = module.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=conn["timeout"],
+                            check_same_thread=False)
+    except module.Error as exc:
+        raise SqlError(f"打不开数据库：{_sql_first_line(exc)}") from None
+    return db, []
+
+
+def _sqlite_guard(db, module, conn, late):
+    """第二、三层：query_only + 授权回调；进度回调到点就掐断（late 里记一笔）。"""
     deadline = time.monotonic() + conn["timeout"]
-    late = []
 
     def progress():
         if time.monotonic() > deadline:
@@ -4135,16 +5025,16 @@ def _sqlite_query(conn, module, segments, params, max_rows, used):
             return 1
         return 0
 
+    db.execute("PRAGMA query_only = ON")
+    db.set_authorizer(_sqlite_authorizer(module))
+    db.set_progress_handler(progress, 1000)
+
+
+def _sqlite_query(conn, module, segments, params, max_rows, used):
+    # 只读打开（mode=ro）+ query_only + 授权回调：三重保证写不进去
+    db, late = _sqlite_open(conn, module, used)
     try:
-        # 只读打开（mode=ro）+ query_only + 授权回调：三重保证写不进去
-        db = module.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=conn["timeout"],
-                            check_same_thread=False)
-    except module.Error as exc:
-        raise SqlError(f"打不开数据库：{_sql_first_line(exc)}") from None
-    try:
-        db.execute("PRAGMA query_only = ON")
-        db.set_authorizer(_sqlite_authorizer(module))
-        db.set_progress_handler(progress, 1000)
+        _sqlite_guard(db, module, conn, late)
         cursor = db.execute(_sql_render(segments, "named"), params)
         columns = [item[0] for item in cursor.description or []]
         rows = cursor.fetchmany(max_rows + 1)
@@ -4157,7 +5047,8 @@ def _sqlite_query(conn, module, segments, params, max_rows, used):
     return columns, rows[:max_rows], len(rows) > max_rows
 
 
-def _postgres_query(conn, module, segments, params, max_rows, used):
+def _postgres_kwargs(conn, used):
+    """连 PostgreSQL 的参数：查询和自动检查的 EXPLAIN 用同一套。"""
     millis = conn["timeout"] * 1000
     kwargs = {"host": _resolve(conn["host"], used), "port": conn["port"],
               "dbname": _resolve(conn["database"], used), "user": _resolve(conn["user"], used),
@@ -4171,6 +5062,11 @@ def _postgres_query(conn, module, segments, params, max_rows, used):
         kwargs["password"] = _resolve(conn["password"], used)
     if conn["ca"]:
         kwargs["sslrootcert"] = _resolve(conn["ca"], used)
+    return kwargs
+
+
+def _postgres_query(conn, module, segments, params, max_rows, used):
+    kwargs = _postgres_kwargs(conn, used)
     try:
         db = module.connect(autocommit=False, **kwargs)
     except Exception as exc:
@@ -4196,7 +5092,8 @@ def _postgres_query(conn, module, segments, params, max_rows, used):
     return columns, rows[:max_rows], len(rows) > max_rows
 
 
-def _mysql_query(conn, module, segments, params, max_rows, used):
+def _mysql_kwargs(conn, module, used):
+    """连 MySQL 的参数：查询和自动检查的 EXPLAIN 用同一套。"""
     kwargs = {"host": _resolve(conn["host"], used), "port": conn["port"], "user": _resolve(conn["user"], used),
               "password": _resolve(conn["password"], used) if conn["password"] else "",
               "database": _resolve(conn["database"], used), "connect_timeout": min(10, conn["timeout"] + 3),
@@ -4208,19 +5105,29 @@ def _mysql_query(conn, module, segments, params, max_rows, used):
         kwargs.update(ssl_verify_cert=conn["tls"] == "verify", ssl_verify_identity=conn["tls"] == "verify")
         if conn["ca"]:
             kwargs["ssl_ca"] = _resolve(conn["ca"], used)
+    return kwargs
+
+
+def _mysql_limits(cursor, module, conn):
+    """语句超时：MySQL 5.7.8+ 用 max_execution_time，MariaDB 10.1+ 用 max_statement_time，都没有就算了（还有读超时）。"""
+    try:
+        cursor.execute(f"SET SESSION max_execution_time = {conn['timeout'] * 1000}")   # MySQL 5.7.8+
+    except module.Error:
+        try:
+            cursor.execute(f"SET SESSION max_statement_time = {conn['timeout']}")       # MariaDB 10.1+
+        except module.Error:
+            pass
+
+
+def _mysql_query(conn, module, segments, params, max_rows, used):
+    kwargs = _mysql_kwargs(conn, module, used)
     try:
         db = module.connect(**kwargs)
     except Exception as exc:
         raise SqlError(f"连不上数据库：{_sql_first_line(exc)}") from None
     try:
         cursor = db.cursor()
-        try:
-            cursor.execute(f"SET SESSION max_execution_time = {conn['timeout'] * 1000}")   # MySQL 5.7.8+
-        except module.Error:
-            try:
-                cursor.execute(f"SET SESSION max_statement_time = {conn['timeout']}")       # MariaDB 10.1+
-            except module.Error:
-                pass
+        _mysql_limits(cursor, module, conn)
         cursor.execute("START TRANSACTION READ ONLY")   # 第二层：只读事务
         cursor.execute(_sql_render(segments, "pyformat"), params)
         columns = [item[0] for item in cursor.description or []]
@@ -6216,17 +7123,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/tools/approval":
             return self._send(200, {"approval": approval_status()})
         if self.path == "/tools/review":
-            # 页面审批要看的全部：待审申请（带完整内容和风险提示）、要重新确认的脚本、审批口令的状态
-            held = list_held()
-            return self._send(200, {"pending": [{**item, "detail": _safe_review(item)} for item in list_pending()],
-                                    "held": held, "approval": approval_status()})
+            # 页面审批要看的全部：待审申请（带完整内容、风险提示、自动检查）、要重新确认的脚本、审批口令的状态
+            return self._send(200, review_all(self.headers.get(CALLER_HEADER, "")))
         self._send(404, {"error": "Not found"})
 
     # 页面审批的写操作：批准、重新确认脚本、提交并立即批准要审批口令（工具服务核对），拒绝不要；
-    # 设置口令：还没设时直接设，已经设了要旧口令
+    # 设置口令：还没设时直接设，已经设了要旧口令；「检查一下」（草稿，不入队）和「重新检查」只试探、不改任何东西，限频
     PAGE_ACTIONS = {"/tools/approve": page_approve, "/tools/reject": page_reject,
                     "/tools/trust": page_trust, "/tools/propose-approve": page_propose_approve,
-                    "/tools/set-passphrase": page_set_passphrase}
+                    "/tools/set-passphrase": page_set_passphrase,
+                    "/tools/check": page_check, "/tools/recheck": page_recheck}
 
     def do_POST(self):
         if self.path not in ("/exec", "/tools/override", "/tools/propose") and self.path not in self.PAGE_ACTIONS:
@@ -6287,6 +7193,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": str(exc)})
         print(f"[propose] 收到新工具申请 {item['id']} "
               f"{(item.get('tool') or {}).get('name')}，待批准（页面「待审批」或宿主机命令行）", flush=True)
+        # 自动检查先在后台做起来：申请人马上打开审批页时，多半已经有结果
+        _safe_review(item, caller=self.headers.get(CALLER_HEADER, ""), deadline=0)
         return self._send(200, {"pending": item, "total": len(list_pending())})
 
     def _page(self, action, payload):
@@ -6296,7 +7204,8 @@ class Handler(BaseHTTPRequestHandler):
         except ApprovalRefused as exc:
             return self._send(exc.status, {"error": str(exc)})
         except ConfigError as exc:
-            status = 404 if isinstance(exc, NotFound) else 409 if isinstance(exc, Conflict) else 400
+            status = 404 if isinstance(exc, NotFound) else 409 if isinstance(exc, Conflict) else \
+                429 if isinstance(exc, RateLimited) else 400
             extra = {"pending": exc.pending} if getattr(exc, "pending", None) else {}
             return self._send(status, {"error": str(exc), **extra})
         except Exception as exc:   # 写文件失败之类：回一句话，别把连接直接掐断
@@ -6372,14 +7281,33 @@ def _print_pending():
             print(f"      参数：{', '.join(params)}")
         if item.get("reason"):
             print(f"      理由：{item['reason']}")
-        for risk in _safe_review(item)["risks"]:
+        with contextlib.redirect_stdout(sys.stderr):   # 自动检查的 [precheck] 日志行不混进列表
+            detail = _safe_review(item, caller="cli", deadline=time.monotonic() + 60)
+        for risk in detail["risks"]:
             if risk["level"] != "info":
                 print(f"      {'[高风险]' if risk['level'] == 'high' else '[注意]'} {risk['title']}：{risk['text']}")
+        _print_precheck(detail.get("precheck"))
         print()
     print("批准：ops_readonly.py approve <id>     拒绝：ops_readonly.py reject <id>")
     print("批准前请逐字读一遍「命令」、SQL 或脚本内容——这是它唯一会执行的东西。")
     print("MCP 工具没有 server 的只读声明时，要加 --attest-readonly 表示你确认过它不改任何东西。")
     return 0
+
+
+PRECHECK_MARKS = {"ok": "✓", "warn": "!", "fail": "✗", "skip": "-"}
+
+
+def _print_precheck(state):
+    """命令行 pending 里的自动检查：和页面上同一份结果。"""
+    if not isinstance(state, dict):
+        return
+    if state.get("state") != "done":
+        print("      自动检查：还没做完（检查超时）")
+        return
+    print(f"      自动检查：{state['label']}" + (f"（{state['note']}）" if state.get("note") else "")
+          + "　只试探，不执行申请的内容")
+    for check in state.get("checks") or []:
+        print(f"        {PRECHECK_MARKS.get(check['status'], '?')} {check['title']}：{check['text']}")
 
 
 def _print_scripts():
