@@ -67,15 +67,35 @@ class SmartPromptTests(unittest.TestCase):
 
     def test_hard_rules_are_spelled_out(self):
         nudge = agent_loop.SMART_NO_PREFETCH
-        for words in ("公司规定、流程、内部系统、内部名词", "必须先调用 kb_search", "通用概念、公开技术问题",
-                      "联网开着就搜，关着就说明无法确定", "拿不准是不是本组织的问题，先查知识库", "没检索过，不要说知识库里没有"):
+        for words in ("本组织的规定、流程、阈值、内部系统、内部名词", "必须先调用 kb_search 查到原文、按 [编号] 引用",
+                      "联网开着就搜，关着就说明无法确定", "没调用过 kb_search，就不能说「知识库里没有」"):
             self.assertIn(words, nudge)
         rules = agent_loop.SMART_RULES
         for words in ("不能拿常识顶上", "句末标 [💡]", "通用知识，未经核实", "以知识库为准", "结论只依据工具数据和知识库",
-                      "前几轮标了 [💡] 的内容仍是通用知识"):
+                      "前几轮标了 [💡] 的内容仍是通用知识", "拿不准是不是本组织的问题，先查知识库"):
             self.assertIn(words, rules)
         self.assertTrue(modes.uses_general(agent_loop.GENERAL_TAG))
         self.assertIn("不能当依据", agent_loop.GENERAL_HISTORY_RULES)
+
+    def test_rules_learned_from_the_production_eval(self):
+        """生产评测里漏查的题：拿 SOP 检查点、或者常识（429）顶替知识库原文；还有没查过就说「知识库里没有」。"""
+        nudge, rules = agent_loop.SMART_NO_PREFETCH, agent_loop.SMART_RULES
+        for text in (nudge, rules):
+            self.assertIn("检查点", text)
+            self.assertIn("代替原文", text)
+            self.assertIn("报错码、接口、配置项、系统名", text)
+            self.assertIn("比如 429 可能是公司网关的限流", text)
+            self.assertIn("明显与本组织无关的通用概念", text)
+        self.assertIn("执行 SOP 时照它判断数据", rules)
+        self.assertIn("依据原句也只是摘录", rules)
+        self.assertIn("联网关着、又答不了的实时问题，只说明联网关着、无法确定", rules)
+        self.assertIn("**没调用过 kb_search，就不能说「知识库里没有」「知识库里没有检索到」之类的话**", rules)
+        self.assertIn("没调用过 kb_search 的（实时信息、公开资料），开头只说「以下内容来自网络搜索」，不要提知识库",
+                      agent_loop.SMART_WEB_RULES)
+        self.assertIn("本组织的问题先用 kb_search 查", agent_loop.SMART_WEB_RULES)
+        self.assertIn("没调用过 kb_search 就不要提知识库", agent_loop.SMART_NO_WEB_RULES)
+        self.assertIn("查过知识库也没有的，直说没有相关内容", agent_loop.SMART_NO_WEB_RULES)
+        self.assertIn("查过知识库也没有的，直说没有", agent_loop.SMART_AGENT_PROMPT)
 
     def test_a_drifted_base_prompt_fails_loudly(self):
         with self.assertRaises(RuntimeError):
