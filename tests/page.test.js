@@ -217,5 +217,84 @@ check('模型预审：跳过写原因', C.prereviewHtml({status: 'skipped', reas
 check('模型预审：没有问题也不说成没有风险', C.prereviewHtml({status: 'done', findings: []}).includes('没有指出问题'), true);
 check('页面上有「检查一下」和重新检查、撤回的入口', ['/api/tools/check', 'id="tlDoCheck"', '/recheck', 'data-withdraw'].every(x => html.includes(x)), true);
 
+// 工具页「主机与数据源」：页面上加的条目能改，主配置的只读；工具服务给的每一段文字都转义；凭据只有状态，永远不显示值
+const icCode = [/^const esc = .*$/m, /^const unlockIn = .*$/m, /^const TL_CONN_TYPE = .*$/m, /^const IC_SRV = .*$/m,
+  /^const IC_STEP = .*$/m, /^const IC_SECRET = .*$/m, /^const IC_MODE = .*$/m, /^const IC_MODE_SHORT = .*$/m].map(lineOf)
+  .concat(['setAtText', 'hostReason', 'icSecretPill', 'icBlocked', 'icUsers', 'icHostRow', 'icConnRow', 'icMcpRow', 'icExportRow',
+    'icChangeRow', 'icImpactHtml', 'icUsersBox', 'icCopy', 'icInstallHtml', 'icToolStates', 'icScanKeys'].map(extract)).join('\n');
+const IC = new Function(`${icCode}\nreturn {icSecretPill, icBlocked, icHostRow, icConnRow, icMcpRow, icExportRow, icChangeRow,
+  icImpactHtml, icUsersBox, icInstallHtml, icToolStates, icScanKeys};`)();
+const SECRET = 'page-db-Pass#2026-never-shown';
+const cells = row => (row.match(/<td[\s>]/g) || []).length;
+const labelled = row => (row.match(/<td data-l="/g) || []).length;
+const pgConn = {name: 'cmdb', origin: 'page', type: 'postgres', label: evil, address: `db.example.internal:5432/${evil}`, user: evil,
+  external: true, external_why: evil, driver: evil, used_by: ['cmdb_count', evil], sops: [{id: 's1', name: evil}],
+  secret: {state: 'set', set_at: '2026-11-01 11:30:00', value: SECRET}, test: {label: evil}};
+const connRow = IC.icConnRow(pgConn);
+check('连接：服务端文字全部转义', connRow.includes('<img'), false);
+check('连接：凭据只有状态，没有值', connRow.includes(SECRET), false);
+check('连接：已设置', connRow.includes('已设置'), true);
+check('连接：页面上加的能改、能测、能删', ['data-ic="conn"', 'data-ic="conn-test"', 'data-ic="conn-del"'].every(x => connRow.includes(x)), true);
+check('连接：用到它的 SOP 也列出来', connRow.includes('SOP：&lt;img'), true);
+check('连接：手机上每格都有列名（操作那格除外）', labelled(connRow), cells(connRow) - 1);
+check('连接：现在不能改时修改、测试、删除灰掉并写明原因', (IC.icConnRow(pgConn, '还没设审批口令').match(/ disabled title="还没设审批口令"/g) || []).length, 3);
+const mainConn = IC.icConnRow({name: 'litellm_db', origin: 'main', type: 'postgres', address: '127.0.0.1:15432/litellm', used_by: []});
+check('主配置的连接：只读，标「在服务器上配置」', mainConn.includes('在服务器上配置') && !mainConn.includes('data-ic='), true);
+check('凭据作废了要重新输入', IC.icSecretPill({state: 'stale'}).includes('要重新输入'), true);
+check('不带凭据', IC.icSecretPill({state: 'none'}).includes('不带凭据'), true);
+check('没有状态当作未设置', IC.icSecretPill(undefined).includes('未设置'), true);
+const mcpRow = IC.icMcpRow({id: 'ext', origin: 'page', label: evil, transport: 'http', url: evil, online: false, reason: evil,
+  discovered: evil, approved: 1, secret: {state: 'missing', value: SECRET}, external: true});
+check('MCP server：转义、没有令牌的值', mcpRow.includes('<img') || mcpRow.includes(SECRET), false);
+check('MCP server：页面上加的能改', mcpRow.includes('data-ic="mcp"') && mcpRow.includes('data-ic="mcp-del"'), true);
+check('本机 MCP server：只读', IC.icMcpRow({id: 'local_fs', origin: 'main', transport: 'stdio', online: true}).includes('data-ic='), false);
+const pageHost = {name: 'web01', origin: 'page', via: 'ssh', user: evil, address: '10.0.1.11', port: 22, mode: 'guarded', groups: [evil],
+  status: {reachable: false, error: `主机 web01：${evil}`}, step: 'install', allowlist: {stale: true}};
+const hostRow = IC.icHostRow(pageHost, 'local', true);
+check('主机：转义（账号、分组、连不上的原因）', hostRow.includes('<img'), false);
+check('主机：停在哪一步', hostRow.includes('待在目标主机上安装'), true);
+check('主机：白名单变了要重新生成安装包', hostRow.includes('重新生成安装包'), true);
+check('主机：页面上加的能打开', hostRow.includes('data-ic="host"'), true);
+const mainHost = IC.icHostRow({name: 'gateway-b', origin: 'main', via: 'ssh', user: 'opsread', address: '150.109.244.82', port: 22,
+  mode: 'guarded', groups: [], status: null}, 'gateway-b', true);
+check('主配置的主机：只读、能检查连通、是默认', mainHost.includes('在服务器上配置') && mainHost.includes('data-ic="host-check"')
+  && mainHost.includes('默认') && !mainHost.includes('data-ic="host"'), true);
+check('老工具服务：主机一个按钮都没有', IC.icHostRow({name: 'gw', via: 'ssh', user: 'u', address: 'a', groups: []}, '', false).includes('data-ic='), false);
+check('隐含的本机不标「在服务器上配置」', IC.icHostRow({name: 'local', via: 'local', groups: [], implicit: true}, 'local', true).includes('在服务器上配置'), false);
+const install = IC.icInstallHtml({name: 'web01', mode: 'guarded', install: {authorized_keys: `restrict,from="1.2.3.4" ${evil}`,
+  account: ['useradd -M opsread', evil], install: 'tar -xzf x.tgz && sh web01/install.sh'},
+  bundle: {file: '/opt/ops/page-bundles/web01.tgz', sha256: 'ab'.repeat(32), version: 'sha256:' + 'c'.repeat(64), generated_at: '2026-11-01 11:30:00'},
+  allowlist: {expected: 'sha256:' + 'd'.repeat(64)}}, 'python3 /opt/ops/ops_readonly.py host-info');
+check('安装：authorized_keys、建账号的命令转义后显示', install.includes('<img') || !install.includes('restrict,from=&quot;1.2.3.4&quot;'), false);
+check('安装：写明在 A 上 sha256sum 对照', install.includes('sha256sum /opt/ops/page-bundles/web01.tgz'), true);
+check('安装：写明命令行 host-info 对照', install.includes('python3 /opt/ops/ops_readonly.py host-info web01'), true);
+check('安装：安装包的白名单旧了要重新生成', install.includes('和现在的不一致'), true);
+const direct = IC.icInstallHtml({name: 'db01', mode: 'direct', install: {authorized_keys: 'restrict x', account: []}}, '');
+check('直连模式：没有安装包', direct.includes('安装包'), false);
+const exportOn = IC.icExportRow({tool: 'prom_up', label: evil, group: evil, export: true, page: 'on', enabled: true}, true);
+check('对外开放：转义、开着', !exportOn.includes('<img') && exportOn.includes(' checked') && exportOn.includes('页面上打开的'), true);
+check('对外开放：页面配置关了时开关灰掉', IC.icExportRow({tool: 'x', export: false}, false).includes(' disabled'), true);
+check('对外开放：定义变了，已暂停', IC.icExportRow({tool: 'x', page: 'stale'}, true).includes('已暂停'), true);
+check('变更记录转义', IC.icChangeRow({action: evil, target: evil, detail: evil, at: evil, caller: evil}).includes('<img'), false);
+check('target 会变的工具和 SOP 转义', IC.icImpactHtml([{tool: evil, label: evil, text: evil, sops: [{name: evil}]}], evil).includes('<img'), false);
+check('没有要确认的就什么都不显示', IC.icImpactHtml([], 'x') + IC.icUsersBox([], [], 'x'), '');
+check('检查连通：逐个工具转义', IC.icToolStates({checks: [{tools: {[evil]: {state: 'no', reason: evil}}}]}).includes('<img'), false);
+const grouped = IC.icToolStates({checks: [{tools: {a: {state: 'unknown', reason: '主机 web03：连不上'},
+  b: {state: 'unknown', reason: '主机 web03：连不上'}, c: {state: 'ok', reason: ''}}}]}, 'web03');
+check('检查连通：原因一样的并成一行，去掉重复的主机名', [(grouped.match(/<li>/g) || []).length, grouped.includes('a、b：连不上')], [2, true]);
+check('扫到的 host key', IC.icScanKeys({checks: [{status: 'ok'}, {keys: [{type: 'ssh-ed25519', fingerprint: 'SHA256:x'}]}]}).length, 1);
+const ap = {configured: true, max_failures: 5, lock_minutes: 15};
+const live = {supported: true, enabled: true, readable: true};
+check('能改', IC.icBlocked(live, ap), '');
+check('老工具服务', IC.icBlocked({supported: false, error: '工具服务较旧'}, ap), '工具服务较旧');
+check('宿主机上关了', IC.icBlocked({...live, enabled: false}, ap).includes('OPS_PAGE_CONFIG=off'), true);
+check('旁路文件读不了', IC.icBlocked({...live, readable: false}, ap).includes('读不了'), true);
+check('没设口令', IC.icBlocked(live, {configured: false}).includes('还没设审批口令'), true);
+check('锁定中', IC.icBlocked(live, {...ap, locked: true, unlock_minutes: 7}).includes('7 分钟后解锁'), true);
+check('页面上的动作都走 /api/tools/config', ['connection-save', 'connection-test', 'mcp-save', 'mcp-test', 'export', 'host-save',
+  'host-trust', 'host-delete', 'host-scan', 'host-check', 'host-bundle'].every(a => html.includes(`'/api/tools/config/${a}'`))
+  && html.includes("`/api/tools/config/${kind === 'conn' ? 'connection' : 'mcp'}-delete`"), true);
+check('口令、凭据不进 localStorage', /localStorage\.setItem\([^)]*(secret|token|password)/i.test(html), false);
+
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

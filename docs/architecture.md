@@ -288,15 +288,19 @@ deploy/
 ├── release.sh         正式发版：base 镜像按依赖哈希预烘焙 → 只 COPY 代码 → 停旧起新 → 比对片段数 → 不一致回滚（docs/正式部署.md）
 ├── Dockerfile.release 发版用的应用镜像：FROM base 只 COPY app/ packs/（根 Dockerfile 的 base 阶段装依赖，app 阶段给 compose）
 ├── ops_readonly.py    宿主机上的只读运维接口（白名单 + 令牌），支持 include 场景包的工具定义（主配置写同名工具即替换实现）；
-│                      /tools 按统一契约多回 inputSchema 等字段，export 只认主配置文件；/exec 日志记调用方；
-│                      连接（http / postgres / mysql / sqlite）：接口型、SQL 工具共用的地址和凭据引用，只认主配置；
+│                      /tools 按统一契约多回 inputSchema 等字段，export 认主配置文件和页面上的开关；/exec 日志记调用方；
+│                      连接（http / postgres / mysql / sqlite）：接口型、SQL 工具共用的地址和凭据引用，认主配置和页面上加的；
 │                      SQL 工具：只读查询模板，驱动按需从 vendor/ 导入；按地址判断工具是否「外部」；
 │                      内置标准库手写的 MCP 客户端（stdio 子进程、远程 Streamable HTTP），发现的工具进待审、批准后写 ops_tools.mcp.yaml；
 │                      主机清单 hosts：命令型工具经系统 ssh 在远程 Linux 主机上跑（target 参数、@组并发），
 │                      enroll / push / status 接入和检查主机；
 │                      页面审批（/tools/review 等）：待审申请的完整内容、风险提示和自动检查（只试探不执行：which、stat、
 │                      bash -n / compile()、只读连接上的 EXPLAIN、kubectl auth can-i；只启动 PATH 里的 kubectl、shell，
-│                      申请里写的路径只 stat；按内容缓存、限频、全局名额、[precheck] 日志）
+│                      申请里写的路径只 stat；按内容缓存、限频、全局名额、[precheck] 日志）；
+│                      页面上配置主机与数据源（/tools/config/…，扩大能力的要审批口令，OPS_PAGE_CONFIG=off 时只读）：
+│                      连接、远程 MCP server、对外开放、主机写进旁路文件 ops_tools.page.yaml，主配置同名优先；
+│                      页面输入的凭据存 page-secrets.json（只写不读、绑定去向，引用不了 ${名字}，每次用都现读现把关）；
+│                      页面主机的私钥由工具服务生成，host key 核对后进 ops_tools.page.known_hosts，安装包存 page-bundles/
 ├── ops_exec.py        命令型工具的执行核心（参数校验、argv、写动词黑名单、超时与输出上限），工具服务在本机执行就用它；
 │                      也是受控模式装在远程主机上的执行器（强制命令 --stdio，按 root 所有的 allowlist.json 执行）。
 │                      只用标准库、兼容 Python 3.6

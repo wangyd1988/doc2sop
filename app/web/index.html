@@ -928,6 +928,63 @@ table.pt .rx { display: block; font-size: 11px; color: var(--muted); font-family
 .sf .off-steps code { font-size: 12px; background: var(--panel-2); padding: 1px 6px; border-radius: 5px; }
 .sf .ghost { opacity: .55; pointer-events: none; user-select: none; }
 .sf table.ax button.pk { color: var(--accent); white-space: nowrap; }
+/* 「主机与数据源」：页面上加的条目能改；三层权限的说明；对话框里的表单、复制块、要确认的列表 */
+.sf .tiers { margin: 0 0 14px; padding-left: 18px; font-size: 13px; line-height: 1.8; color: var(--muted); }
+.sf .tiers b { color: var(--text); }
+.sf .banner { border-radius: 9px; padding: 9px 12px; font-size: 13px; line-height: 1.6; margin-bottom: 12px;
+              background: rgba(245,158,11,.1); border: 1px solid rgba(245,158,11,.4); color: #92400e; }
+.sf .banner.bad { background: color-mix(in srgb, var(--danger) 8%, transparent); border-color: color-mix(in srgb, var(--danger) 35%, transparent); color: var(--danger); }
+.sf .card h3 .add { margin-left: auto; font-size: 12.5px; padding: 5px 12px; border-radius: 8px; background: var(--user-bg); color: #fff; }
+.sf .card h3 .add:disabled { opacity: .45; cursor: not-allowed; }
+.sf .card h3 .add + .ro { margin-left: 0; }
+.sf .warn-t { color: #b45309; }
+.sf table.ax .ops.col { flex-direction: column; align-items: stretch; }
+.sf table.ax .ops button:disabled { opacity: .45; cursor: not-allowed; }
+.sf table.ax td code { word-break: break-all; }
+.sf table.ax td code.nw { white-space: nowrap; word-break: normal; }
+.sf details > summary { cursor: pointer; font-size: 12.5px; color: var(--accent); margin: 4px 0 8px; }
+.sf .changes { list-style: none; margin: 0; padding: 0; font-size: 12.5px; }
+.sf .changes li { padding: 6px 0; border-bottom: 1px solid var(--border); line-height: 1.6; }
+.sf .changes li:last-child { border-bottom: 0; }
+.sf .changes .who { color: var(--muted); font-size: 11.5px; }
+.sf label.sw { display: inline-flex; grid-template-columns: none; gap: 6px; align-items: center; margin: 0; white-space: nowrap; }
+.sf label.sw input { width: auto; }
+.dlg.ic { width: min(620px, 100%); gap: 10px; max-height: calc(100vh - 32px); overflow-y: auto; }
+.dlg.ic [hidden] { display: none !important; }
+.dlg.ic .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.dlg.ic .fld { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); min-width: 0; }
+.dlg.ic .fld select, .dlg.ic .fld input { font: inherit; font-size: 14px; font-weight: 400; padding: 8px 10px; border-radius: 10px;
+  border: 1.5px solid var(--border); background: var(--panel-2); color: var(--text); outline: none; min-width: 0; }
+.dlg.ic .fld input:disabled, .dlg.ic .fld select:disabled { opacity: .6; }
+.dlg.ic .fld .hint { font-weight: 400; }
+.dlg.ic .chk { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.5; }
+.dlg.ic .chk input { margin-top: 3px; }
+.dlg.ic .icbox { border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; font-size: 12.5px; line-height: 1.6; }
+.dlg.ic .icbox.warn { border-color: rgba(245,158,11,.5); background: rgba(245,158,11,.08); }
+.dlg.ic .icbox h4 { margin: 0 0 4px; font-size: 13px; }
+.dlg.ic .icbox ul { margin: 2px 0 0 18px; padding: 0; }
+.dlg.ic .copy { position: relative; }
+.dlg.ic .copy > .note { padding-right: 56px; }
+.dlg.ic code { word-break: break-all; }
+.dlg.ic .copy pre { font: 12px/1.5 ui-monospace, Consolas, monospace; background: var(--panel-2); border-radius: 8px; padding: 8px 10px;
+  margin: 4px 0 0; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; }
+.dlg.ic .copy button { position: absolute; top: 4px; right: 4px; font-size: 11.5px; padding: 2px 8px; border-radius: 6px;
+  background: var(--panel); border: 1px solid var(--border); color: var(--text); }
+.dlg.ic .steps { display: flex; flex-direction: column; gap: 10px; }
+.dlg.ic .step { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; }
+.dlg.ic .step.on { border-color: var(--accent); }
+.dlg.ic .step h4 { margin: 0 0 6px; font-size: 13.5px; display: flex; gap: 8px; align-items: center; }
+.dlg.ic .step h4 .pill { margin-left: auto; }
+.dlg.ic .step .acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.dlg.ic .keys label { display: flex; gap: 8px; align-items: center; font: 12px ui-monospace, Consolas, monospace; margin: 3px 0; }
+.dlg.ic a.btn { text-decoration: none; display: inline-flex; align-items: center; }
+.dlg.ic .row { flex-wrap: wrap; }
+.dlg.ic ul.ax { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.7; }
+@media (max-width: 820px) {
+  .dlg.ic { max-height: 92vh; }
+  .dlg.ic .grid2 { grid-template-columns: 1fr; }
+  .sf table.ax.stack .ops.col { flex-direction: row; }
+}
 
 .scrim { display: none; }
 #menuBtn { display: none; }
@@ -3907,6 +3964,7 @@ async function postJson(path, body) {
     const err = new Error(typeof d.detail === 'string' ? d.detail : `请求失败（${r.status}）`);
     err.status = r.status;
     err.pending = d.pending || null;
+    err.data = d;
     throw err;
   }
   return d;
@@ -4065,75 +4123,715 @@ function renderProposalDetail() {
     : '<div class="md-empty">从左侧选一条提议<br>看步骤和依据的工具返回，再保存或忽略</div>';
 }
 
-/* ---------- 工具页「主机与数据源」：主机、连接、MCP server、脚本、对外开放只读，写清在宿主机上怎么做 ----------
-   这些都只能由管理员在宿主机上配：页面能定义的东西，网页密码一泄露就能被人改。审批口令例外：页面上能设能改，
-   但设好之后改要旧口令，忘了只能在宿主机上重设。 */
+/* ---------- 工具页「主机与数据源」 ----------
+   谁能改什么分三层：网页密码能看、能停用和关闭（只缩小能力）；扩大能力的（加、改、删连接、远程 MCP server、远程主机，测试连接，
+   核对 host key，打开对外开放）要审批口令，由工具服务核对；本机 MCP、脚本、sqlite、要填服务器文件路径的字段只能在服务器上配。
+   主配置里已有的条目只读，标「在服务器上配置」。凭据只写不读：页面上只看得到「已设置 / 未设置 / 要重新输入」。
+   工具服务较旧（没有 /tools/config）时照旧只读。 */
 // 主机连不上的原因：去掉开头重复的「主机 名字：」「主机 名字 的」，主机名已经单独写了
 function hostReason(name, text) {
   let s = String(text || '').trim();
   for (const p of [`主机 ${name}：`, `主机 ${name}:`, `主机 ${name} 的`]) while (s.startsWith(p)) s = s.slice(p.length).trim();
   return s || '连不上';
 }
+const IC_SRV = '<span class="pill off" title="在服务器上的主配置里：页面上只读，要改在服务器上改">在服务器上配置</span>';
+const IC_STEP = {verify: ['warn', '待核对 host key'], check: ['', '待检查连通'], install: ['warn', '待在目标主机上安装'], update: ['warn', '白名单要更新'], ok: ['ok', '能用']};
+const IC_SECRET = {none: ['off', '不带凭据'], set: ['ok', '已设置'], missing: ['', '未设置'], stale: ['bad', '要重新输入（去向变过）'], unreadable: ['bad', '凭据文件有问题']};
+const IC_MODE = {guarded: '受控（强制命令 + 白名单）', direct: '直连（只读靠账号权限）'};
+const IC_MODE_SHORT = {guarded: '受控', direct: '直连'};
+const IC_KIND = {connections: 'conn', mcp_servers: 'mcp', hosts: 'host'};
+let infra = null;                    // 最近一次读到的 {t, s, p, c}
+const icScans = {}, icChecks = {};   // 主机名 → 最近一次扫描到的 host key、「检查连通」的结果（只在这个页面里）
+
+function icSecretPill(secret) {
+  const [cls, text] = IC_SECRET[(secret || {}).state] || IC_SECRET.missing;
+  return `<span class="pill ${cls}">${text}</span>${secret && secret.set_at ? `<div class="note">${esc(setAtText(secret.set_at))}</div>` : ''}`;
+}
+// 页面上能不能改（要口令的那些）：不能时是原因
+function icBlocked(c, ap) {
+  if (!c.supported) return c.error || '工具服务较旧，页面上不能配置';
+  if (!c.enabled) return '页面配置在宿主机上关了（OPS_PAGE_CONFIG=off）：页面上只能看';
+  if (!c.readable) return '页面配置文件读不了（原因见下面「配置问题」）：先在服务器上修好';
+  if (ap.problem) return '审批口令不可用：' + ap.problem;
+  if (!ap.configured) return '还没设审批口令：在最下面设好之后才能加、改、删';
+  if (ap.locked) return '页面审批锁定中，' + unlockIn(ap);
+  return '';
+}
+function icUsers(used, sops) {
+  if (!(used || []).length) return '—';
+  return `${used.map(esc).join('、')}${(sops || []).length ? `<div class="note">SOP：${sops.map(s => esc(s.name)).join('、')}</div>` : ''}`;
+}
+// 一台主机一行。dflt：不填 target 时在哪台上跑；live：工具服务支持页面配置（老的只读，不给按钮）
+function icHostRow(h, dflt, live) {
+  const page = h.origin === 'page', name = esc(h.name);
+  const st = h.via === 'local' ? '<span class="pill ok">本机</span>' : !h.status ? '<span class="pill">还没检查</span>'
+    : h.status.reachable && !h.status.error ? '<span class="pill ok">在线</span>' : `<span class="pill bad" title="${esc(h.status.error || '')}">离线</span>`;
+  const step = page ? (IC_STEP[h.step] || IC_STEP.check) : null;
+  const stale = h.allowlist && h.allowlist.stale
+    ? `<div class="note warn-t">白名单变了：${page ? '重新生成安装包，在目标主机上执行' : '在工具服务那台机器上执行 push'}</div>` : '';
+  const buttons = !live ? '' : page ? `<button class="go" data-ic="host" data-name="${name}">打开</button>`
+    : h.via === 'ssh' ? `<button data-ic="host-check" data-name="${name}">检查连通</button>` : '';
+  return `<tr><td data-l="名称"><b>${name}</b>${h.name === dflt ? ' <span class="pill">默认</span>' : ''}${page || h.implicit ? '' : `<div>${IC_SRV}</div>`}</td>
+    <td data-l="地址">${h.via === 'local' ? '—' : `<code class="nw">${esc(`${h.user}@${h.address}${h.port ? ':' + h.port : ''}`)}</code>`}</td>
+    <td data-l="方式">${h.via === 'local' ? '本机' : `<span title="${esc(IC_MODE[h.mode] || '')}">${esc(IC_MODE_SHORT[h.mode] || h.mode)}</span>`}</td>
+    <td data-l="状态">${step ? `<span class="pill ${step[0]}">${step[1]}</span>` : st}${
+      h.status && h.status.error ? `<div class="note">${esc(hostReason(h.name, h.status.error))}</div>` : ''}${stale}</td>
+    <td data-l="分组">${(h.groups || []).map(g => `<span class="pill">${esc(g)}</span>`).join(' ') || '—'}</td>
+    <td><div class="ops">${buttons}</div></td></tr>`;
+}
+// lock：页面上现在不能改的原因（没设口令、锁定、宿主机上关了）；有原因时修改、测试、删除灰掉
+function icConnRow(x, lock = '') {
+  const page = x.origin === 'page', name = esc(x.name), off = lock ? ` disabled title="${esc(lock)}"` : '';
+  const acts = page ? `<button class="go" data-ic="conn" data-name="${name}"${off}>修改</button><button data-ic="conn-test" data-name="${name}"${off}>测试</button><button class="del" data-ic="conn-del" data-name="${name}"${off}>删除</button>` : '';
+  return `<tr><td data-l="名称"><b>${name}</b><div class="note">${esc(TL_CONN_TYPE[x.type] || x.type)}${x.label ? ' · ' + esc(x.label) : ''}</div>${page ? '' : IC_SRV}</td>
+    <td data-l="地址"><code>${esc(x.address || '')}</code> ${x.external ? `<span class="pill warn" title="${esc(x.external_why || '')}">外部</span>` : '<span class="pill ok">内部</span>'}${
+      x.driver ? ` <span class="pill bad" title="${esc(x.driver)}">缺驱动</span>` : ''}${x.user ? `<div class="note">账号 ${esc(x.user)}</div>` : ''}</td>
+    <td data-l="凭据">${page ? icSecretPill(x.secret) : '<span class="note">服务器上的</span>'}${x.test ? `<div class="note">测试：${esc(x.test.label || '')}</div>` : ''}</td>
+    <td data-l="谁在用">${icUsers(x.used_by, x.sops)}</td><td><div class="ops col">${acts}</div></td></tr>`;
+}
+function icMcpRow(x, lock = '') {
+  const page = x.origin === 'page', id = esc(x.id), off = lock ? ` disabled title="${esc(lock)}"` : '';
+  const how = x.transport === 'http' ? `<code>${esc(x.url || '')}</code>` : '本机子进程（stdio）';
+  const acts = page ? `<button class="go" data-ic="mcp" data-name="${id}"${off}>修改</button><button data-ic="mcp-test" data-name="${id}"${off}>测试</button><button class="del" data-ic="mcp-del" data-name="${id}"${off}>删除</button>` : '';
+  return `<tr><td data-l="名称"><b>${esc(x.label || x.id)}</b><div class="note"><code>${id}</code></div>${page ? '' : IC_SRV}</td>
+    <td data-l="地址">${how}${x.external ? ' <span class="pill warn">外部</span>' : ''}</td>
+    <td data-l="状态">${x.online ? '<span class="pill ok">在线</span>' : '<span class="pill bad">离线</span>'}${x.reason && !x.online ? `<div class="note">${esc(x.reason)}</div>` : ''}
+      <div class="note">发现 ${esc(x.discovered ?? '—')} 个 · 已批准 ${esc(x.approved ?? 0)} 个</div></td>
+    <td data-l="凭据">${page ? icSecretPill(x.secret) : x.transport === 'http' ? '<span class="note">服务器上的</span>' : '—'}</td>
+    <td><div class="ops col">${acts}</div></td></tr>`;
+}
+function icExportRow(x, can) {
+  const from = x.page === 'off' ? '主配置里写了开放，页面上关了' : x.page === 'on' ? '页面上打开的'
+    : x.page === 'stale' ? '<span class="warn-t">页面上打开过，但工具的定义后来变了：已暂停，要重新打开</span>' : x.main ? '主配置里写的' : '—';
+  return `<tr><td data-l="工具"><b>${esc(x.label || x.tool)}</b><div class="note"><code>${esc(x.tool)}</code>${x.group ? ' · ' + esc(x.group) : ''}${x.enabled ? '' : ' · 已停用'}</div></td>
+    <td data-l="来源">${from}</td>
+    <td data-l="对外开放"><label class="sw"><input type="checkbox" data-icexport="${esc(x.tool)}"${x.export ? ' checked' : ''}${can ? '' : ' disabled'}><span>${x.export ? '开放' : '不开放'}</span></label></td></tr>`;
+}
+function icChangeRow(x) {
+  return `<li><b>${esc(x.action)}</b> ${esc(x.target)}<div>${esc(x.detail)}</div><div class="who">${esc(x.at)} · ${esc(x.caller || '-')}</div></li>`;
+}
+function icImpactHtml(list, title) {
+  if (!(list || []).length) return '';
+  return `<div class="icbox warn"><h4>${esc(title)}</h4><ul>${list.map(i => `<li><b>${esc(i.label || i.tool)}</b>（${esc(i.tool)}）：${esc(i.text)}${
+    (i.sops || []).length ? `<div>用到它的 SOP：${i.sops.map(s => esc(s.name)).join('、')}</div>` : ''}</li>`).join('')}</ul></div>`;
+}
+function icUsersBox(users, sops, title) {
+  if (!(users || []).length) return '';
+  return `<div class="icbox warn"><h4>${esc(title)}</h4><div>${users.map(esc).join('、')}</div>${
+    (sops || []).length ? `<div>用到这些工具的 SOP：${sops.map(s => esc(s.name)).join('、')}</div>` : ''}</div>`;
+}
+function icCopy(label, text) {
+  return `<div class="copy"><div class="note">${esc(label)}</div><pre>${esc(text)}</pre><button type="button" data-iccopy>复制</button></div>`;
+}
+// 页面加的主机：要放进目标主机的东西（和命令行 host-info 打印的一字不差）、安装包、对照的办法
+function icInstallHtml(h, cli) {
+  const i = h.install || {}, parts = [];
+  if (i.key_problem) parts.push(`<div class="err">公钥读不出来：${esc(i.key_problem)}</div>`);
+  parts.push(icCopy(`目标主机上 authorized_keys 里的那一行（restrict、from= 工具服务的出口地址${h.mode === 'guarded' ? '、command= 执行器' : '；直连模式没有 command=，只读靠账号权限'}）`,
+    i.authorized_keys || ''));
+  parts.push(icCopy('在目标主机上以 root 执行：建账号、放公钥（只做一次）', (i.account || []).join('\n')));
+  if (h.mode === 'guarded') {
+    const b = h.bundle, expected = (h.allowlist || {}).expected || '';
+    const old = b && b.version && expected && b.version !== expected;
+    parts.push(b ? `<div class="icbox${old ? ' warn' : ''}"><h4>安装包</h4>
+      <div>A 上的文件：<code>${esc(b.file)}</code></div><div>sha256：<code>${esc(b.sha256)}</code></div>
+      <div>白名单 <code>${esc((b.version || '').slice(0, 19))}…</code>${b.generated_at ? `（生成于 ${esc(b.generated_at)}）` : ''}${old ? '<b class="warn-t">：和现在的不一致，重新生成</b>' : ''}</div>
+      <div class="note">谨慎的话，先 SSH 到工具服务那台机器上执行 <code>sha256sum ${esc(b.file)}</code>，和下载下来的那份对一下，再到目标主机上执行。</div></div>`
+      : '<div class="note">还没生成安装包。</div>');
+    parts.push(icCopy('下载的安装包拷到目标主机上以后，以 root 执行：装执行器和白名单', i.install || ''));
+  }
+  if (cli) parts.push(`<div class="note">对照：在工具服务那台机器上执行 <code>${esc(cli + ' ' + h.name)}</code>，打印的内容和这里一字不差。</div>`);
+  return parts.join('');
+}
+// 「检查连通」的结果里，逐个工具能不能在这台上跑：原因一样的并成一行（连不上时每个工具的原因都一样）
+function icToolStates(check, host) {
+  const tools = ((check && check.checks) || []).map(k => k.tools).find(Boolean) || {};
+  const groups = new Map();
+  for (const [name, s] of Object.entries(tools)) {
+    const key = `${s.state} ${s.reason || ''}`;
+    if (!groups.has(key)) groups.set(key, {state: s.state, reason: s.reason || '', names: []});
+    groups.get(key).names.push(name);
+  }
+  if (!groups.size) return '';
+  const mark = {ok: '✓', unknown: '?', no: '✗'};
+  return `<ul class="ax">${[...groups.values()].map(g => `<li>${mark[g.state] || '?'} ${g.names.map(esc).join('、')}${
+    g.reason ? `：${esc(host ? hostReason(host, g.reason) : g.reason)}` : ''}</li>`).join('')}</ul>`;
+}
+function icScanKeys(scan) {
+  return (((scan && scan.checks) || []).find(k => k.keys) || {}).keys || [];
+}
+
 async function renderInfra() {
   $('msettings').innerHTML = '<div class="sf"><div class="empty">加载中…</div></div>';
-  const [t, s, p] = await Promise.all([
+  const [t, s, p, c] = await Promise.all([
     fetch('/api/tools').then(r => r.json()).catch(() => ({})),
     fetch('/api/tools/scripts').then(r => r.json()).catch(() => ({scripts: []})),
-    fetch('/api/tools/pending').then(r => r.ok ? r.json() : {}).catch(() => ({}))]);
+    fetch('/api/tools/pending').then(r => r.ok ? r.json() : {}).catch(() => ({})),
+    fetch('/api/tools/config').then(r => r.ok ? r.json() : {supported: false, error: `读不到页面配置（${r.status}）`})
+      .catch(() => ({supported: false, error: '连不上应用'}))]);
   if (p.approval) apState.approval = p.approval;
+  if (c.approval) apState.approval = c.approval;
   if (page !== 'tools' || tlTab !== 'infra') return;
-  const o = overview || {}, src = o.tools?.sources || {};
-  const hosts = t.hosts || {configured: false}, conns = t.connections || {}, servers = t.mcp_servers || {};
+  infra = {t, s, p, c};
+  paintInfra();
+}
+// 只重新读页面配置（改完、检查完之后），不重新读待审批（它要等自动检查）
+async function icReload() {
+  const c = await fetch('/api/tools/config').then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!c || !infra) return;
+  infra.c = c;
+  if (c.approval) apState.approval = c.approval;
+  if (page === 'tools' && tlTab === 'infra') paintInfra();
+}
+function paintInfra() {
+  if (!infra) return;
+  const {t, s, p, c} = infra, o = overview || {}, src = (o.tools || {}).sources || {};
+  const ap = approvalInfo(), blocked = icBlocked(c, ap), live = !!c.supported, can = live && !blocked;
+  const table = (head, rows, none) => rows ? `<table class="ax stack"><tr>${head.map(x => `<th>${x}</th>`).join('')}</tr>${rows}</table>` : `<div class="note">${none}</div>`;
+  const add = (kind, label) => live ? `<button class="add" data-ic="${kind}-add"${can ? '' : ` disabled title="${esc(blocked)}"`}>+ ${label}</button>` : '<span class="ro">只读</span>';
+  // 老工具服务没有 /tools/config：数据照旧从 /api/tools 来，一律当主配置的、只读
+  const hosts = live ? (c.hosts || []) : Object.entries((t.hosts || {}).list || {}).map(([name, x]) => ({...x, name, origin: 'main'}));
+  const conns = live ? (c.connections || []) : Object.entries(t.connections || {}).map(([name, x]) => ({...x, name, address: x.base, origin: 'main'}));
+  const servers = live ? (c.mcp_servers || []) : Object.entries(t.mcp_servers || {}).map(([id, x]) => ({...x, id, origin: 'main'}));
   const held = Object.fromEntries((p.held || []).map(x => [x.script, x.state]));
-  const hostRows = Object.entries(hosts.list || {}).map(([name, x]) => {
-    const st = x.via === 'local' ? '<span class="pill ok">本机</span>' : !x.status ? '<span class="pill">还没检查</span>'
-      : x.status.reachable && !x.status.error ? '<span class="pill ok">在线</span>' : `<span class="pill bad" title="${esc(x.status.error || '')}">离线</span>`;
-    return `<tr><td><b>${esc(name)}</b>${name === hosts.default ? ' <span class="pill">默认</span>' : ''}</td><td>${x.via === 'local' ? '—' : `<code>${esc(x.user + '@' + x.address)}</code>`}</td>
-      <td>${x.via === 'local' ? '本机' : x.mode === 'direct' ? '直连（只读靠账号权限）' : '受控（强制命令 + 白名单）'}</td><td>${st}${x.status?.error ? `<div class="note">${esc(hostReason(name, x.status.error))}</div>` : ''}</td>
-      <td>${(x.groups || []).map(g => `<span class="pill">${esc(g)}</span>`).join(' ') || '—'}</td></tr>`;
-  }).join('');
-  const connRows = Object.entries(conns).map(([name, c]) => `<tr><td><b>${esc(name)}</b>${c.label ? `<div class="note">${esc(c.label)}</div>` : ''}</td>
-      <td>${esc(TL_CONN_TYPE[c.type] || c.type)}</td><td><code>${esc(c.base || '')}</code></td>
-      <td>${c.external ? `<span class="pill warn" title="${esc(c.external_why || '')}">外部</span>` : '<span class="pill ok">内部</span>'}${c.driver ? ` <span class="pill bad" title="${esc(c.driver)}">缺驱动</span>` : ''}</td>
-      <td>${(c.used_by || []).map(esc).join('、') || '—'}</td></tr>`).join('');
-  const serverRows = Object.entries(servers).map(([id, x]) => `<tr><td><b>${esc(x.label || id)}</b><div class="note"><code>${esc(id)}</code></div></td>
-      <td>${x.transport === 'http' ? `远程 <code>${esc(x.url || '')}</code>` : '本机子进程（stdio）'}</td>
-      <td>${x.online ? '<span class="pill ok">在线</span>' : `<span class="pill bad">离线</span>${x.reason ? `<div class="note">${esc(x.reason)}</div>` : ''}`}</td>
-      <td>发现 ${x.discovered ?? '—'} · 已批准 ${x.approved ?? 0}</td></tr>`).join('');
-  const scriptRows = (s.scripts || []).map(x => `<tr><td><code>${esc(x.name)}</code></td>
-      <td>${held[x.name] ? `<span class="pill warn">${held[x.name] === 'changed' ? '内容变了，要重新确认' : '还没确认过'}</span>` : x.trusted ? '<span class="pill ok">已确认</span>' : '<span class="pill">未确认</span>'}</td>
-      <td>${esc(x.used_by || '—')}</td><td>${x.executable ? '可执行' : '<span style="color:var(--danger)">没有执行位</span>'}</td></tr>`).join('');
-  const table = (head, rows, none) => rows ? `<table class="ax"><tr>${head.map(x => `<th>${x}</th>`).join('')}</tr>${rows}</table>` : `<div class="note">${none}</div>`;
+  const scriptRows = (s.scripts || []).map(x => `<tr><td data-l="脚本"><code>${esc(x.name)}</code></td>
+      <td data-l="状态">${held[x.name] ? `<span class="pill warn">${held[x.name] === 'changed' ? '内容变了，要重新确认' : '还没确认过'}</span>` : x.trusted ? '<span class="pill ok">已确认</span>' : '<span class="pill">未确认</span>'}</td>
+      <td data-l="谁在用">${esc(x.used_by || '—')}</td><td data-l="执行位">${x.executable ? '可执行' : '<span style="color:var(--danger)">没有执行位</span>'}</td></tr>`).join('');
+  const skipped = (c.skipped || []).filter(x => IC_KIND[x.kind] && x.name);
+  const problems = c.problems || [];
+  const hostMode = live ? (c.host_mode || {}) : (t.hosts || {});
+  const exp = c.export || [], exported = exp.filter(x => x.export);
+  const expTable = table(['工具', '来源', '对外开放'], exp.map(x => icExportRow(x, live && c.enabled && c.readable)).join(''), '还没有数据工具。');
   $('msettings').innerHTML = `<div class="sf">
     <h2>主机与数据源</h2>
-    <p class="lead">工具从哪里取数据。主机、连接、MCP server、对外开放哪些工具，都只能由管理员在宿主机上配置——页面上能改的东西，
-      网页密码一泄露就能被别人改；每一块下面写了在宿主机上怎么做。审批口令在最下面：可以在页面上设置，改要输旧口令。</p>
-    <div class="card"><h3>主机 <small>命令型工具在哪些机器上跑</small><span class="ro">只读</span></h3>
-      ${hosts.configured ? table(['名称', '账号与地址', '方式', '状态', '分组'], hostRows, '') : '<div class="note">没有配置主机清单：命令型工具都在工具服务所在的这台机器上跑。</div>'}
-      <div class="howto"><b>在宿主机上加一台主机：</b>在 <code>/opt/ops/ops_tools.yaml</code> 的 <code>hosts</code> 里加一条 →
-        <code>ops_readonly.py enroll &lt;主机&gt;</code> 核对并登记 host key → 按它打印的步骤在主机上装执行器 →
-        <code>ops_readonly.py push --target &lt;主机&gt;</code> 下发白名单 → <code>ops_readonly.py status</code> 检查。</div></div>
-    <div class="card"><h3>连接 <small>接口和数据库的地址、凭据引用</small><span class="ro">只读</span></h3>
-      ${table(['名称', '类型', '地址', '内部/外部', '谁在用'], connRows, '还没有连接。')}
-      <div class="howto"><b>在宿主机上：</b>在主配置的 <code>connections</code> 里加；凭据写成 <code>\${名字}</code>，值放在 <code>/etc/ops-readonly.env</code>
-        的 <code>OPS_SECRET_名字</code>。数据库要用只读账号。页面和模型都看不到凭据的值。</div></div>
-    <div class="card"><h3>MCP server <small>别人写好的工具服务器</small><span class="ro">只读</span></h3>
-      ${table(['名称', '方式', '状态', '工具'], serverRows, '没有声明 MCP server。')}
-      <div class="howto"><b>在宿主机上：</b>在主配置的 <code>mcp_servers</code> 里声明；发现到的工具自动进「待审批」，批准后才能用。server 是跑在宿主机上的代码，页面连申请都不能申请。</div></div>
-    <div class="card"><h3>脚本 <small>脚本型工具引用的脚本</small><span class="ro">只读</span></h3>
+    <p class="lead">工具从哪里取数据、连到哪里、带什么凭据。谁能改什么分三层：</p>
+    <ul class="tiers">
+      <li><b>网页密码</b>：看，停用工具，关闭对外开放，检查主机连通、重新扫描 host key、生成和下载安装包。</li>
+      <li><b>审批口令</b>（由工具服务核对）：在页面上加、改、删连接、远程 MCP server、远程主机，测试连接，核对 host key，打开对外开放；还有批准工具申请。</li>
+      <li><b>只能在服务器上</b>：主配置里已有的条目（标「在服务器上配置」）、本机 MCP server、脚本、sqlite 和要填服务器文件路径的字段（CA、令牌文件）、引用服务器上的 <code>\${名字}</code> 凭据、把外部改标成内部。</li>
+    </ul>
+    ${live ? '' : `<div class="banner">${esc(c.error || '工具服务较旧，页面上不能配置')}。下面只能看。</div>`}
+    ${live && blocked ? `<div class="banner">${esc(blocked)}</div>` : ''}
+    ${can ? `<div class="howto" style="margin:0 0 14px">输审批口令时，最好经 SSH 隧道打开页面：<code>ssh -N -L 8765:127.0.0.1:8765 root@宿主机</code>，再开 <code>http://127.0.0.1:8765</code>。
+      页面上加的连接只能用这里输入的凭据，引用不了服务器上的 <code>\${名字}</code>；凭据存好以后只看得到「已设置」，改了地址就要重新输入。</div>` : ''}
+    <div class="card"><h3>主机 <small>命令型工具在哪些机器上跑</small>${add('host', '添加主机')}</h3>
+      ${hostMode.configured || hosts.length ? table(['名称', '账号与地址', '方式', '状态', '分组', ''], hosts.map(h => icHostRow(h, hostMode.default, live)).join(''), '还没有主机。')
+        : '<div class="note">没有配置主机清单：命令型工具都在工具服务所在的这台机器上跑。</div>'}
+      <div class="howto"><b>在页面上加一台：</b>填表（要口令；私钥在工具服务这边生成，不经过页面）→ 去目标主机的控制台上核对 host key 指纹、确认（要口令，不会自动信任）→
+        照着在目标主机上以 root 建账号、装执行器（工具服务不持有目标主机的 root 凭据）→ 检查连通。主配置里的主机照旧在宿主机上用
+        <code>ops_readonly.py enroll / push / status</code>。</div></div>
+    <div class="card"><h3>连接 <small>接口和数据库的地址、凭据</small>${add('conn', '添加连接')}</h3>
+      ${table(['名称', '地址', '凭据', '谁在用', ''], conns.map(x => icConnRow(x, blocked)).join(''), '还没有连接。')}
+      <div class="howto"><b>页面上能加：</b>HTTP 接口、PostgreSQL、MySQL（数据库要用只读账号）；保存时测一次：数据库在只读事务里执行 <code>SELECT 1</code>，接口只测 TCP 和 TLS，不带凭据发请求。
+        <b>只能在服务器上：</b>sqlite、自定义 CA、令牌文件，写在主配置的 <code>connections</code> 里，凭据写成 <code>\${名字}</code>、值放 <code>/etc/ops-readonly.env</code>。</div></div>
+    <div class="card"><h3>MCP server <small>别人写好的工具服务器</small>${add('mcp', '添加远程 MCP server')}</h3>
+      ${table(['名称', '地址', '状态', '凭据', ''], servers.map(x => icMcpRow(x, blocked)).join(''), '还没有 MCP server。')}
+      <div class="howto"><b>页面上能加：</b>远程 server（Streamable HTTP），发现的工具自动进「待审批」，批准后才能用。
+        <b>只能在服务器上：</b>本机子进程（stdio）——它在工具服务这台机器上以 root 跑程序，放到页面上，口令一泄露就等于 root。</div></div>
+    <div class="card"><h3>对外开放的数据工具 <small>外部智能体经 MCP 能调哪些</small><span class="ro">${o.access?.enabled ? '对外接入已打开' : '对外接入没打开'}</span></h3>
+      <div class="note">对外开放只在 MCP 打开时才有用：打开以后，外部智能体凭对外接入的令牌就能调这个工具。打开要审批口令，关闭不要。
+        主配置里写了 <code>export: true</code> 的也能在这里关（记在页面配置里，不改主配置）。</div>
+      ${live ? `<div class="note" style="margin:8px 0">现在对外开放的：${exported.length ? exported.map(x => `<code>${esc(x.tool)}</code>`).join('、') : '没有'}</div>
+        ${exp.length > 12 ? `<details><summary>全部 ${exp.length} 个工具</summary>${expTable}</details>` : expTable}`
+        : '<div class="howto"><b>在宿主机上：</b>编辑 <code>/opt/ops/ops_tools.yaml</code>，在要开放的工具下加一行 <code>export: true</code>。</div>'}</div>
+    <div class="card"><h3>脚本 <small>脚本型工具引用的脚本</small><span class="ro">只能在服务器上</span></h3>
       ${table(['脚本', '状态', '引用它的工具', '执行位'], scriptRows, '还没有脚本。')}
       <div class="howto"><b>在宿主机上：</b>脚本由 root 放进 <code>${esc(s.directory || '/opt/ops/scripts')}/</code> 并 <code>chmod +x</code>；页面只能在申请里引用它。
         内容一变，引用它的工具自动停用，到「待审批」里重新确认（要输审批口令），或在宿主机上 <code>ops_readonly.py trust &lt;脚本&gt;</code>。</div></div>
-    <div class="card"><h3>对外开放的数据工具 <small>外部智能体经 MCP 能调哪些</small><span class="ro">只读</span></h3>
-      <div class="note">${o.access?.enabled ? '对外接入已开启。' : '对外接入没有打开。'}数据工具默认一个都不对外；开放哪些只能在主配置里给工具加 <code>export: true</code>，场景包里写了也不算。</div>
-      <div class="howto"><b>在宿主机上：</b>编辑 <code>/opt/ops/ops_tools.yaml</code>，在要开放的工具下加一行 <code>export: true</code>，保存即生效。在「对外接入」页能看到开放了哪些。</div></div>
-    <div class="card"><h3>计算沙箱与联网</h3>
+    <div class="card"><h3>计算沙箱与联网 <span class="ro">只能在服务器上</span></h3>
       <div class="chipset"><span class="pill ${src.sandbox ? 'ok' : 'off'}">${src.sandbox ? '✓' : '–'} 计算沙箱（python_exec）</span><span class="pill ${src.web ? 'ok' : 'off'}">${src.web ? '✓' : '–'} 联网搜索</span></div>
-      <div class="howto"><b>在宿主机上：</b>沙箱是 <code>.env</code> 的 <code>SANDBOX_URL</code>、<code>SANDBOX_TOKEN</code>；联网是 <code>WEB_SEARCH_TOOL</code>。改完重新发版（docs/正式部署.md）。</div></div>
-    <div class="card" id="infraPass"><h3>审批口令 <small>在页面上批准工具时要输</small></h3><div id="infraPassBox"></div></div>
+      <div class="howto"><b>在宿主机上：</b>沙箱是 <code>.env</code> 的 <code>SANDBOX_URL</code>、<code>SANDBOX_TOKEN</code>；联网是 <code>WEB_SEARCH_TOOL</code>。要装东西、要重新发版（docs/正式部署.md），页面上只显示状态。</div></div>
+    ${problems.length || skipped.length ? `<div class="card"><h3>配置问题 <small>没加载的条目和原因</small></h3>
+      <ul class="ax">${problems.map(x => `<li>${esc(x)}</li>`).join('')}</ul>
+      ${skipped.length ? `<div class="note" style="margin-top:8px">页面上加的这些没有加载，可以删掉（要口令）：${skipped.map(x =>
+        `<button class="btn" data-ic="${IC_KIND[x.kind]}-del" data-name="${esc(x.name)}"${can ? '' : ' disabled'}>删除 ${esc(x.name)}</button>`).join(' ')}</div>` : ''}</div>` : ''}
+    ${live ? `<div class="card"><h3>最近的配置变更 <small>谁、从哪里、改了什么（不记凭据）</small></h3>
+      ${(c.changes || []).length ? `<ul class="changes">${c.changes.map(icChangeRow).join('')}</ul>` : '<div class="note">页面上还没有改过。</div>'}</div>` : ''}
+    <div class="card" id="infraPass"><h3>审批口令 <small>在页面上批准工具、加改删连接和主机时要输</small></h3><div id="infraPassBox"></div></div>
   </div>`;
   paintPass($('infraPassBox'));
 }
+/* 页面上的改动都在对话框里做。口令每次用完就清空输入框；输入的凭据留到对话框关掉（测试完接着保存不用重输）。
+   都不进 localStorage、不进地址栏。要确认的列表（在用它的工具、target 会变的工具）和用户看到的不一样时，
+   工具服务回 409 和新的列表（不消耗口令次数），对话框里换成新的、勾选框重新变成没勾。 */
+function icDialog(title, body, actions) {
+  closeDialog();
+  const wrap = document.createElement('div');
+  wrap.className = 'dlg-scrim';
+  wrap.innerHTML = `<form class="dlg ic" autocomplete="off"><h3>${title}</h3>${body}<div class="err" id="dlgErr"></div><div class="row">${actions}</div></form>`;
+  document.body.appendChild(wrap);
+  wrap.addEventListener('mousedown', e => { if (e.target === wrap) closeDialog(true); });
+  wrap.querySelectorAll('[data-dlgcancel]').forEach(b => { b.onclick = () => closeDialog(true); });
+  wrap.querySelector('form').addEventListener('submit', e => e.preventDefault());
+  wrap.addEventListener('click', e => {
+    const copy = e.target.closest('[data-iccopy]');
+    if (!copy) return;
+    const text = copy.parentElement.querySelector('pre').textContent;
+    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject(new Error('no clipboard')))
+      .then(() => toast('已复制', 'ok'), () => toast('复制不了：手动选中复制', 'err'));
+  });
+  return wrap;
+}
+function icPassHtml() {
+  const ap = approvalInfo();
+  return `<label class="pw">审批口令<input type="password" data-icpass autocomplete="off" spellcheck="false" autocapitalize="off">
+    <span class="hint">不是网页登录密码；和批准工具共用输错计数，连续输错 ${ap.max_failures || 5} 次，页面审批锁定 ${ap.lock_minutes || 15} 分钟。</span></label>${plainHint()}`;
+}
+function icTake(wrap, selector) {
+  const input = wrap.querySelector(selector);
+  const value = input ? input.value : '';
+  if (input) input.value = '';
+  return value;
+}
+function icPass(wrap, why) {
+  const value = icTake(wrap, '[data-icpass]');
+  if (!value) throw new Error(why || '要输审批口令');
+  return value;
+}
+async function icRun(wrap, button, work) {
+  const err = wrap.querySelector('#dlgErr');
+  err.textContent = '';
+  const buttons = [...wrap.querySelectorAll('.row button, .acts button')];
+  buttons.forEach(b => { b.dataset.was = b.disabled ? '1' : ''; b.disabled = true; });
+  const label = button.textContent;
+  button.textContent = '处理中…';
+  try {
+    return await work();
+  } catch (e) {
+    err.textContent = e.message;
+    if (e.status === 423 || e.status === 409) refreshApproval();
+    if (e.data && wrap.icConflict) wrap.icConflict(e.data);
+    return null;
+  } finally {
+    buttons.forEach(b => { b.disabled = b.dataset.was === '1'; });
+    button.textContent = label;
+  }
+}
+// 试探（测试、扫描、检查连通）的结果。名额紧时会还在排队：这里不会自动刷新，请人过一会儿再点
+function icProbeHtml(p, again) {
+  if (!p) return '';
+  return p.state === 'done' ? precheckHtml(p) : `<div class="note">还在排队：工具服务这会儿要做的试探多，过一会儿再点「${esc(again)}」。</div>`;
+}
+const icProbeBox = (title, p, again) => p ? `<div class="icbox"><h4>${esc(title)}</h4>${icProbeHtml(p, again)}</div>` : '';
+function icDoneDialog(title, message, extra) {
+  icDialog(esc(title), `<div class="sum">${esc(message)}</div>${extra || ''}`, '<button type="button" class="btn pri" data-dlgcancel>好</button>');
+}
+const icField = (wrap, key) => wrap.querySelector(`[data-f="${key}"]`);
+const icOpt = (value, label, current) => `<option value="${esc(value)}"${value === current ? ' selected' : ''}>${esc(label)}</option>`;
+const IC_TICK = '<label class="chk"><input type="checkbox" data-f="confirm"><span>我知道这些工具会受影响</span></label>';
+// 要确认的工具：放在 [data-confirm] 里，勾了才提交；409 回来新的列表时整块换掉（新的勾选框没勾）
+function icConfirmHtml(users, sops, title) {
+  return (users || []).length ? icUsersBox(users, sops, title) + IC_TICK : '';
+}
+// target 会变的工具：放在 [data-impact] 里，同上
+function icImpactConfirm(list, title) {
+  return (list || []).length ? icImpactHtml(list, title) + IC_TICK : '';
+}
+function icConfirmed(wrap, users) {
+  if ((users || []).length && !(icField(wrap, 'confirm') || {}).checked) throw new Error('先勾选「我知道这些工具会受影响」');
+  return users || [];
+}
+// 409：在用它的工具变了。换成新的列表，返回新的列表
+function icNewUsers(wrap, data, title) {
+  wrap.querySelector('[data-confirm]').innerHTML = icConfirmHtml(data.confirm, data.confirm_sops, title + '（变了，重新看一遍）');
+  return data.confirm;
+}
+
+/* ---- 连接：HTTP 接口、PostgreSQL、MySQL ---- */
+const IC_CONN_USERS = '在用这个连接的已批准工具：改了它们会受影响';
+const IC_MCP_USERS = '这个 server 上已批准的工具：改了它们会受影响';
+const IC_TLS = {postgres: [['prefer', 'prefer（有就用）'], ['require', 'require（必须加密）'], ['verify', 'verify（加密并校验证书）'], ['disable', 'disable（不加密）']],
+                mysql: [['disable', 'disable（不加密）'], ['require', 'require（必须加密）'], ['verify', 'verify（加密并校验证书）']]};
+function icConnDialog(name) {
+  const x = name ? (infra.c.connections || []).find(i => i.name === name && i.origin === 'page') : null;
+  if (name && !x) return toast('页面上没有这个连接了，刷新看看', 'err');
+  const f = x ? (x.fields || {}) : {type: 'postgres'}, edit = !!x, state = edit ? (x.secret || {}).state : '';
+  const keep = edit && state === 'set';
+  const secretHint = edit ? `现在：${(IC_SECRET[state] || IC_SECRET.missing)[1]}。${keep ? '留空就不改；' : ''}改了地址、端口、库名、账号或 TLS，原来存的会作废，要重新输入`
+    : '只写不读：存好以后页面上只看得到「已设置」';
+  const body = `<div class="sum">${edit ? '名字和类型改不了（要改就删掉再加一个）。' : ''}页面上加的连接只能用这里输入的凭据，引用不了服务器上的 <code>\${名字}</code>。
+      sqlite、自定义 CA、令牌文件只能在服务器上配。</div>
+    <div class="grid2">
+      <label class="fld">类型<select data-f="type"${edit ? ' disabled' : ''}>${icOpt('postgres', 'PostgreSQL', f.type)}${icOpt('mysql', 'MySQL', f.type)}${icOpt('http', 'HTTP 接口', f.type)}</select></label>
+      <label class="fld">名字<input data-f="name" value="${esc(f.name || '')}"${edit ? ' disabled' : ''} maxlength="31" placeholder="小写字母开头，比如 cmdb"></label>
+    </div>
+    <label class="fld">显示名<input data-f="label" value="${esc(f.label || '')}" maxlength="40" placeholder="可以不填"></label>
+    <div data-kind="http">
+      <label class="fld">地址<input data-f="base" value="${esc(f.base || '')}" placeholder="https://prom.example.internal:9090"></label>
+      <div class="grid2">
+        <label class="fld">凭据放在哪<select data-f="auth">${icOpt('none', '不带凭据', f.auth || 'none')}${icOpt('bearer', 'Bearer 令牌（Authorization）', f.auth)}${icOpt('header', '指定的请求头', f.auth)}</select></label>
+        <label class="fld" data-show="header">请求头名<input data-f="auth_header" value="${esc(f.auth_header || '')}" placeholder="X-Api-Key"></label>
+      </div>
+      <label class="fld" data-show="token">令牌<input type="password" data-f="token" autocomplete="new-password" spellcheck="false" placeholder="${keep ? '留空就不改' : ''}"><span class="hint">${secretHint}</span></label>
+    </div>
+    <div data-kind="db">
+      <div class="grid2">
+        <label class="fld">主机<input data-f="host" value="${esc(f.host || '')}" placeholder="db.example.internal"></label>
+        <label class="fld">端口<input data-f="port" value="${esc(f.port || '')}" inputmode="numeric" placeholder="默认"></label>
+        <label class="fld">库名<input data-f="database" value="${esc(f.database || '')}"></label>
+        <label class="fld">账号（只读账号）<input data-f="user" value="${esc(f.user || '')}"></label>
+        <label class="fld">TLS<select data-f="tls"></select></label>
+        <label class="fld">语句超时（秒）<input data-f="timeout" value="${esc(f.timeout || '')}" inputmode="numeric" placeholder="5"></label>
+      </div>
+      <label class="fld">密码<input type="password" data-f="password" autocomplete="new-password" spellcheck="false" placeholder="${keep ? '留空就不改' : ''}"><span class="hint">${secretHint}</span></label>
+    </div>
+    <label class="chk"><input type="checkbox" data-f="external"${f.external ? ' checked' : ''}><span>标为外部：调用时实参要过出网规则，返回标成外部资料。按地址判断是外部的不能改成内部</span></label>
+    ${keep ? '<label class="chk"><input type="checkbox" data-f="clear"><span>清除存着的凭据</span></label>' : ''}
+    <div data-confirm>${edit ? icConfirmHtml(x.used_by, x.sops, IC_CONN_USERS) : ''}</div>
+    <div data-result></div>${icPassHtml()}`;
+  const wrap = icDialog(edit ? `修改连接 ${esc(name)}` : '添加连接', body,
+    `<button type="button" class="btn" data-dlgcancel>取消</button><button type="button" class="btn" data-act="test">测试</button><button type="button" class="btn warn" data-act="save">保存</button>`);
+  let users = edit ? (x.used_by || []) : [];
+  const sync = () => {
+    const type = icField(wrap, 'type').value, auth = icField(wrap, 'auth').value;
+    wrap.querySelector('[data-kind="http"]').hidden = type !== 'http';
+    wrap.querySelector('[data-kind="db"]').hidden = type === 'http';
+    wrap.querySelector('[data-show="header"]').hidden = auth !== 'header';
+    wrap.querySelector('[data-show="token"]').hidden = auth === 'none';
+    const tls = icField(wrap, 'tls'), pick = tls.value || f.tls || (type === 'mysql' ? 'disable' : 'prefer');
+    if (type !== 'http' && tls.dataset.type !== type) {
+      tls.innerHTML = IC_TLS[type].map(([v, label]) => icOpt(v, label, pick)).join('');
+      tls.dataset.type = type;
+    }
+  };
+  icField(wrap, 'type').addEventListener('change', sync);
+  icField(wrap, 'auth').addEventListener('change', sync);
+  sync();
+  wrap.icConflict = data => { if (data.confirm) users = icNewUsers(wrap, data, IC_CONN_USERS); };
+  // 凭据留在输入框里（测试完接着保存不用重输），对话框关掉时清空；口令每次用完就清空
+  const form = () => {
+    const type = icField(wrap, 'type').value;
+    const conn = {name: icField(wrap, 'name').value.trim(), type, label: icField(wrap, 'label').value.trim()};
+    let secret;
+    if (type === 'http') {
+      Object.assign(conn, {base: icField(wrap, 'base').value.trim(), auth: icField(wrap, 'auth').value});
+      if (conn.auth === 'header') conn.auth_header = icField(wrap, 'auth_header').value.trim();
+      secret = conn.auth === 'none' ? '' : icField(wrap, 'token').value;
+    } else {
+      Object.assign(conn, {host: icField(wrap, 'host').value.trim(), database: icField(wrap, 'database').value.trim(),
+                           user: icField(wrap, 'user').value.trim(), tls: icField(wrap, 'tls').value});
+      for (const key of ['port', 'timeout']) if (icField(wrap, key).value.trim()) conn[key] = icField(wrap, key).value.trim();
+      secret = icField(wrap, 'password').value;
+    }
+    if (icField(wrap, 'external').checked) conn.external = true;
+    const body = {connection: conn};
+    if (secret) body.secret = secret;
+    if (edit) body.original = name;
+    return body;
+  };
+  wrap.querySelector('[data-act="test"]').onclick = e => icRun(wrap, e.currentTarget, async () => {
+    const body = form();
+    body.passphrase = icPass(wrap, '测试也要输审批口令：测试会让工具服务去连这个地址');
+    const r = await postJson('/api/tools/config/connection-test', body);
+    wrap.querySelector('[data-result]').innerHTML = icProbeBox(`测试${r.used_saved_secret ? '（用的是存着的凭据）' : ''}`, r.test, '测试');
+  });
+  wrap.querySelector('[data-act="save"]').onclick = e => icRun(wrap, e.currentTarget, async () => {
+    const body = form();
+    if (edit) body.confirm = icConfirmed(wrap, users);
+    if ((icField(wrap, 'clear') || {}).checked) body.clear_secret = true;
+    body.passphrase = icPass(wrap);
+    const r = await postJson('/api/tools/config/connection-save', body);
+    await icReload();
+    icDoneDialog(`${edit ? '已修改' : '已添加'}连接 ${body.connection.name}`, `凭据：${r.note}。测试不通也已经存好；下面是保存之后测的结果。`,
+      icProbeBox('测试', r.test, '测试'));
+  });
+}
+
+/* ---- 远程 MCP server（只支持 Streamable HTTP） ---- */
+function icMcpDialog(id) {
+  const x = id ? (infra.c.mcp_servers || []).find(i => i.id === id && i.origin === 'page') : null;
+  if (id && !x) return toast('页面上没有这个 MCP server 了，刷新看看', 'err');
+  const f = x ? (x.fields || {}) : {}, edit = !!x, state = edit ? (x.secret || {}).state : '', keep = edit && state === 'set';
+  const body = `<div class="sum">只支持远程 server（Streamable HTTP）。发现的工具自动进「待审批」，批准后才能用；本机子进程（stdio）只能在服务器上声明。</div>
+    <div class="grid2">
+      <label class="fld">id<input data-f="id" value="${esc(f.id || '')}"${edit ? ' disabled' : ''} maxlength="31" placeholder="小写字母开头，工具名的前缀"></label>
+      <label class="fld">显示名<input data-f="label" value="${esc(f.label || '')}" maxlength="20"></label>
+    </div>
+    <label class="fld">地址<input data-f="url" value="${esc(f.url || '')}" placeholder="https://mcp.example.com/mcp"></label>
+    <div class="grid2">
+      <label class="fld">协议版本<select data-f="protocol">${icOpt('auto', '自动', f.protocol || 'auto')}${icOpt('2025-11-25', '2025-11-25', f.protocol)}${icOpt('2026-07-28', '2026-07-28', f.protocol)}</select></label>
+      <label class="fld">超时（秒）<input data-f="timeout" value="${esc(f.timeout || '')}" inputmode="numeric" placeholder="20"></label>
+      <label class="fld">令牌放在哪<select data-f="auth">${icOpt('none', '不带令牌', f.auth || 'none')}${icOpt('bearer', 'Bearer 令牌（Authorization）', f.auth)}${icOpt('header', '指定的请求头', f.auth)}</select></label>
+      <label class="fld" data-show="header">请求头名<input data-f="auth_header" value="${esc(f.auth_header || '')}" placeholder="X-Api-Key"></label>
+    </div>
+    <label class="fld" data-show="token">令牌<input type="password" data-f="token" autocomplete="new-password" spellcheck="false" placeholder="${keep ? '留空就不改' : ''}">
+      <span class="hint">${edit ? `现在：${(IC_SECRET[state] || IC_SECRET.missing)[1]}。改了地址，原来存的令牌会作废，要重新输入` : '只写不读：存好以后页面上只看得到「已设置」'}</span></label>
+    <label class="chk"><input type="checkbox" data-f="external"${f.external ? ' checked' : ''}><span>标为外部（按地址判断是外部的不能改成内部）</span></label>
+    ${keep ? '<label class="chk"><input type="checkbox" data-f="clear"><span>清除存着的令牌</span></label>' : ''}
+    <div data-confirm>${edit ? icConfirmHtml(x.used_by, x.sops, IC_MCP_USERS) : ''}</div>
+    <div data-result></div>${icPassHtml()}`;
+  const wrap = icDialog(edit ? `修改 MCP server ${esc(id)}` : '添加远程 MCP server', body,
+    `<button type="button" class="btn" data-dlgcancel>取消</button><button type="button" class="btn" data-act="test">测试</button><button type="button" class="btn warn" data-act="save">保存</button>`);
+  let users = edit ? (x.used_by || []) : [];
+  const sync = () => {
+    const auth = icField(wrap, 'auth').value;
+    wrap.querySelector('[data-show="header"]').hidden = auth !== 'header';
+    wrap.querySelector('[data-show="token"]').hidden = auth === 'none';
+  };
+  icField(wrap, 'auth').addEventListener('change', sync);
+  sync();
+  wrap.icConflict = data => { if (data.confirm) users = icNewUsers(wrap, data, IC_MCP_USERS); };
+  const form = () => {
+    const server = {id: icField(wrap, 'id').value.trim(), label: icField(wrap, 'label').value.trim(), url: icField(wrap, 'url').value.trim(),
+                    protocol: icField(wrap, 'protocol').value, auth: icField(wrap, 'auth').value};
+    if (icField(wrap, 'timeout').value.trim()) server.timeout = icField(wrap, 'timeout').value.trim();
+    if (server.auth === 'header') server.auth_header = icField(wrap, 'auth_header').value.trim();
+    if (icField(wrap, 'external').checked) server.external = true;
+    const body = {server};
+    const token = server.auth === 'none' ? '' : icField(wrap, 'token').value;
+    if (token) body.secret = token;
+    if (edit) body.original = id;
+    return body;
+  };
+  wrap.querySelector('[data-act="test"]').onclick = e => icRun(wrap, e.currentTarget, async () => {
+    const body = form();
+    body.passphrase = icPass(wrap, '测试也要输审批口令：测试会让工具服务去连这个地址');
+    const r = await postJson('/api/tools/config/mcp-test', body);
+    wrap.querySelector('[data-result]').innerHTML = icProbeBox('测试（只测 DNS、TCP 和 TLS，不带令牌）', r.test, '测试');
+  });
+  wrap.querySelector('[data-act="save"]').onclick = e => icRun(wrap, e.currentTarget, async () => {
+    const body = form();
+    if (edit) body.confirm = icConfirmed(wrap, users);
+    if ((icField(wrap, 'clear') || {}).checked) body.clear_secret = true;
+    body.passphrase = icPass(wrap);
+    const r = await postJson('/api/tools/config/mcp-save', body);
+    await icReload();
+    icDoneDialog(`${edit ? '已修改' : '已添加'} MCP server ${body.server.id}`,
+      `令牌：${r.note}。工具服务在后台连它，发现的工具会进「待审批」。`, icProbeBox('测试（只测 DNS、TCP 和 TLS，不带令牌）', r.test, '测试'));
+  });
+}
+
+/* ---- 删除连接、MCP server：列出在用它的工具和 SOP，勾了才删 ---- */
+function icDeleteDialog(kind, name) {
+  const list = kind === 'conn' ? infra.c.connections : infra.c.mcp_servers;
+  const x = (list || []).find(i => (i.name || i.id) === name && i.origin === 'page') || {};
+  const what = kind === 'conn' ? '连接' : 'MCP server';
+  const title = kind === 'conn' ? '在用它的已批准工具：删了以后它们就加载不了' : '这个 server 上已批准的工具：会一起删掉';
+  let users = x.used_by || [];
+  const wrap = icDialog(`删除${what} ${esc(name)}`, `<div class="sum">${kind === 'conn' ? '凭据一起删掉，找不回来。' : '令牌一起删掉；它的待审申请、已批准的工具也一起删掉（同一个 id 以后再加回来，旧的批准不会复活）。'}</div>
+    <div data-confirm>${icConfirmHtml(users, x.sops, title)}</div>${icPassHtml()}`,
+    '<button type="button" class="btn" data-dlgcancel>取消</button><button type="button" class="btn warn" data-act="del">删除</button>');
+  wrap.icConflict = data => { if (data.confirm) users = icNewUsers(wrap, data, title); };
+  wrap.querySelector('[data-act="del"]').onclick = e => icRun(wrap, e.currentTarget, async () => {
+    const body = {[kind === 'conn' ? 'name' : 'id']: name, confirm: icConfirmed(wrap, users), passphrase: icPass(wrap)};
+    const r = await postJson(`/api/tools/config/${kind === 'conn' ? 'connection' : 'mcp'}-delete`, body);
+    await icReload();
+    icDoneDialog(`已删除${what} ${name}`, (r.removed_tools || []).length ? `一并删掉的已批准工具：${r.removed_tools.join('、')}` : '凭据一起删了。');
+  });
+}
+
+/* ---- 远程主机：添加、修改（表单），打开（核对 host key → 在目标主机上安装 → 检查连通），删除 ---- */
+function icHostFormDialog(name) {
+  const h = name ? (infra.c.hosts || []).find(i => i.name === name && i.origin === 'page') : null;
+  if (name && !h) return toast('页面上没有这台主机了，刷新看看', 'err');
+  const f = h ? (h.fields || {}) : {}, edit = !!h;
+  const list = v => (Array.isArray(v) ? v : []).join(', ');
+  const body = `<div class="sum">${edit ? '改了地址或端口，登记的 host key 作废，要重新核对；改了账号、模式、出口地址，目标主机上 authorized_keys 那一行要换。'
+      : '私钥在工具服务这边生成（ed25519），不经过页面；页面上只给出要放进目标主机的公钥那一行。加好以后要核对 host key，核对之前它不进主机清单。'}</div>
+    <div class="grid2">
+      <label class="fld">名字<input data-f="name" value="${esc(f.name || '')}"${edit ? ' disabled' : ''} maxlength="63" placeholder="比如 web01"></label>
+      <label class="fld">地址<input data-f="address" value="${esc(f.address || '')}" placeholder="10.0.1.11"></label>
+      <label class="fld">SSH 端口<input data-f="port" value="${esc(f.port || '')}" inputmode="numeric" placeholder="22"></label>
+      <label class="fld">账号<input data-f="user" value="${esc(f.user || 'opsread')}"></label>
+      <label class="fld">系统<select data-f="os">${icOpt('linux', 'Linux', f.os || 'linux')}${icOpt('darwin', 'macOS', f.os)}</select></label>
+      <label class="fld">模式<select data-f="mode">${icOpt('guarded', '受控（强制命令 + 白名单，建议）', f.mode || 'guarded')}${icOpt('direct', '直连（只读靠账号权限）', f.mode)}</select></label>
+    </div>
+    <label class="fld">分组<input data-f="groups" value="${esc(list(f.groups))}" placeholder="逗号分开，比如 web, prod（可以不填）"></label>
+    <label class="fld">只开放这些工具<input data-f="tools" value="${esc(list(f.tools))}" placeholder="逗号分开；不填就是所有适用的命令型工具"></label>
+    <label class="fld">工具服务的出口地址<input data-f="from" value="${esc(list(f.from))}" placeholder="目标主机看到的来源 IP，比如 117.72.91.19">
+      <span class="hint">写进 authorized_keys 的 from=：只认这些地址连进来。有 NAT 时是公网出口地址；可以写网段，不能写主机名和通配符。</span></label>
+    <div class="icbox warn" data-direct hidden>直连模式：只读完全靠账号权限，账号能做的事模型都能做（账号进了 docker 组约等于 root）。只在账号本身就只读、又装不了执行器的主机上用。</div>
+    <div data-impact></div>${icPassHtml()}`;
+  const wrap = icDialog(edit ? `修改主机 ${esc(name)}` : '添加主机', body,
+    `<button type="button" class="btn" data-dlgcancel>取消</button><button type="button" class="btn warn" data-act="save">${edit ? '保存' : '添加'}</button>`);
+  const sync = () => { wrap.querySelector('[data-direct]').hidden = icField(wrap, 'mode').value !== 'direct'; };
+  icField(wrap, 'mode').addEventListener('change', sync);
+  sync();
+  let impact = null;
+  const showImpact = list => {
+    impact = list || [];
+    wrap.querySelector('[data-impact]').innerHTML = icImpactConfirm(impact, '保存以后这些工具的 target 会变');
+  };
+  wrap.icConflict = data => { if (data.confirm_impact) showImpact(data.confirm_impact); };
+  const form = () => {
+    const split = key => icField(wrap, key).value.split(/[\s,，、]+/).filter(Boolean);
+    const host = {name: icField(wrap, 'name').value.trim(), address: icField(wrap, 'address').value.trim(),
+                  user: icField(wrap, 'user').value.trim(), os: icField(wrap, 'os').value, mode: icField(wrap, 'mode').value,
+                  groups: split('groups'), from: split('from')};
+    if (icField(wrap, 'port').value.trim()) host.port = icField(wrap, 'port').value.trim();
+    if (split('tools').length) host.tools = split('tools');
+    return host;
+  };
+  wrap.querySelector('[data-act="save"]').onclick = e => icRun(wrap, e.currentTarget, async () => {
+    const host = form(), body = {host};
+    if (edit) {
+      body.original = name;
+      if (impact === null) {      // 先算一遍会影响哪些工具（不要口令、什么都不改）
+        const dry = await postJson('/api/tools/config/host-save', {...body, dry_run: true});
+        showImpact(dry.impact);
+        if (impact.length) throw new Error('看一下会受影响的工具，勾选后再保存');
+      }
+      body.confirm_impact = icConfirmed(wrap, impact).map(i => i.tool);
+    }
+    body.passphrase = icPass(wrap);
+    const r = await postJson('/api/tools/config/host-save', body);
+    if (r.scan) icScans[host.name] = r.scan;
+    await icReload();
+    icHostDialog(host.name, (r.projected_impact || []).length ? icImpactHtml(r.projected_impact, '核对 host key、这台主机进了主机清单以后，这些工具的 target 会变') : '');
+  });
+}
+function icHostDialog(name, notice) {
+  const h = (infra.c.hosts || []).find(i => i.name === name && i.origin === 'page');
+  if (!h) return toast('页面上没有这台主机了，刷新看看', 'err');
+  const c = infra.c, blocked = icBlocked(c, approvalInfo()), trusted = (h.trusted || []).length > 0;
+  const scan = icScans[name], keys = icScanKeys(scan), step = IC_STEP[h.step] || IC_STEP.check;
+  const fp = k => `<div><code>${esc(k.type)} ${esc(k.fingerprint)}</code></div>`;
+  const scanned = keys.length ? `<div class="note">扫到的 host key：</div>${keys.map(fp).join('')}`
+    : scan ? (scan.state === 'done' ? `<div class="err">${esc((scan.checks || []).map(k => k.text).join('；'))}</div>` : icProbeHtml(scan, '重新扫描'))
+    : trusted ? '' : '<div class="note">还没扫描。</div>';
+  const step1 = `<div class="step${trusted ? '' : ' on'}"><h4>① 核对 host key<span class="pill ${trusted ? 'ok' : 'warn'}">${trusted ? '已核对' : '待核对'}</span></h4>
+    ${trusted ? `<div class="note">登记的：</div>${h.trusted.map(fp).join('')}`
+      : `<div class="note">去目标主机的控制台上（不要经过这条网络）执行 <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code>，
+         和这里扫到的指纹对一下，一致再登记。不会自动信任。</div>`}${scanned}
+    <div class="acts"><button type="button" class="btn" data-hact="scan">${scan ? '重新扫描' : '扫描'}</button>
+      <button type="button" class="btn${trusted ? '' : ' warn'}" data-hact="trust"${blocked || !keys.length ? ` disabled title="${esc(blocked || '先扫描')}"` : ''}>${
+        trusted ? 'host key 变了，替换…' : '核对后登记…'}</button></div></div>`;
+  const bundleOff = c.enabled ? '' : ' disabled title="页面配置在宿主机上关了（OPS_PAGE_CONFIG=off）"';
+  const step2 = `<div class="step${trusted && ['install', 'update'].includes(h.step) ? ' on' : ''}"><h4>② 在目标主机上安装${
+      trusted ? `<span class="pill ${step[0]}">${step[1]}</span>` : ''}</h4>
+    ${icInstallHtml(h, c.cli)}
+    ${h.mode === 'guarded' ? `<div class="acts"><button type="button" class="btn" data-hact="bundle"${bundleOff}>${h.bundle ? '重新生成安装包' : '生成安装包'}</button>${h.bundle
+      ? `<a class="btn" href="/api/tools/config/hosts/${encodeURIComponent(name)}/bundle" download>下载安装包</a>` : ''}</div>` : ''}</div>`;
+  const check = icChecks[name];
+  const step3 = `<div class="step${trusted && h.step === 'check' ? ' on' : ''}"><h4>③ 检查连通</h4>${check ? icProbeHtml(check, '检查连通') + icToolStates(check, name)
+      : '<div class="note">装好以后检查一次：连不连得上、执行器版本、白名单版本、每个工具能不能跑（等于命令行的 status）。</div>'}
+    <div class="acts"><button type="button" class="btn" data-hact="check"${trusted ? '' : ' disabled title="先核对 host key"'}>检查连通</button></div></div>`;
+  const body = `<div class="sum"><code>${esc(`${h.user}@${h.address}:${h.port}`)}</code> · ${esc(IC_MODE[h.mode] || h.mode)} · 出口地址 ${esc((h.from || []).join(', '))}${
+      (h.groups || []).length ? ' · 分组 ' + h.groups.map(esc).join('、') : ''}</div>${notice || ''}
+    ${h.mode === 'direct' ? '<div class="icbox warn">直连模式：只读完全靠账号权限，账号能做的事模型都能做。</div>' : ''}
+    ${h.allowlist && h.allowlist.stale ? '<div class="icbox warn">白名单变了（批准了新工具，或者改了这台主机能跑的工具）：重新生成安装包，在目标主机上执行。</div>' : ''}
+    <div class="steps">${step1}${step2}${step3}</div>`;
+  const lock = blocked ? ` disabled title="${esc(blocked)}"` : '';
+  const wrap = icDialog(`主机 ${esc(name)}`, body, `<button type="button" class="btn" data-hact="delete"${lock}>删除</button>
+    <button type="button" class="btn" data-hact="edit"${lock}>修改</button><button type="button" class="btn pri" data-dlgcancel>关闭</button>`);
+  wrap.addEventListener('click', e => {
+    const b = e.target.closest('[data-hact]');
+    if (!b || b.disabled) return;
+    const act = b.dataset.hact;
+    if (act === 'trust') return icTrustDialog(name);
+    if (act === 'edit') return icHostFormDialog(name);
+    if (act === 'delete') return icHostDeleteDialog(name);
+    icRun(wrap, b, async () => {
+      if (act === 'scan') icScans[name] = (await postJson('/api/tools/config/host-scan', {name})).scan;
+      if (act === 'check') icChecks[name] = (await postJson('/api/tools/config/host-check', {name})).check;
+      if (act === 'bundle') {
+        const r = await postJson('/api/tools/config/host-bundle', {name});
+        toast(`安装包已生成：sha256 ${r.bundle.sha256.slice(0, 16)}…`, 'ok');
+      }
+      await icReload();
+      icHostDialog(name);
+    });
+  });
+}
+// 核对 host key 后登记；已经登记过的（目标主机重装了、换了 host key）要勾「替换」
+async function icTrustDialog(name) {
+  const h = (infra.c.hosts || []).find(i => i.name === name && i.origin === 'page') || {};
+  const keys = icScanKeys(icScans[name]), replace = (h.trusted || []).length > 0;
+  let impact;
+  try { impact = (await postJson('/api/tools/config/host-trust', {name, dry_run: true})).impact || []; }
+  catch (e) { return toast(e.message, 'err', 6000); }
+  const title = '登记以后这台主机进主机清单，这些工具的 target 会变';
+  const wrap = icDialog(`核对 ${esc(name)} 的 host key`, `<div class="sum">在目标主机的控制台上执行 <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code>，
+      选和它一致的那一个。工具服务会重新扫一次，只登记指纹和你选的一致的那一把；对不上就不登记。</div>
+    ${replace ? `<div class="icbox warn"><h4>已经登记过</h4>${(h.trusted || []).map(k => `<div><code>${esc(k.type)} ${esc(k.fingerprint)}</code></div>`).join('')}
+      <div>host key 变了先查清原因：目标主机重装了？还是有人冒充？</div></div>
+      <label class="chk"><input type="checkbox" data-f="replace"><span>查清了，替换原来登记的 host key</span></label>` : ''}
+    <div class="keys">${keys.map(k => `<label><input type="radio" name="icfp" value="${esc(k.fingerprint)}">${esc(k.type)} ${esc(k.fingerprint)}</label>`).join('')}</div>
+    <div data-impact>${icImpactConfirm(impact, title)}</div>${icPassHtml()}`,
+    '<button type="button" class="btn" data-dlgcancel>取消</button><button type="button" class="btn warn" data-act="trust">核对一致，登记</button>');
+  wrap.icConflict = data => {
+    if (!data.confirm_impact) return;
+    impact = data.confirm_impact;
+    wrap.querySelector('[data-impact]').innerHTML = icImpactConfirm(impact, title + '（变了，重新看一遍）');
+  };
+  wrap.querySelector('[data-act="trust"]').onclick = e => icRun(wrap, e.currentTarget, async () => {
+    const picked = wrap.querySelector('input[name="icfp"]:checked');
+    if (!picked) throw new Error('先选一个指纹：和目标主机控制台上显示的一致的那一个');
+    if (replace && !icField(wrap, 'replace').checked) throw new Error('已经登记过 host key：查清原因后勾选「替换」');
+    const body = {name, fingerprint: picked.value, confirm_impact: icConfirmed(wrap, impact).map(i => i.tool), passphrase: icPass(wrap)};
+    if (replace) body.replace = true;
+    await postJson('/api/tools/config/host-trust', body);
+    delete icScans[name];
+    toast(`已登记 ${name} 的 host key`, 'ok');
+    await icReload();
+    icHostDialog(name);
+  });
+}
+async function icHostDeleteDialog(name) {
+  let impact;
+  try { impact = (await postJson('/api/tools/config/host-delete', {name, dry_run: true})).impact || []; }
+  catch (e) { return toast(e.message, 'err', 6000); }
+  const title = '删掉以后这些工具的 target 会变';
+  const wrap = icDialog(`删除主机 ${esc(name)}`, `<div class="sum">私钥、登记的 host key、安装包一起删掉；删完给出在目标主机上撤销的命令。</div>
+    <div data-impact>${icImpactConfirm(impact, title)}</div>${icPassHtml()}`,
+    '<button type="button" class="btn" data-dlgcancel>取消</button><button type="button" class="btn warn" data-act="del">删除</button>');
+  wrap.icConflict = data => {
+    if (!data.confirm_impact) return;
+    impact = data.confirm_impact;
+    wrap.querySelector('[data-impact]').innerHTML = icImpactConfirm(impact, title + '（变了，重新看一遍）');
+  };
+  wrap.querySelector('[data-act="del"]').onclick = e => icRun(wrap, e.currentTarget, async () => {
+    const r = await postJson('/api/tools/config/host-delete', {name, confirm_impact: icConfirmed(wrap, impact).map(i => i.tool), passphrase: icPass(wrap)});
+    delete icScans[name];
+    delete icChecks[name];
+    await icReload();
+    icDoneDialog(`已删除主机 ${name}`, '工具服务这边的私钥、host key、安装包都删了。目标主机上的账号和执行器还在，在那台主机上以 root 执行下面的命令撤销：',
+      (r.revoke || []).length ? icCopy('撤销', r.revoke.join('\n')) : '');
+  });
+}
+// 主配置里的主机：只能检查连通（只读，等于命令行的 status）
+async function icCheckMain(name) {
+  try {
+    const r = await postJson('/api/tools/config/host-check', {name});
+    icDoneDialog(`检查主机 ${name}`, '等于命令行的 status：', icProbeHtml(r.check, '检查连通') + icToolStates(r.check, name));
+    icReload();
+  } catch (e) { toast('没检查成：' + e.message, 'err', 6000); }
+}
+const icInfraTab = () => mTab === 'tools' && tlTab === 'infra' && !!infra;
+$('msettings').addEventListener('click', e => {
+  const b = e.target.closest('[data-ic]');
+  if (!b || b.disabled || !icInfraTab()) return;
+  const name = b.dataset.name || '';
+  const acts = {'conn-add': () => icConnDialog(''), conn: () => icConnDialog(name), 'conn-test': () => icConnDialog(name),
+                'conn-del': () => icDeleteDialog('conn', name), 'mcp-add': () => icMcpDialog(''), mcp: () => icMcpDialog(name),
+                'mcp-test': () => icMcpDialog(name), 'mcp-del': () => icDeleteDialog('mcp', name), 'host-add': () => icHostFormDialog(''),
+                host: () => icHostDialog(name), 'host-check': () => icCheckMain(name), 'host-del': () => icHostDeleteDialog(name)};
+  if (acts[b.dataset.ic]) acts[b.dataset.ic]();
+});
+// 对外开放的开关：打开要口令，关闭不要（只缩小能力）
+$('msettings').addEventListener('change', async e => {
+  const box = e.target.closest('[data-icexport]');
+  if (!box || !icInfraTab()) return;
+  const tool = box.dataset.icexport, on = box.checked;
+  box.checked = !on;          // 真改成了再勾上
+  const x = (infra.c.export || []).find(i => i.tool === tool) || {};
+  if (on) {
+    const blocked = icBlocked(infra.c, approvalInfo());
+    if (blocked) return toast(blocked, 'err', 6000);
+    askPassphrase({title: `打开「${x.label || tool}」的对外开放`, confirm: '打开',
+      summary: `打开以后，外部智能体凭对外接入的令牌就能调这个工具${(overview || {}).access?.enabled ? '' : '（对外接入现在没打开：打开 MCP 以后才生效）'}。
+        这次打开绑定工具现在的定义，定义变了会自动暂停。`,
+      run: passphrase => postJson('/api/tools/config/export', {tool, on: true, passphrase}),
+      done: () => { toast(`已对外开放：${x.label || tool}`, 'ok'); icReload(); }});
+    return;
+  }
+  if (!confirm(`关闭「${x.label || tool}」的对外开放？外部智能体马上就调不了它。`)) return;
+  try {
+    await postJson('/api/tools/config/export', {tool, on: false});
+    toast('已关闭对外开放', 'ok');
+    icReload();
+  } catch (err) { toast('没关成：' + err.message, 'err', 6000); }
+});
 // 审批口令的卡片（设置页、「主机与数据源」两处共用）：状态，加上对应的表单——还没设：设置；已经设了：什么时候、怎么设的，
 // 加上修改；锁定中：表单灰掉；口令文件有问题、工具服务较旧：不给表单，写明在宿主机上怎么办。每种状态都写上忘了怎么重设。
 function passCard(ap) {

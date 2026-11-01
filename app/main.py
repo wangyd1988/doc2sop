@@ -1,4 +1,5 @@
 """HTTP API and web UI."""
+import base64
 import contextvars
 import hashlib
 import json
@@ -14,7 +15,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
@@ -904,6 +905,140 @@ def tools_recheck_script(script: str, request: Request):
         return _ops_refused(exc)
     log.info("held script rechecked: %s", script)
     return result
+
+
+# --- 页面上配置主机与数据源 ------------------------------------------------------------------
+# 连接、远程 MCP server、对外开放、远程主机都由工具服务做：扩大能力的它核对审批口令，凭据它存（只写不读）。这里只转交：
+# 请求体手动解析（不走 FastAPI 的校验，它的 422 会回显输入），口令和凭据不保存、不记日志、不出现在报错里；按来源地址限频。
+# 改、删之前要确认的工具（在用它的、target 会变的），这里补上用到它们的 SOP，页面一起列出来。
+
+CONFIG_ACTIONS = {"connection-save": "write", "connection-delete": "write", "connection-test": "write",
+                  "mcp-save": "write", "mcp-delete": "write", "mcp-test": "write", "export": "export",
+                  "host-save": "write", "host-delete": "write", "host-trust": "write",
+                  "host-scan": "probe", "host-check": "probe", "host-bundle": "probe"}
+# 每个来源地址每分钟最多几次：要口令的写操作、试探（扫描 host key、检查连通、生成安装包）、对外开放的开关。工具服务那边另有输错锁定和全局名额
+CONFIG_LIMITS = {"write": (10, 60), "probe": (6, 60), "export": (30, 60)}
+_config_hits: dict = {}
+_config_lock = threading.Lock()
+HOST_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
+
+
+def _config_wait(kind: str, address: str) -> int:
+    """这个来源地址这一类操作还要等几秒；0 表示现在就行（并记一次）。"""
+    limit, window = CONFIG_LIMITS[kind]
+    now = time.monotonic()
+    key = (kind, address)
+    with _config_lock:
+        for stale in [k for k, hits in _config_hits.items() if not hits or now - hits[-1] >= 60]:
+            del _config_hits[stale]
+        hits = [at for at in _config_hits.get(key, []) if now - at < window]
+        if len(hits) >= limit:
+            _config_hits[key] = hits
+            return int(window - (now - hits[0])) + 1
+        _config_hits[key] = hits + [now]
+    return 0
+
+
+def _sops_by_tool() -> dict:
+    """工具名 → 用到它的 SOP（id、名字、启没启用）。"""
+    out = {}
+    for playbook in playbooks.list_all():
+        for step in playbook["steps"]:
+            out.setdefault(step["tool"], {})[playbook["id"]] = {
+                "id": playbook["id"], "name": playbook["name"], "enabled": playbook["enabled"]}
+    return {tool: list(found.values()) for tool, found in out.items()}
+
+
+def _sops_for(tools, sops: dict) -> list:
+    seen = {}
+    for tool in tools or []:
+        for sop in sops.get(tool["tool"] if isinstance(tool, dict) else str(tool), []):
+            seen[sop["id"]] = sop
+    return sorted(seen.values(), key=lambda sop: sop["name"])
+
+
+def _with_sops(data: dict) -> dict:
+    """要确认的工具列表旁边补上用到它们的 SOP：在用连接 / server 的工具（used_by、confirm），target 会变的工具（impact）。"""
+    if not isinstance(data, dict):
+        return data
+    sops = _sops_by_tool()
+    for key in ("impact", "projected_impact", "confirm_impact"):
+        for item in data.get(key) or []:
+            if isinstance(item, dict):
+                item["sops"] = sops.get(item.get("tool"), [])
+    if isinstance(data.get("confirm"), list):
+        data["confirm_sops"] = _sops_for(data["confirm"], sops)
+    for key in ("connections", "mcp_servers"):
+        for item in data.get(key) or []:
+            if isinstance(item, dict) and item.get("used_by"):
+                item["sops"] = _sops_for(item["used_by"], sops)
+    for key in ("item",):
+        item = data.get(key)
+        if isinstance(item, dict) and item.get("used_by"):
+            item["sops"] = _sops_for(item["used_by"], sops)
+    return data
+
+
+def _config_target(action: str, data: dict) -> str:
+    """日志里写的对象：只有名字（截短），没有口令和凭据。"""
+    for key in ("connection", "server", "host"):
+        if isinstance(data.get(key), dict):
+            value = data[key].get("name") or data[key].get("id")
+            return str(value or "")[:64]
+    return str(data.get("name") or data.get("id") or data.get("tool") or "")[:64]
+
+
+@app.get("/api/tools/config")
+def tools_config(request: Request):
+    """「主机与数据源」：主配置的条目只读，页面上加的能改；老工具服务回 supported=False，页面照旧只读。"""
+    data = ops_client.config_view(_approval_caller(request))
+    return _with_sops(data) if data.get("supported") else data
+
+
+@app.post("/api/tools/config/{action}")
+async def tools_config_action(action: str, request: Request):
+    kind = CONFIG_ACTIONS.get(action)
+    if kind is None:
+        raise HTTPException(404, "没有这个操作")
+    data = await _json_body(request)
+    address = request.client.host if request.client else "-"
+    wait = _config_wait(kind, address)
+    if wait:
+        log.info("tools config %s refused: too frequent (ip=%s)", action, address)
+        raise HTTPException(429, f"操作太频繁了：{wait} 秒后再试")
+    try:
+        result = await run_in_threadpool(ops_client.config_action, action, data, _approval_caller(request))
+    except ops_client.OpsUnavailable as exc:
+        log.info("tools config %s %r refused: %s", action, _config_target(action, data), exc.status or "unreachable")
+        response = _ops_refused(exc)
+        extra = {key: exc.data[key] for key in ("confirm", "confirm_impact") if key in exc.data}
+        if extra and response.status_code == 409:
+            body = json.loads(response.body)
+            return JSONResponse(_with_sops({**body, **extra}), status_code=409)
+        return response
+    log.info("tools config %s %r: done", action, _config_target(action, data))
+    return _with_sops(result)
+
+
+@app.get("/api/tools/config/hosts/{name}/bundle")
+def tools_config_bundle(name: str):
+    """下载页面加的主机的安装包：A 上 page-bundles/<主机名>.tgz 原样给出（谨慎的话在 A 上 sha256sum 对照）。"""
+    if not HOST_NAME.fullmatch(name):
+        raise HTTPException(400, "主机名不合法")
+    try:
+        data = ops_client.config_bundle(name)
+    except ops_client.OpsUnavailable as exc:
+        return _ops_refused(exc)
+    try:
+        payload = base64.b64decode(str(data.get("data") or ""), validate=True)
+    except ValueError:
+        raise HTTPException(502, "工具服务给的安装包不是合法的 base64") from None
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != data.get("sha256"):
+        raise HTTPException(502, "安装包和工具服务报的 sha256 对不上，没有给出")
+    return Response(payload, media_type="application/gzip",
+                    headers={"Content-Disposition": f'attachment; filename="doc2sop-ops-{name}.tgz"',
+                             "X-Content-SHA256": digest, "Cache-Control": "no-store"})
 
 
 # --- Workbench ------------------------------------------------------------------

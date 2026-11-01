@@ -44,10 +44,12 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import ssl
 import stat
 import subprocess
 import sys
+import tarfile
 import textwrap
 import threading
 import time
@@ -1091,7 +1093,10 @@ def _check_connections(document, problems, broken=None):
 
 
 def _bind_connection(spec, connections, broken=None):
-    """接口型、sql 工具用了连接：把连接挂到 spec 上，执行时从这里取地址和凭据。连接不存在、类型不对就不能用。"""
+    """接口型、sql 工具用了连接：把连接挂到 spec 上，执行时从这里取地址和凭据。连接不存在、类型不对就不能用。
+
+    连接是页面上加的（origin: page），接口型工具自己就不能再引用凭据 ${…}：页面上加的连接只能带页面上为它输入的凭据。
+    不然一个手写的工具（请求头里自带 ${secret}）在主配置的同名连接删掉之后，会跟着页面上新建的同名连接，把凭据发到别人的服务器去。"""
     kind = spec.get("type")
     conn = (spec.get(kind) or {}).get("conn") if kind in ("http", "sql") else ""
     if not conn:
@@ -1099,12 +1104,20 @@ def _bind_connection(spec, connections, broken=None):
     if conn not in connections:
         if broken and conn in broken:
             raise ConfigError(f"{spec['name']} 用的连接 {conn} 写错了，没有加载：{broken[conn]}")
-        raise ConfigError(f"{spec['name']} 引用了未声明的连接 {conn}；连接只能由管理员写在主配置文件的 connections 里")
+        raise ConfigError(f"{spec['name']} 引用了未声明的连接 {conn}；连接只能由管理员写在主配置文件的 connections 里，"
+                          f"或者在页面「工具 → 主机与数据源」上加")
     connection = connections[conn]
     if kind == "http" and connection["type"] != "http":
         raise ConfigError(f"{spec['name']} 是接口型工具，连接 {conn} 却是 {connection['type']} 数据库")
     if kind == "sql" and connection["type"] not in DB_TYPES:
         raise ConfigError(f"{spec['name']} 是 sql 工具，连接 {conn} 却是 {connection['type']} 连接")
+    if kind == "http" and connection.get("origin") == "page":
+        http = spec["http"]
+        refs = [ref for text in (http["url"], *http["query"].values(), *http["headers"].values())
+                for ref in SECRET_REF.findall(str(text))]
+        if refs:
+            raise ConfigError(f"{spec['name']} 用的是页面上加的连接 {conn}，自己就不能再引用凭据 ${{{refs[0]}}}："
+                              f"页面上加的连接只能带页面上为它输入的凭据")
     spec["connection"] = connection
     return spec
 
@@ -1579,11 +1592,12 @@ def load_tools(path):
     return tools, problems
 
 
-def _load_all(path, text=None, held=None):
+def _load_all(path, text=None, held=None, page=None):
     """load_tools 的完整版：多返回主文件声明的 MCP server 配置、连接和主机清单。
 
     text：主文件的内容（不给就读 path）。批准申请时用它加载「插入之后」的内容，和服务是同一套逻辑。
     held：给一个列表时，因为脚本还没确认过、或内容和登记的哈希对不上而没加载的脚本型工具记在里面（页面上重新确认用）。
+    page：给一个字典时，页面上配置的条目（旁路文件 ops_tools.page.yaml，见 _load_page）记在里面，给页面看。
 
     除了自己的 `tools:`，主文件还可以用顶层 `include:` 引入别的定义文件（例如一个场景包的
     tools.yaml）。被包含的文件和主文件同等可信——它们是管理员亲手写进主文件的路径，所以同样
@@ -1599,6 +1613,10 @@ def _load_all(path, text=None, held=None):
 
     凭据同理：不来自主文件的接口型工具，只能经主文件的连接、或发往宿主机环境决定的地址（${…} 开头）用到凭据，
     见 _check_pack_credentials。主文件里写和场景包工具同名的工具，就是替换它的实现（参数要兼容，见 _incompatible）。
+
+    页面上配置的连接、远程 MCP server、远程主机、对外开放在旁路文件里（_load_page）：和主配置重名的一律跳过（主配置优先），
+    页面加的主机核对过 host key 才进主机清单，页面上的对外开放设置最后套上（_apply_page_export）。旁路文件没有或是空的，
+    结果和没有这个功能时一模一样。
     """
     document = _read_yaml(path, text)
     entries = document.get("tools")
@@ -1612,6 +1630,9 @@ def _load_all(path, text=None, held=None):
     connections = _check_connections(document, problems, broken)
     exported = _check_export_list(document, problems)
     hosts = _check_hosts(document, problems)
+    loaded = _load_page(problems, connections, broken, servers, hosts)
+    connections.update(loaded["connections"])
+    servers.update(loaded["servers"])
 
     # 批准文件最先读：同名时它说了算（漂移后重新批准的条目要盖过主文件里的旧条目）。
     sources = []
@@ -1734,8 +1755,12 @@ def _load_all(path, text=None, held=None):
             tools[name]["export"] = True
         else:
             problems.append(f"顶层 export 里的 {name} 不是已加载的工具，已忽略")
+    _apply_page_export(tools, loaded["export"], problems)
+    hosts = _merge_page_hosts(hosts, loaded["hosts"])
     if hosts is not None:
         _bind_hosts(hosts, tools, problems)
+    if page is not None:
+        page.update(loaded)
     return tools, problems, servers, connections, hosts
 
 
@@ -1895,7 +1920,7 @@ def _apply_overrides(tools, overrides):
 
 _state = {"path": DEFAULT_CONFIG, "mtime": None, "omtime": None, "tmtime": None, "imtime": None,
           "mmtime": None, "includes": [], "tools": {}, "problems": [], "mcp_servers": {},
-          "connections": {}, "hosts": None, "held": []}
+          "connections": {}, "hosts": None, "held": [], "pmtime": None, "page": {}}
 
 
 def _mtimes():
@@ -1907,8 +1932,10 @@ def _mtimes():
 
     # 被包含的文件按上一次加载记下的模式重新展开：新增一个匹配文件、改动任何一个，都算变化。
     files, _ = _expand_includes(_state["includes"], os.path.dirname(os.path.abspath(str(_state["path"]))))
+    # 页面上配置的三个文件（旁路文件、页面主机的 host key、页面凭据）任何一个变了也重新加载：凭据换了要让 MCP 连接重连
+    page = (stamp(_page_file()), stamp(_page_known_hosts()), stamp(_page_secrets_file()))
     return (stamp(_state["path"]), stamp(_sibling("overrides")),
-            stamp(_trust_file()), tuple((f, stamp(f)) for f in files), stamp(_mcp_file()))
+            stamp(_trust_file()), tuple((f, stamp(f)) for f in files), stamp(_mcp_file()), page)
 
 
 def refresh(force=False):
@@ -1916,19 +1943,19 @@ def refresh(force=False):
 
     A broken edit must not take the service down: we keep the last good set.
     """
-    mtime, omtime, tmtime, imtime, mmtime = _mtimes()
+    mtime, omtime, tmtime, imtime, mmtime, pmtime = _mtimes()
     if mtime is None:
         if not _state["tools"]:
             _state["problems"] = [f"读不到配置文件 {_state['path']}"]
         return _state["tools"]
-    if not force and (mtime, omtime, tmtime, imtime, mmtime) == (
+    if not force and (mtime, omtime, tmtime, imtime, mmtime, pmtime) == (
             _state["mtime"], _state["omtime"], _state["tmtime"], _state["imtime"],
-            _state.get("mmtime")):
+            _state.get("mmtime"), _state.get("pmtime")):
         return _state["tools"]
 
-    held = []
+    held, page = [], {}
     try:
-        tools, problems, servers, connections, hosts = _load_all(_state["path"], held=held)
+        tools, problems, servers, connections, hosts = _load_all(_state["path"], held=held, page=page)
         includes = _include_patterns(_read_yaml(_state["path"]))
     except ConfigError as exc:
         _state["problems"] = [str(exc)]
@@ -1943,7 +1970,7 @@ def refresh(force=False):
     hosts_changed = hosts != _state.get("hosts")
     _state.update(mtime=mtime, omtime=omtime, tmtime=tmtime, mmtime=mmtime, includes=includes,
                   problems=problems, tools=_apply_overrides(tools, overrides), mcp_servers=servers,
-                  connections=connections, hosts=hosts, held=held)
+                  connections=connections, hosts=hosts, held=held, pmtime=pmtime, page=page)
     # 模式列表可能刚变，用它重新算一次被包含文件的印章，下一次请求才不会白白重载
     _state["imtime"] = _mtimes()[3]
     # server 配置变了就启停对应子进程；这里只换对象，真正拉进程的是后台线程或下一次调用
@@ -1952,9 +1979,13 @@ def refresh(force=False):
         _monitor.wake()   # 主机清单变了，后台马上重新检查一遍
     for problem in problems:
         print(f"[config] {problem}", flush=True)
+    counts = [(len(page.get(kind) or {}), label) for kind, label in
+              (("connections", "连接"), ("servers", "MCP server"), ("hosts", "主机"), ("export", "对外开放设置"))]
+    shown = "、".join(f"{label} {count}" for count, label in counts if count)
     print(f"[config] 已加载 {len(tools)} 个工具定义，"
           f"{len(overrides)} 个被页面覆盖"
-          + (f"；主机 {len(hosts['hosts'])} 台：{', '.join(hosts['hosts'])}" if hosts else ""), flush=True)
+          + (f"；主机 {len(hosts['hosts'])} 台：{', '.join(hosts['hosts'])}" if hosts else "")
+          + (f"；页面上配置的：{shown}" if shown else ""), flush=True)
     return _state["tools"]
 
 
@@ -2337,6 +2368,12 @@ def describe_connections():
         else:
             item["driver"] = _driver(conn["type"])[1]   # 空串表示驱动在；否则是缺什么、怎么装
             item["timeout"] = conn["timeout"]
+        if conn.get("origin") == "page":
+            # 页面上加的连接：只多这两项（主配置的连接一个字节都不变）。凭据只给状态，永远没有值
+            header = _page_auth_header(conn)
+            if header:
+                item["headers"] = sorted(set(item["headers"]) | {header})
+            item.update(origin="page", secret=_page_secret_view(conn))
         out[name] = item
     return out
 
@@ -4097,7 +4134,10 @@ def _conn_refs(conn):
 
 
 def _refs_check(conn, done):
-    """连接的凭据变量设没设：只看环境变量是不是空的，不读出值、不显示值。"""
+    """连接的凭据变量设没设：只看环境变量是不是空的，不读出值、不显示值。
+    页面上加的连接没有 ${名字}，看的是页面上为它输入的凭据还在不在、去向对不对得上（_page_refs_check）。"""
+    if conn.get("origin") == "page":
+        return _page_refs_check(conn, done)
     refs = _conn_refs(conn)
     if not refs:
         return None
@@ -4914,6 +4954,9 @@ def build_request(spec, args):
     # 连接的请求头（含 bearer 令牌）在前，工具自己写的同名请求头覆盖它
     for key, raw in ((connection or {}).get("headers") or {}).items():
         headers[key] = _fill_secrets(raw, secrets_used)
+    if connection and connection.get("origin") == "page":
+        # 页面上加的连接：令牌只从页面凭据文件里它自己那一条取，去向对不上就不发（它没有 bearer / bearer_file，下面那行取不到东西）
+        _page_http_auth(connection, headers, secrets_used)
     token = _bearer(connection, secrets_used) if connection else ""
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -5157,6 +5200,11 @@ def _postgres_kwargs(conn, used):
                          f"-c idle_in_transaction_session_timeout={millis * 2}"}
     if conn["password"]:
         kwargs["password"] = _resolve(conn["password"], used)
+    elif conn.get("origin") == "page":
+        # 页面上加的连接：密码只从页面凭据文件里它自己那一条取，去向对不上就不给（见 _page_credential）
+        password = _page_credential(conn, used, optional=True)
+        if password:
+            kwargs["password"] = password
     if conn["ca"]:
         kwargs["sslrootcert"] = _resolve(conn["ca"], used)
     return kwargs
@@ -5192,7 +5240,8 @@ def _postgres_query(conn, module, segments, params, max_rows, used):
 def _mysql_kwargs(conn, module, used):
     """连 MySQL 的参数：查询和自动检查的 EXPLAIN 用同一套。"""
     kwargs = {"host": _resolve(conn["host"], used), "port": conn["port"], "user": _resolve(conn["user"], used),
-              "password": _resolve(conn["password"], used) if conn["password"] else "",
+              "password": _resolve(conn["password"], used) if conn["password"] else
+              _page_credential(conn, used, optional=True) if conn.get("origin") == "page" else "",
               "database": _resolve(conn["database"], used), "connect_timeout": min(10, conn["timeout"] + 3),
               "read_timeout": conn["timeout"] + 5, "write_timeout": 10, "charset": "utf8mb4",
               "autocommit": False, "local_infile": False,
@@ -5759,6 +5808,9 @@ class McpHttpServer:
                     raise ValueError(f"{env.group(1)} 不是合法的 http(s) 地址")
                 url = base + env.group(2)
             headers = {key: _fill_secrets(value, used) for key, value in self.config["headers"].items()}
+            if self.config.get("origin") == "page":
+                # 页面上加的 server：没有 headers，令牌只从页面凭据文件里它自己那一条取，去向（url）对不上就不发
+                _page_http_auth(self.config, headers, used)
             context = _ssl_context(_resolve(self.config["ca"])) if self.config["ca"] else None
         except (ValueError, ConfigError) as exc:
             raise McpError(str(exc)) from None
@@ -6099,11 +6151,14 @@ class McpHttpServer:
 
     def status(self, approved=0):
         url = self.config["url"]
-        return {"label": self.label, "online": bool(self.online), "reason": "" if self.online else self.reason,
-                "discovered": len(self.tools), "approved": approved, "notes": list(self.notes),
-                "server": self.server_info, "protocol": self.protocol, "transport": "http",
-                "url": url if ENV_BASE.match(url) else _url_prefix(url),
-                "external": bool(self.config.get("external"))}
+        out = {"label": self.label, "online": bool(self.online), "reason": "" if self.online else self.reason,
+               "discovered": len(self.tools), "approved": approved, "notes": list(self.notes),
+               "server": self.server_info, "protocol": self.protocol, "transport": "http",
+               "url": url if ENV_BASE.match(url) else _url_prefix(url),
+               "external": bool(self.config.get("external"))}
+        if self.config.get("origin") == "page":
+            out.update(origin="page", secret=_page_secret_view(self.config))   # 页面上加的才多这两项
+        return out
 
 
 def _url_prefix(url):
@@ -6433,16 +6488,19 @@ class HostError(RuntimeError):
     """连主机这一步失败了：没有 ssh 客户端、凭据不对、host key 不认识、连不上、超时。"""
 
 
-def _known_hosts():
-    """工具服务自己的 known_hosts，和主配置放在一起；按主机名（HostKeyAlias）登记，由 enroll 写入。"""
+def _known_hosts(host=None):
+    """工具服务自己的 known_hosts，和主配置放在一起；按主机名（HostKeyAlias）登记，由 enroll 写入。
+    页面上加的主机另用 ops_tools.page.known_hosts（页面上核对后写入）：主配置里的主机永远不认页面登记的 key。"""
+    if host is not None and host.get("origin") == "page":
+        return _page_known_hosts()
     path = Path(_state["path"])
     return path.with_name(f"{path.stem}.known_hosts")
 
 
-def _pinned_keys(alias):
-    """known_hosts 里登记给这台主机的 host key：[(类型, base64)]。"""
+def _pinned_keys(alias, path=None):
+    """known_hosts 里登记给这台主机的 host key：[(类型, base64)]。path 不给就是主配置那份。"""
     try:
-        lines = _known_hosts().read_text(encoding="utf-8").splitlines()
+        lines = Path(path or _known_hosts()).read_text(encoding="utf-8").splitlines()
     except OSError:
         return []
     found = []
@@ -6455,8 +6513,10 @@ def _pinned_keys(alias):
 
 def _check_known_hosts(host):
     """连之前先确认登记过 host key，而且文件没被放宽权限：从不自动接受，也不让别人往里塞。"""
-    path = _known_hosts()
-    if not _pinned_keys(host["name"]):
+    path = _known_hosts(host)
+    if not _pinned_keys(host["name"], path):
+        if host.get("origin") == "page":
+            raise HostError(f"主机 {host['name']} 的 host key 还没核对：在页面「工具 → 主机与数据源」里核对指纹后登记")
         raise HostError(f"主机 {host['name']} 的 host key 还没登记：先在工具服务所在机器上执行 "
                         f"ops_readonly.py enroll {host['name']}，核对指纹后登记")
     if os.name == "posix" and os.stat(path).st_mode & 0o022:
@@ -6468,17 +6528,26 @@ def _key_file(host):
     """私钥文件的路径（凭据的值）。不是普通文件、是符号链接、组或其他用户能读写、不属于工具服务账号，都拒绝。
 
     报错里只写凭据的名字，不写路径：路径也是凭据的一部分，不进日志和页面。
+    页面上加的主机没有 ${名字}：私钥固定是私密目录 page-hosts/ 下以主机名命名的那个文件（加主机时工具服务生成），照样把关。
     """
-    shown = "${" + host["key"] + "}"
-    try:
-        path = _secret(host["key"])
-    except ValueError:
-        raise HostError(f"主机 {host['name']} 的私钥 {shown} 没有配置（环境变量 {_secret_env(host['key'])}，"
-                        f"值是私钥文件的路径）") from None
+    if host.get("origin") == "page":
+        shown = "（页面上加主机时生成的）"
+        try:
+            path = _page_key_path(host["name"])
+        except ConfigError as exc:
+            raise HostError(f"主机 {host['name']} 的私钥{shown}：{exc}") from None
+    else:
+        shown = "${" + host["key"] + "}"
+        try:
+            path = _secret(host["key"])
+        except ValueError:
+            raise HostError(f"主机 {host['name']} 的私钥 {shown} 没有配置（环境变量 {_secret_env(host['key'])}，"
+                            f"值是私钥文件的路径）") from None
     try:
         info = os.lstat(path)
     except OSError:
-        raise HostError(f"主机 {host['name']} 的私钥 {shown} 指向的文件读不到") from None
+        raise HostError(f"主机 {host['name']} 的私钥 {shown} 指向的文件读不到"
+                        + ("：可能是从备份恢复的（私钥不进备份），在页面上删掉这台主机再重新加" if host.get("origin") == "page" else "")) from None
     if not stat.S_ISREG(info.st_mode):
         raise HostError(f"主机 {host['name']} 的私钥 {shown} 不是普通文件（不能是符号链接或目录）")
     if os.name == "posix":
@@ -6586,8 +6655,10 @@ def _ssh_failure(host, err):
     first = next((line for line in text.splitlines() if line.strip()), "")[:200]
     name = host["name"]
     if "IDENTIFICATION HAS CHANGED" in text or "Host key verification failed" in text or "host key is known" in text:
+        how = ("在页面「工具 → 主机与数据源」里重新扫描、核对后登记" if host.get("origin") == "page"
+               else f"enroll {name} --replace")
         return (f"主机 {name} 的 host key 和登记的不一致（或没登记），拒绝连接：可能是主机重装了，也可能有人在中间冒充。"
-                f"先在主机上核对指纹，确认无误再 enroll {name} --replace")
+                f"先在主机上核对指纹，确认无误再 {how}")
     if "Permission denied" in text:
         return f"主机 {name} 拒绝登录：账号 {host['user']} 上没有放工具服务的公钥，或账号不对（{first}）"
     return f"连不上主机 {name}：{first or 'ssh 退出码 255'}"
@@ -6766,14 +6837,15 @@ def _default_candidate(spec, host):
     return host["via"] != "local" or bool(spec.get("binary") and shutil.which(spec["binary"]))
 
 
-def _target_info(spec):
+def _target_info(spec, cfg=None):
     """命令型工具在主机模式下的 target：(可选的主机, 可选的组, 默认值或 None)；没有能跑它的主机返回 None。
 
     默认值的规则（文档和测试都按这条）：hosts.default（主机或 @组，不写就是本机）能跑这个工具就用它；
     不能的话，只剩一台主机能跑就用那一台；否则 target 必填。「能跑」只看配置和本机的命令（见 _default_candidate），
     所以默认值是确定的；可选的主机还要去掉后台检查确定跑不了的，但默认主机总在里面。
+    cfg：按另一份主机清单算（页面上加、改、删主机之前，算出哪些工具的 target 会变，见 _target_impact）；不给就是现在的。
     """
-    cfg = _hosts()
+    cfg = cfg or _hosts()
     usable = [name for name, host in cfg["hosts"].items() if _host_tool_state(spec, host)[0] != "no"]
     if not usable:
         return None
@@ -7093,6 +7165,8 @@ def _host_view(host):
         if status is not None:
             item["status"]["allowlist"] = (status.get("allowlist") or {}).get("version") or ""
             item["status"]["generated_at"] = (status.get("allowlist") or {}).get("generated_at") or ""
+    if host.get("origin") == "page":
+        item["origin"] = "page"   # 页面上加的才有这一项：主配置的主机一个字节都不变
     return item
 
 
@@ -7161,6 +7235,1798 @@ def run_tool(name, args):
     return _run_command(spec, args)
 
 
+# ---- 页面上配置：连接、远程 MCP server、对外开放、远程主机 ----------------------------------------------------------
+# 页面「工具 → 主机与数据源」上能加、改、删的东西，写在主配置旁边机器维护的旁路文件 ops_tools.page.yaml 里，
+# 和 ops_tools.mcp.yaml、overrides、trust 一样：手写的主配置一个字节都不动。主配置里已有的条目在页面上只读。
+# 扩大能力的改动（新增、修改、删除、测试连接、打开对外开放、核对 host key）都要审批口令，由这里核对（check_passphrase，
+# 和批准、改口令共用输错计数和锁定）；关闭对外开放、重新扫描 host key、检查连通、生成安装包不要口令（只缩小能力或只读）。
+#
+# 两条硬规矩：
+#   1. 页面加的连接只能用页面上为它输入的凭据，引用不了服务器上已有的 ${名字} / OPS_SECRET_*：页面条目里任何地方不能有 ${，
+#      凭据只从 page-secrets.json 里它自己那一条取（_page_credential），这条路上不碰环境变量；用页面连接的工具自己也不能再引用凭据。
+#   2. 去向一变，存好的凭据就作废：每条凭据带着去向的指纹（_page_dest），改了去向就删掉，用的时候对不上就不发。
+#
+# 文件（私密目录是 OPS_PRIVATE_DIR，不写就是审批口令文件所在的目录，即 /etc/ops-readonly）：
+#   ops_tools.page.yaml               页面加的连接、MCP server、对外开放、主机（0644，进备份）
+#   ops_tools.page.known_hosts        页面加的主机核对过的 host key（0644，进备份）
+#   ops_tools.page.log                最近的配置变更，每行一个 JSON（进备份）
+#   page-bundles/<主机名>.tgz          页面加的主机的安装包（0644）：下载接口原样给出，A 上可以 sha256sum 对照
+#   <私密目录>/page-secrets.json        页面上输入的凭据（0600，不进备份）
+#   <私密目录>/page-hosts/<主机名>       页面加的主机的私钥（ed25519，0600，不进备份）
+# 宿主机上不想让页面改这些：/etc/ops-readonly.env 里写 OPS_PAGE_CONFIG=off（页面只读，写接口回 403）。
+
+PAGE_FORMAT = 1
+PAGE_KINDS = ("connections", "mcp_servers", "export", "hosts")
+PAGE_LIMITS = {"connections": 50, "mcp_servers": 20, "hosts": 50}
+PAGE_CONN_TYPES = ("http", "postgres", "mysql")
+PAGE_CONN_FIELDS = {
+    "http": ("name", "type", "label", "base", "auth", "auth_header", "external"),
+    "postgres": ("name", "type", "label", "host", "port", "database", "user", "tls", "timeout", "external"),
+    "mysql": ("name", "type", "label", "host", "port", "database", "user", "tls", "timeout", "external")}
+PAGE_MCP_FIELDS = ("id", "label", "url", "protocol", "timeout", "auth", "auth_header", "external")
+PAGE_HOST_FIELDS = ("name", "address", "port", "user", "os", "mode", "groups", "tools", "from")
+PAGE_EXPORT_FIELDS = ("tool", "on", "fp")
+PAGE_AUTHS = ("none", "bearer", "header")
+# 「指定请求头」这几个不能用：它们由协议和传输层管
+PAGE_RESERVED_HEADERS = MCP_RESERVED_HEADERS + ("transfer-encoding", "connection", "te", "upgrade", "user-agent",
+                                                "proxy-authorization")
+PAGE_SECRETS_MAX = 256 * 1024
+PAGE_SECRET_KEY = re.compile(r"^(connection|mcp):[a-z][a-z0-9_]{0,30}$")
+# 令牌至少 8 个字符：工具输出里的回显靠 _scrub 盖住，它只处理 6 个字符以上的值
+PAGE_BEARER = re.compile(r"[\x21-\x7e]{8,8192}")
+PAGE_HEADER_VALUE = re.compile(r"[\x21-\x7e][\x20-\x7e]{6,8190}[\x21-\x7e]")
+PAGE_PASSWORD_MAX = 1024
+PAGE_LOOKS_LIKE_REF = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
+PAGE_CHANGES_KEEP = 200
+PAGE_CHANGES_SHOWN = 50
+PAGE_FROM_MAX = 5
+PAGE_OS = ("linux", "darwin")
+PAGE_FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
+PAGE_BUNDLE_MAX = 8 * 1024 * 1024
+PAGE_BUNDLE_GAP = 3            # 同一台主机两次生成安装包至少隔几秒
+PAGE_HEADER = ("# 页面「工具 → 主机与数据源」上加的连接、远程 MCP server、对外开放、远程主机。由工具服务维护，不要手改：\n"
+               "# 手改坏的条目会被跳过，原因写在日志和页面的「配置问题」里。凭据不在这里（在私密目录的 page-secrets.json）。\n")
+_page_tests = {}               # (类, 名字) → 最近一次测试的结论：只在内存里，给页面看
+_page_bundle_times = {}        # 主机名 → 上一次生成安装包的时刻
+
+
+class Forbidden(ConfigError):
+    """页面配置在宿主机上关了（OPS_PAGE_CONFIG=off）：回 403。"""
+
+
+def page_config_enabled():
+    """OPS_PAGE_CONFIG=off（或 false、0、no）时页面上只能看、不能改：写接口回 403。不写就是开着。"""
+    return os.environ.get("OPS_PAGE_CONFIG", "").strip().lower() not in ("off", "false", "0", "no")
+
+
+def _page_writable():
+    if not page_config_enabled():
+        raise Forbidden("页面配置在宿主机上关了（OPS_PAGE_CONFIG=off）：页面上只能看，不能改。要在页面上配置，"
+                        "在宿主机的 /etc/ops-readonly.env 里去掉这一行（或改成 on），再重启工具服务")
+
+
+def _private_dir():
+    """页面凭据和页面主机的私钥放在哪：OPS_PRIVATE_DIR，不写就是审批口令文件所在的目录（/etc/ops-readonly）。"""
+    return os.path.abspath(os.environ.get("OPS_PRIVATE_DIR") or os.path.dirname(os.path.abspath(_approval_path())))
+
+
+def _page_file():
+    return _sibling("page")
+
+
+def _page_known_hosts():
+    path = Path(_state["path"])
+    return path.with_name(f"{path.stem}.page.known_hosts")
+
+
+def _page_log_file():
+    path = Path(_state["path"])
+    return path.with_name(f"{path.stem}.page.log")
+
+
+def _page_secrets_file():
+    return os.path.join(_private_dir(), "page-secrets.json")
+
+
+def _page_bundles_dir():
+    return str(Path(_state["path"]).with_name("page-bundles"))
+
+
+def _named_path(folder, name, suffix=""):
+    """folder 里以 name 命名的文件。名字先按主机名的规则校验（小写字母或数字开头，只有字母、数字和 . _ -：
+    没有 /、..、空白和控制字符），拼好之后再确认它（解开符号链接之后）还在 folder 里面。"""
+    if not isinstance(name, str) or not HOST_NAME.match(name):
+        raise ConfigError(f"名字不合法：{str(name)[:40]!r}")
+    base = os.path.realpath(folder)
+    path = os.path.realpath(os.path.join(base, name + suffix))
+    if os.path.dirname(path) != base:
+        raise ConfigError(f"{name}：拼出来的路径不在 {folder} 里面，拒绝")
+    return path
+
+
+def _page_key_path(name):
+    return _named_path(os.path.join(_private_dir(), "page-hosts"), name)
+
+
+def _page_bundle_path(name):
+    return _named_path(_page_bundles_dir(), name, ".tgz")
+
+
+# ---- 页面条目的校验：加载旁路文件和处理页面请求用同一套，写进去的一定读得回来 ------------------------------------
+
+def _page_no_refs(owner, entry):
+    """页面条目里任何地方出现 ${ 都整条拒绝：页面上加的东西引用不了服务器上的凭据和环境变量。"""
+    for key, value in entry.items():
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+        if "${" in text:
+            raise ConfigError(f"{owner} 的 {key} 里有 ${{…}}：页面上加的东西不能引用服务器上的凭据和环境变量")
+
+
+def _page_only(owner, entry, allowed):
+    unknown = sorted(str(key) for key in entry if key not in allowed)
+    if unknown:
+        raise ConfigError(f"{owner} 里有页面上不能写的字段 {'、'.join(unknown)[:200]}（只认 {'、'.join(allowed)}）")
+
+
+def _page_label(raw, limit=MAX_LABEL):
+    return "".join(ch for ch in str(raw or "") if ch.isprintable()).strip()[:limit]
+
+
+def _page_external(owner, raw):
+    """页面上只能把内部的改标成外部（更严）；把外部的改标成内部只能在主配置里做。"""
+    if raw is None:
+        return None
+    if raw is True:
+        return True
+    raise ConfigError(f"{owner} 的 external 只能写 true（标为外部）：页面上不能把它标成内部，要标内部只能在主配置里做")
+
+
+def _page_url(owner, field, raw):
+    """页面上的地址：只能是字面量 http(s)://主机[:端口][/路径]，主机部分不能有参数、变量、空白和用户名密码，不能带查询串。"""
+    text = str(raw or "").strip()
+    found = re.match(r"^https?://([^/?#]+)(.*)$", text)
+    if not found or len(text) > 2000 or not _url_host(text):
+        raise ConfigError(f"{owner} 的 {field} 要写成 http://主机[:端口][/路径] 或 https://…")
+    if re.search(r"[{}$@\s\\]", found.group(1)):
+        raise ConfigError(f"{owner} 的 {field} 的主机部分不能有参数、变量、空白或用户名密码（凭据单独输入）")
+    rest = found.group(2)
+    if rest and not rest.startswith("/"):
+        raise ConfigError(f"{owner} 的 {field} 主机名后面必须直接是路径（以 / 开头）")
+    if re.search(r"[{}$?#\s\\]", rest):
+        raise ConfigError(f"{owner} 的 {field} 只能是地址，不能带参数、查询串或空白")
+    return text
+
+
+def _page_auth(owner, entry):
+    """接口和 MCP 带不带凭据、放在哪个请求头：none 不带；bearer 放 Authorization: Bearer …；header 放 auth_header 指定的请求头。"""
+    auth = str(entry.get("auth") or "none").strip()
+    if auth not in PAGE_AUTHS:
+        raise ConfigError(f"{owner} 的 auth 只能是 none（不带凭据）、bearer、header（指定请求头）")
+    header = str(entry.get("auth_header") or "").strip()
+    if auth == "header":
+        lowered = header.lower()
+        if not HEADER_NAME.match(header) or lowered in PAGE_RESERVED_HEADERS or lowered.startswith("mcp-"):
+            raise ConfigError(f"{owner} 的 auth_header 不能用 {header[:40]!r}：要是一个普通的请求头名，比如 X-Api-Key")
+    elif header:
+        raise ConfigError(f"{owner} 只有 auth: header 时才写 auth_header")
+    return auth, header
+
+
+def _check_page_connection(entry):
+    """旁路文件（或页面请求）里的一个连接 → 和主配置的连接同样形状的字典，带 origin: page 和凭据的引用（没有值）。"""
+    if not isinstance(entry, dict):
+        raise ConfigError("页面配置的 connections 每一项必须是映射")
+    name = str(entry.get("name", "")).strip()
+    if not CONN_NAME.match(name):
+        raise ConfigError(f"页面上加的连接名不合法：{name[:40]!r}（小写字母开头，只能用小写字母、数字、下划线，最长 31 个字符）")
+    owner = f"页面上加的连接 {name}"
+    kind = str(entry.get("type", "")).strip()
+    if kind == "sqlite":
+        raise ConfigError(f"{owner}：页面上不支持 sqlite——它的「地址」是服务器上的文件路径，等于能读服务器上的任意数据库文件"
+                          f"（比如应用自己的 chat.db、access.db）；要用 sqlite 只能在主配置里配")
+    if kind not in PAGE_CONN_TYPES:
+        raise ConfigError(f"{owner} 的 type 只能是 http、postgres、mysql")
+    _page_only(owner, entry, PAGE_CONN_FIELDS[kind])
+    _page_no_refs(owner, entry)
+    declared = _page_external(owner, entry.get("external"))
+    if kind == "http":
+        base = _page_url(owner, "base", entry.get("base")).rstrip("/")
+        auth, header = _page_auth(owner, entry)
+        body = {"base": base, "headers": {}, "ca": "", "bearer": "", "bearer_file": "", "auth": auth,
+                "auth_header": header}
+        judged = _judge_address(base, url=True)
+    else:
+        # 和主配置的数据库连接同一套校验；页面这边没有 password、ca 字段（上面整条拒绝），所以它们一定是空的
+        body = _check_db_connection(name, kind, entry)
+        judged = _judge_address(body["host"], url=False)
+    conn = {"name": name, "type": kind, "label": _page_label(entry.get("label")), **body,
+            "declared_external": declared, "origin": "page",
+            "page_secret": {"key": f"connection:{name}", "id": "", "state": "missing", "set_at": ""}}
+    conn["external"], conn["external_why"] = (True, "页面上标为外部") if declared else judged
+    return conn
+
+
+def _check_page_mcp(entry):
+    """旁路文件里的一个远程 MCP server → (id, 和主配置的远程 server 同样形状的配置)。只支持 Streamable HTTP。"""
+    if not isinstance(entry, dict):
+        raise ConfigError("页面配置的 mcp_servers 每一项必须是映射")
+    ident = str(entry.get("id", "")).strip()
+    if not MCP_SERVER_ID.match(ident):
+        raise ConfigError(f"页面上加的 MCP server id 不合法：{ident[:40]!r}（小写字母开头，只能用小写字母、数字、下划线），"
+                          f"它会成为工具名的前缀")
+    owner = f"页面上加的 MCP server {ident}"
+    if any(entry.get(key) not in (None, "", []) for key in ("command", "args", "env", "cwd")):
+        raise ConfigError(f"{owner}：页面上不支持本机 MCP server（stdio）——它是在工具服务这台机器上以 root 跑的程序，"
+                          f"只能在主配置里声明")
+    _page_only(owner, entry, PAGE_MCP_FIELDS)
+    _page_no_refs(owner, entry)
+    url = _page_url(owner, "url", entry.get("url"))
+    auth, header = _page_auth(owner, entry)
+    protocol = str(entry.get("protocol") or "auto").strip()
+    if protocol not in MCP_HTTP_PROTOCOLS:
+        raise ConfigError(f"{owner} 的 protocol 只能是 {'、'.join(MCP_HTTP_PROTOCOLS)}")
+    declared = _page_external(owner, entry.get("external"))
+    config = {"transport": "http", "url": url, "headers": {}, "protocol": protocol,
+              "timeout": _bounded_int(owner, entry, "timeout", (TIMEOUT, 1, 120)), "ca": "",
+              "label": _page_label(entry.get("label"), GROUP_MAX) or ident, "declared_external": declared,
+              "origin": "page", "auth": auth, "auth_header": header,
+              "page_secret": {"key": f"mcp:{ident}", "id": "", "state": "missing", "set_at": ""}}
+    config["external"], config["external_why"] = (True, "页面上标为外部") if declared else _judge_address(url, url=True)
+    return ident, config
+
+
+def _page_sources(owner, raw):
+    """工具服务的出口地址（目标主机看到的来源）：写进 authorized_keys 的 from=。只认 IP 或网段，不认主机名和通配符。"""
+    items = raw if isinstance(raw, list) else [] if raw in (None, "") else [raw]
+    if not 1 <= len(items) <= PAGE_FROM_MAX:
+        raise ConfigError(f"{owner} 要写工具服务的出口地址（目标主机看到的来源 IP，1 到 {PAGE_FROM_MAX} 个）："
+                          f"它会写进 authorized_keys 的 from=，有 NAT 时是公网出口地址")
+    out = []
+    for item in items:
+        text = str(item).strip()
+        try:
+            network = ipaddress.ip_network(text, strict=False)
+        except ValueError:
+            raise ConfigError(f"{owner} 的出口地址 {text[:40]!r} 不是 IP 或网段（不能写主机名和通配符）") from None
+        if network.prefixlen < (16 if network.version == 4 else 48):
+            raise ConfigError(f"{owner} 的出口地址 {text[:40]} 范围太大，from= 就没有意义了")
+        shown = str(network.network_address) if network.num_addresses == 1 else str(network)
+        if shown not in out:
+            out.append(shown)
+    return out
+
+
+def _check_page_host(entry):
+    """旁路文件里的一台主机 → 和主配置的远程主机同样形状的字典（origin: page，没有 key：私钥固定是 page-hosts/<名字>）。
+    不继承主配置的 hosts.defaults：那里面有 key: ${ssh_key}，页面加的主机用不了服务器上已有的私钥。"""
+    if not isinstance(entry, dict):
+        raise ConfigError("页面配置的 hosts 每一项必须是映射")
+    name = str(entry.get("name", "")).strip()
+    if not HOST_NAME.match(name):
+        raise ConfigError(f"页面上加的主机名不合法：{name[:40]!r}（小写字母或数字开头，可含 . _ -，最长 63）")
+    owner = f"页面上加的主机 {name}"
+    if name == LOCAL_HOST:
+        raise ConfigError(f"{owner}：local 留给本机")
+    if entry.get("key") not in (None, ""):
+        raise ConfigError(f"{owner} 不能写 key：页面上加的主机只用工具服务为它生成的私钥，不能用服务器上已有的私钥")
+    if entry.get("via") not in (None, "", "ssh"):
+        raise ConfigError(f"{owner}：页面上只能加经 SSH 连的远程主机")
+    _page_only(owner, {key: value for key, value in entry.items() if key != "via"}, PAGE_HOST_FIELDS)
+    _page_no_refs(owner, entry)
+    address = str(entry.get("address") or "").strip()
+    if not HOST_ADDRESS.match(address):
+        raise ConfigError(f"{owner} 的地址不合法：{address[:60]!r}（主机名或 IP，不带用户名、端口和空格）")
+    port = entry.get("port", 22)
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ConfigError(f"{owner} 的端口要是 1..65535 的整数")
+    user = str(entry.get("user") or "").strip()
+    if not HOST_USER.match(user):
+        raise ConfigError(f"{owner} 的账号不合法：{user[:40]!r}")
+    system = str(entry.get("os") or "linux").strip().lower()
+    if system not in PAGE_OS:
+        raise ConfigError(f"{owner} 的系统只能是 linux 或 darwin（Windows 主机还不支持）")
+    mode = str(entry.get("mode") or "guarded").strip()
+    if mode not in HOST_MODES:
+        raise ConfigError(f"{owner} 的模式只能是 guarded（受控）或 direct（直连）")
+    return {"name": name, "via": "ssh", "address": address, "port": port, "user": user, "key": None, "os": system,
+            "mode": mode, "groups": _host_names(owner, "groups", entry.get("groups") or None, reserved=("all",)) or [],
+            "tools": _host_names(owner, "tools", entry.get("tools") or None, TOOL_NAME),
+            "from": _page_sources(owner, entry.get("from")), "origin": "page"}
+
+
+def _check_page_export(entry):
+    """旁路文件里的一条对外开放设置 → (工具名, {on, fp})。打开的要带着打开时这个工具的定义指纹。"""
+    if not isinstance(entry, dict):
+        raise ConfigError("页面配置的 export 每一项必须是映射")
+    tool = str(entry.get("tool", "")).strip()
+    if not TOOL_NAME.match(tool):
+        raise ConfigError(f"页面配置的 export 里工具名不合法：{tool[:40]!r}")
+    _page_only(f"页面上对 {tool} 的对外开放设置", entry, PAGE_EXPORT_FIELDS)
+    on = entry.get("on")
+    if not isinstance(on, bool):
+        raise ConfigError(f"页面上对 {tool} 的对外开放设置：on 只能是 true 或 false")
+    fp = str(entry.get("fp") or "")
+    if on and not re.fullmatch(r"sha256:[0-9a-f]{64}", fp):
+        raise ConfigError(f"页面上打开了 {tool} 的对外开放，却没有记下工具的定义指纹：已忽略，在页面上重新打开")
+    return tool, {"on": on, "fp": fp if on else ""}
+
+
+# ---- 页面凭据：page-secrets.json。每次用都现读、现把关（不缓存），去向对得上才给 -------------------------------------
+
+def _page_secret_problem(path, why):
+    return (f"页面凭据文件 {path} {why}：页面上加的连接、MCP server 暂时都不带凭据。在宿主机上查明原因"
+            f"（文件要 chmod 600、属于工具服务的运行账号），或者删掉它，再到页面上重新输入")
+
+
+def _page_secret_records():
+    """页面凭据文件 → ({键: 记录}, 问题)。没有这个文件是 ({}, "")。和审批口令文件一样把关：普通文件、不是符号链接、
+    属于工具服务的运行账号、组和其他用户没有权限；不满足就一条都不给，原因写在问题里。报错里不带文件内容。"""
+    path = _page_secrets_file()
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return {}, ""
+    except OSError as exc:
+        return {}, _page_secret_problem(path, f"读不了（{exc.strerror or exc.__class__.__name__}）")
+    problem = ""
+    if not stat.S_ISREG(info.st_mode):
+        problem = "不是普通文件（也不能是符号链接）"
+    elif os.name == "posix" and info.st_uid != os.geteuid():
+        problem = "不属于工具服务的运行账号"
+    elif os.name == "posix" and info.st_mode & 0o077:
+        problem = f"组或其他用户有权限（{oct(info.st_mode & 0o777)}），要 chmod 600"
+    elif info.st_size > PAGE_SECRETS_MAX:
+        problem = "太大了"
+    if problem:
+        return {}, _page_secret_problem(path, problem)
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        with os.fdopen(os.open(path, flags), "rb") as handle:
+            opened = os.fstat(handle.fileno())
+            data = handle.read(PAGE_SECRETS_MAX + 1)
+        if os.name == "posix" and (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+            return {}, _page_secret_problem(path, "在检查之后被换掉了")
+        document = json.loads(data.decode("utf-8"))
+    except (OSError, ValueError) as exc:     # 含 JSON、UTF-8 解码错误；只报类型，不带内容
+        return {}, _page_secret_problem(path, f"的内容读不出来（{exc.__class__.__name__}）")
+    if not isinstance(document, dict) or document.get("format") != PAGE_FORMAT or not isinstance(document.get("secrets"), dict):
+        return {}, _page_secret_problem(path, "不是页面凭据文件的格式")
+    records = {}
+    for key, record in document["secrets"].items():
+        if (PAGE_SECRET_KEY.match(str(key)) and isinstance(record, dict) and isinstance(record.get("value"), str)
+                and record["value"] and re.fullmatch(r"sha256:[0-9a-f]{64}", str(record.get("dest", "")))
+                and re.fullmatch(r"[0-9a-f]{16}", str(record.get("id", "")))):
+            records[key] = {"dest": record["dest"], "id": record["id"], "value": record["value"],
+                            "set_at": str(record.get("set_at") or "")[:40]}
+    return records, ""
+
+
+def _page_secret_change(key, dest=None, value=None):
+    """设一条凭据（value 给了，绑定去向 dest），或者删掉（value 是 None）。返回删掉了没有（设的时候是 False）。
+    凭据文件有问题时不写：先在宿主机上处理，免得把别的凭据弄丢。"""
+    records, problem = _page_secret_records()
+    if problem:
+        raise Conflict(f"{problem}。这次没有改凭据")
+    removed = False
+    if value is None:
+        removed = records.pop(key, None) is not None
+        if not removed:
+            return False
+    else:
+        records[key] = {"dest": dest, "id": secrets.token_hex(8), "value": value,
+                        "set_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
+    text = json.dumps({"format": PAGE_FORMAT, "secrets": records}, ensure_ascii=False, indent=1) + "\n"
+    _write_private(_page_secrets_file(), text)
+    return removed
+
+
+def _page_dest(holder):
+    """凭据绑定的去向：接口是连接名和地址；数据库是连接名、类型、主机、端口、库名、账号和 TLS 方式；MCP 是 server id 和 url。
+    任何一项变了，原来存的凭据就作废（改的时候删掉，用的时候对不上不发）。"""
+    key = holder["page_secret"]["key"]
+    if key.startswith("mcp:"):
+        parts = ["mcp", key[4:], holder["url"]]
+    elif holder["type"] == "http":
+        parts = ["connection", holder["name"], "http", holder["base"]]
+    else:
+        parts = ["connection", holder["name"], holder["type"], holder["host"], holder["port"], holder["database"],
+                 holder["user"], holder["tls"]]
+    basis = json.dumps(parts, ensure_ascii=False, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(basis.encode("utf-8")).hexdigest()
+
+
+def _page_owner(holder):
+    kind, _, name = holder["page_secret"]["key"].partition(":")
+    return f"{'连接' if kind == 'connection' else 'MCP server'} {name}"
+
+
+def _page_secret_state(holder, records, problem):
+    """加载时记下凭据的状态（set 有、能用 / missing 没有 / stale 去向变过、作废了 / unreadable 凭据文件有问题）和随机 id。
+    值不留：连接、server 的字典里只有这个引用，预审的缓存键、/tools/full 都碰不到值。"""
+    record = records.get(holder["page_secret"]["key"])
+    if problem:
+        state = "unreadable"
+    elif record is None:
+        state = "missing"
+    else:
+        state = "set" if record["dest"] == _page_dest(holder) else "stale"
+    holder["page_secret"].update(id=record["id"] if record and state == "set" else "", state=state,
+                                 set_at=record["set_at"] if record else "")
+
+
+def _page_secret_view(holder):
+    """页面上看到的凭据：只有状态和设置时间，永远没有值。none：这个连接不带凭据。"""
+    if holder.get("auth") == "none":
+        return {"state": "none"}
+    secret = holder.get("page_secret") or {}
+    view = {"state": secret.get("state") or "missing"}
+    if secret.get("set_at") and view["state"] == "set":
+        view["set_at"] = secret["set_at"]
+    return view
+
+
+def _page_auth_header(holder):
+    """页面上加的接口、MCP 把凭据放在哪个请求头（给人看）；不带凭据是空串。"""
+    return {"bearer": "Authorization", "header": holder.get("auth_header", "")}.get(holder.get("auth"), "")
+
+
+def _page_credential(holder, used, optional=False):
+    """页面上为这个连接 / MCP server 输入的凭据：每次现读凭据文件（照样把关，检查不过就不给），
+    只取它自己那一条，去向和现在的对得上才给；取到的值记进 used（输出里脱敏）。从不碰环境变量。
+    optional：数据库可以不设密码，没有这一条时返回空串；有但作废了照样报错，不悄悄换成不带密码去连。"""
+    records, problem = _page_secret_records()
+    owner = _page_owner(holder)
+    if problem:
+        raise ValueError(f"{owner} 的凭据现在用不了：{problem}")
+    record = records.get(holder["page_secret"]["key"])
+    if record is None:
+        if optional:
+            return ""
+        raise ValueError(f"{owner} 还没有在页面上输入凭据：到「工具 → 主机与数据源」里修改它，输入凭据")
+    if record["dest"] != _page_dest(holder):
+        raise ValueError(f"{owner} 的去向变过，原来存的凭据已作废：到「工具 → 主机与数据源」里重新输入")
+    used.append(record["value"])
+    return record["value"]
+
+
+def _page_http_auth(holder, headers, used):
+    """页面上加的接口连接、MCP server 发请求时带上凭据：bearer 放 Authorization，header 放指定的请求头；none 什么都不带。"""
+    auth = holder.get("auth")
+    if auth in (None, "none"):
+        return
+    value = _page_credential(holder, used)
+    if auth == "bearer":
+        headers["Authorization"] = "Bearer " + value
+    else:
+        headers[holder["auth_header"]] = value
+
+
+def _page_refs_check(conn, done):
+    """自动检查（预审）里页面连接的那一项：页面上输入的凭据在不在、去向对不对得上。只看状态，不读值。"""
+    state = (conn.get("page_secret") or {}).get("state")
+    if conn["type"] == "http" and conn.get("auth") == "none":
+        return None
+    if conn["type"] != "http" and state == "missing":
+        return None                     # 数据库可以不设密码
+    done.append("页面凭据")
+    title = f"连接 {conn['name']} 的凭据（页面上输入的）"
+    if state == "set":
+        return _check("conn", "ok", title, "页面上输入过，去向对得上（只看了在不在，没读值）")
+    text = {"missing": "还没在页面上输入：批了也用不了",
+            "stale": "连接的去向变过，原来存的凭据已作废：要在页面上重新输入，不然批了也用不了",
+            "unreadable": "页面凭据文件有问题（见「配置问题」）：批了也用不了"}.get(state, "用不了")
+    return _check("conn", "fail", title, text)
+
+
+# ---- 加载：旁路文件里的条目并进连接、server、主机清单和对外开放（主配置优先） -----------------------------------------
+
+def _read_page_document():
+    """旁路文件：(内容, 问题)。没有这个文件是 ({}, "")；读不了、顶层不是映射是 (None, 原因)。"""
+    try:
+        return _read_yaml(_page_file()), ""
+    except ConfigError as exc:
+        return None, f"页面配置文件读不了，页面上加的连接、MCP server、对外开放、主机暂时都不生效：{exc}"
+
+
+def _entry_name(entry, key):
+    text = str(entry.get(key, "")).strip() if isinstance(entry, dict) else ""
+    return text if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,62}", text) else ""
+
+
+def _load_page(problems, connections, broken, servers, hosts):
+    """读旁路文件，校验每一条：坏的跳过，和主配置重名的跳过（主配置优先），都记进 problems。旁路文件没有或是空的，什么都不变。
+
+    返回 readable（旁路文件读不读得了：读不了时页面上不能写，免得盖掉手改的内容）、connections、servers、
+    hosts（全部页面主机，含还没核对 host key 的）、export、entries（原始条目，给页面的修改表单）、skipped（没加载的条目）、
+    main_hosts（只有主配置的主机清单，算加、删主机的影响用）。"""
+    out = {"readable": True, "connections": {}, "servers": {}, "hosts": {}, "export": {}, "skipped": [],
+           "entries": {kind: {} for kind in PAGE_KINDS}, "main_hosts": hosts,
+           "main_connections": sorted(set(connections) | set(broken)), "main_mcp_servers": sorted(servers)}
+    document, problem = _read_page_document()
+    if document is None:
+        problems.append(problem)
+        out["readable"] = False
+        return out
+    if not document:
+        return out
+    unknown = sorted(str(key) for key in document if key not in PAGE_KINDS + ("format",))
+    if unknown:
+        problems.append(f"页面配置里有不认识的部分 {'、'.join(unknown)[:200]}，已忽略")
+    records, secret_problem = {}, ""
+    if document.get("connections") or document.get("mcp_servers"):
+        records, secret_problem = _page_secret_records()
+        if secret_problem:
+            problems.append(secret_problem)
+    main_hosts = set(((hosts or {}).get("hosts") or {}))
+    for kind in PAGE_KINDS:
+        raw = document.get(kind)
+        if raw is None:
+            continue
+        if not isinstance(raw, list):
+            problems.append(f"页面配置的 {kind} 必须是列表，已忽略")
+            continue
+        key = {"mcp_servers": "id", "export": "tool"}.get(kind, "name")
+        for entry in raw:
+            try:
+                name = _admit_page_entry(kind, entry, out, connections, broken, servers, main_hosts,
+                                         records, secret_problem)
+                out["entries"][kind][name] = entry
+            except ConfigError as exc:
+                problems.append(f"{exc}（页面配置，这一条已跳过）")
+                out["skipped"].append({"kind": kind, "name": _entry_name(entry, key), "reason": str(exc)})
+    return out
+
+
+def _admit_page_entry(kind, entry, out, connections, broken, servers, main_hosts, records, secret_problem):
+    if kind == "connections":
+        conn = _check_page_connection(entry)
+        name = conn["name"]
+        if name in connections or name in broken:
+            raise ConfigError(f"页面上加的连接 {name} 和主配置里的同名，已忽略（主配置优先）；可以在页面上删掉它")
+        if name in out["connections"]:
+            raise ConfigError(f"页面配置里连接 {name} 写了两次")
+        if len(out["connections"]) >= PAGE_LIMITS["connections"]:
+            raise ConfigError(f"页面上最多加 {PAGE_LIMITS['connections']} 个连接，{name} 没有加载")
+        _page_secret_state(conn, records, secret_problem)
+        out["connections"][name] = conn
+        return name
+    if kind == "mcp_servers":
+        ident, config = _check_page_mcp(entry)
+        if ident in servers:
+            raise ConfigError(f"页面上加的 MCP server {ident} 和主配置里的同名，已忽略（主配置优先）；可以在页面上删掉它")
+        if ident in out["servers"]:
+            raise ConfigError(f"页面配置里 MCP server {ident} 写了两次")
+        if len(out["servers"]) >= PAGE_LIMITS["mcp_servers"]:
+            raise ConfigError(f"页面上最多加 {PAGE_LIMITS['mcp_servers']} 个 MCP server，{ident} 没有加载")
+        _page_secret_state(config, records, secret_problem)
+        out["servers"][ident] = config
+        return ident
+    if kind == "hosts":
+        host = _check_page_host(entry)
+        name = host["name"]
+        if name in main_hosts:
+            raise ConfigError(f"页面上加的主机 {name} 和主配置里的同名，已忽略（主配置优先）；可以在页面上删掉它")
+        if name in out["hosts"]:
+            raise ConfigError(f"页面配置里主机 {name} 写了两次")
+        if len(out["hosts"]) >= PAGE_LIMITS["hosts"]:
+            raise ConfigError(f"页面上最多加 {PAGE_LIMITS['hosts']} 台主机，{name} 没有加载")
+        out["hosts"][name] = host
+        return name
+    tool, record = _check_page_export(entry)
+    if tool in out["export"]:
+        raise ConfigError(f"页面配置里 {tool} 的对外开放写了两次")
+    out["export"][tool] = record
+    return tool
+
+
+def _tool_fp(spec):
+    """对外开放绑定的「工具定义」：实现类型、参数和实现本身（命令模板、脚本内容、地址、查询、MCP 的 schema 指纹……）。
+    说明、显示名、分组、启停不算。页面上打开对外开放时记下它；定义变了，这次打开就自动暂停，要重新打开（输口令）。"""
+    kind = spec.get("type", "command")
+    if kind == "command":
+        impl = {"argv": spec["argv"], "os": spec.get("os") or [], "groups": spec.get("groups") or []}
+    elif kind == "script":
+        impl = {"script": spec["script"], "sha256": load_trust().get(spec["script"], ""), "os": spec.get("os") or []}
+    elif kind == "http":
+        impl = {key: spec["http"].get(key) for key in ("url", "conn", "query", "headers", "pick", "external")}
+    elif kind == "sql":
+        impl = {key: spec["sql"].get(key) for key in ("conn", "query", "max_rows")}
+    elif kind == "mcp":
+        impl = {"mcp": spec["mcp"], "schema_hash": spec.get("schema_hash", ""), "restrict": spec.get("restrict") or {}}
+    else:
+        impl = {"builtin": spec.get("builtin", "")}
+    basis = json.dumps({"type": kind, "params": spec.get("params") or {}, "impl": impl},
+                       ensure_ascii=False, sort_keys=True, default=str)
+    return "sha256:" + hashlib.sha256(basis.encode("utf-8")).hexdigest()
+
+
+def _apply_page_export(tools, records, problems):
+    """主配置的 export 算完之后套上页面的设置：关的一律关（主配置写了 true 也关）；开的要工具还在、定义指纹对得上才开。
+    export_main 记下主配置自己的意思（页面上开关时据此决定要不要留一条记录），export_page 给页面看。"""
+    for spec in tools.values():
+        spec["export_main"] = bool(spec.get("export"))
+    for name, record in sorted(records.items()):
+        spec = tools.get(name)
+        if spec is None:
+            if record["on"]:
+                problems.append(f"页面上打开了 {name} 的对外开放，但已经没有这个工具了，已忽略")
+            continue
+        if not record["on"]:
+            spec["export"], spec["export_page"] = False, "off"
+        elif record["fp"] == _tool_fp(spec):
+            spec["export"], spec["export_page"] = True, "on"
+        else:
+            spec["export_page"] = "stale"
+            problems.append(f"页面上打开了 {name} 的对外开放，但这个工具的定义后来变了：对外开放已暂停，确认无误后在页面上重新打开")
+
+
+def _host_groups(hosts):
+    groups = {}
+    for host in hosts.values():
+        for group in host["groups"]:
+            groups.setdefault(group, []).append(host["name"])
+    groups["all"] = list(hosts)
+    return groups
+
+
+def _merge_page_hosts(cfg, page_hosts, active=None):
+    """页面加的主机并进主机清单：只有核对过 host key 的（active 不给就看 page known_hosts）。主配置没有 hosts 段时，
+    第一台页面主机打开主机模式，其余设置用默认值（本机算一台，默认在本机跑）。不改传进来的 cfg。"""
+    if active is None:
+        active = {name for name in page_hosts if _pinned_keys(name, _page_known_hosts())}
+    chosen = [host for name, host in page_hosts.items() if name in active]
+    if not chosen:
+        return cfg
+    if cfg is None:
+        cfg = {"hosts": {LOCAL_HOST: {"name": LOCAL_HOST, "via": "local", "groups": [], "tools": None, "implicit": True}},
+               "default": LOCAL_HOST, "local": LOCAL_HOST, **{key: bounds[0] for key, bounds in HOST_LIMITS.items()}}
+    cfg = {**cfg, "hosts": dict(cfg["hosts"])}
+    for host in chosen:
+        cfg["hosts"][host["name"]] = host
+    cfg["groups"] = _host_groups(cfg["hosts"])
+    return cfg
+
+
+# ---- 写：旁路文件、变更记录 -------------------------------------------------------------------------------------------
+
+def _page_document():
+    """要改旁路文件：读出现在的内容（四个列表）。读不了时不能写：免得把手改的内容盖掉。"""
+    document, problem = _read_page_document()
+    if document is None:
+        raise Conflict(f"{problem}。页面上暂时不能改：先在服务器上修好或删掉 {_page_file()}")
+    return {kind: list(document.get(kind)) if isinstance(document.get(kind), list) else [] for kind in PAGE_KINDS}
+
+
+def _page_write(document):
+    """原子写旁路文件（0644）：先写同目录的临时文件再 rename 过去。空的部分不写。"""
+    body = {"format": PAGE_FORMAT, **{kind: document[kind] for kind in PAGE_KINDS if document.get(kind)}}
+    text = PAGE_HEADER + _yaml().safe_dump(body, allow_unicode=True, sort_keys=False)
+    path = str(_page_file())
+    temporary = f"{path}.{secrets.token_hex(3)}.tmp"
+    try:
+        with open(temporary, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
+
+
+def _page_index(entries, key, name):
+    for index, entry in enumerate(entries):
+        if isinstance(entry, dict) and str(entry.get(key, "")).strip() == name:
+            return index
+    return None
+
+
+def _page_change(action, target, detail, caller):
+    """一次改动记一行：谁、从哪里、改了什么（只有去向和「凭据已设置 / 没改 / 已作废」，没有凭据的值）。
+    写进 journald（[page-config]）和 ops_tools.page.log（只留最近 PAGE_CHANGES_KEEP 条，页面上「最近的配置变更」）。"""
+    record = {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "caller": _caller(caller), "action": action,
+              "target": target, "detail": detail}
+    print(f"[page-config] {action} {target}：{detail} caller={record['caller'] or '-'}", flush=True)
+    path = _page_log_file()
+    try:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            lines = []
+        lines = (lines + [json.dumps(record, ensure_ascii=False)])[-PAGE_CHANGES_KEEP:]
+        temporary = f"{path}.{secrets.token_hex(3)}.tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"[page-config] 变更记录没写进 {path}（{exc.__class__.__name__}）", flush=True)
+
+
+def _page_changes():
+    try:
+        lines = _page_log_file().read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    out = []
+    for line in reversed(lines[-PAGE_CHANGES_SHOWN:]):
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict):
+            out.append({key: str(record.get(key) or "")[:300] for key in ("at", "caller", "action", "target", "detail")})
+    return out
+
+
+def _page_confirm(payload, field, current, what):
+    """改、删之前要用户确认的列表（在用它的工具、target 会变的工具）：请求里带的要和现在的一样，不一样就回 409
+    和现在的列表，不消耗口令次数。现在的列表是空的就不用确认。"""
+    if not current:
+        return
+    wanted = sorted({item["tool"] if isinstance(item, dict) else str(item) for item in current})
+    given = payload.get(field)
+    names = sorted({str(item) for item in given}) if isinstance(given, list) else None
+    if names != wanted:
+        error = Conflict(f"{what}：{'、'.join(wanted)}。确认之后再提交（和你看到的不一样时请刷新）")
+        error.extra = {field: current}
+        raise error
+
+
+def _page_int(raw):
+    if isinstance(raw, str) and re.fullmatch(r"\s*\d{1,6}\s*", raw):
+        return int(raw)
+    return raw
+
+
+def _page_clean(raw, fields, ints=(), lists=()):
+    """页面请求里的一条 → 旁路文件里的一条：按字段表的顺序排好；空串、空列表、没勾的「标为外部」不写。
+    不认识的字段整条拒绝（只报字段名，不报值）。"""
+    if not isinstance(raw, dict):
+        raise ConfigError("内容必须是对象")
+    unknown = sorted(str(key) for key in raw if key not in fields)
+    if unknown:
+        raise ConfigError(f"有页面上不能写的字段：{'、'.join(unknown)[:200]}")
+    out = {}
+    for key in fields:
+        if key not in raw:
+            continue
+        value = raw[key]
+        if key in ints:
+            value = _page_int(value)
+        if key in lists and isinstance(value, str):
+            value = [part for part in re.split(r"[\s,，、]+", value) if part]
+        if isinstance(value, str):
+            value = value.strip()
+        if value in (None, "", []) or (key == "external" and value is False):
+            continue
+        out[key] = value
+    return out
+
+
+def _page_secret_input(payload, holder):
+    """请求里新输入的凭据 → (值或 None, 要不要清除)。在核对口令之前查：不合规直接 400，不消耗口令次数，报错里不带值。"""
+    raw = payload.get("secret")
+    clear = payload.get("clear_secret") is True
+    if raw in (None, ""):
+        return None, clear
+    if not isinstance(raw, str):
+        raise ConfigError("凭据必须是文本")
+    if clear:
+        raise ConfigError("「清除凭据」和「输入新凭据」只能选一个")
+    if PAGE_LOOKS_LIKE_REF.search(raw):
+        raise ConfigError("页面上不能引用服务器上的凭据（${名字}）：请输入凭据本身")
+    auth = holder.get("auth")
+    if auth == "none":
+        raise ConfigError("这里选的是不带凭据：要带凭据，把「凭据放在哪」选成 Bearer 令牌或指定请求头")
+    if auth == "bearer" and not PAGE_BEARER.fullmatch(raw):
+        raise ConfigError("令牌要是 8 到 8192 个可见的 ASCII 字符，不能有空格")
+    if auth == "header" and not PAGE_HEADER_VALUE.fullmatch(raw):
+        raise ConfigError("请求头的值要是 8 到 8192 个可见的 ASCII 字符（中间可以有空格）")
+    if auth is None and (len(raw) > PAGE_PASSWORD_MAX or any(not ch.isprintable() for ch in raw)):
+        raise ConfigError(f"密码最多 {PAGE_PASSWORD_MAX} 个字符，不能有换行之类的控制字符")
+    return raw, False
+
+
+# ---- 试探：测试连接、扫描 host key、检查连通。和自动检查共用全局名额，结果的形状也一样（检查项 + 结论） ------------------
+
+def _page_probe(label, caller, probe, wait=None):
+    """一次真正的试探：交给自动检查的后台（_precheck_get），拿全局名额（OPS_PRECHECK_PER_MINUTE），最多等 wait 秒。
+    做完了是 {"state": "done", "verdict", "label", "checks", …}，没做完是 {"state": "checking"}。日志记一行 [precheck]，不记内容。"""
+    key = _precheck_key("page", label, secrets.token_hex(8))
+    deadline = time.monotonic() + (PRECHECK_ON_DEMAND if wait is None else wait)
+    result = _precheck_get(key, lambda: _precheck_run(label, caller, probe), deadline, True)
+    return {name: value for name, value in result.items() if name != "key"}
+
+
+def _page_net_checks(url, auth, done):
+    """接口、MCP 的测试：只做 DNS、TCP 和 TLS 握手（https 校验证书和主机名），不发 HTTP 请求，不带凭据。"""
+    parts = urllib.parse.urlsplit(url)
+    host, port = parts.hostname or "", parts.port or (443 if parts.scheme == "https" else 80)
+    done.append("DNS")
+    try:
+        socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError):
+        return [_check("dns", "fail", f"解析 {host}", "解析不了：主机名写错了，或者工具服务这台机器解析不到它", transient=True)]
+    checks = [_check("dns", "ok", f"解析 {host}", "能解析")]
+    done.append("TCP")
+    try:
+        sock = socket.create_connection((host, port), timeout=PRECHECK_TIMEOUT)
+    except OSError as exc:
+        why = "超时" if isinstance(exc, socket.timeout) else "被拒绝或不通"
+        return checks + [_check("tcp", "fail", f"TCP 连 {host}:{port}", f"连不上（{why}）：端口没开，或者被防火墙挡住了",
+                                transient=True)]
+    with sock:
+        checks.append(_check("tcp", "ok", f"TCP 连 {host}:{port}", "通"))
+        if parts.scheme != "https":
+            if auth in (None, "none"):
+                checks.append(_check("tls", "skip", "TLS", "明文 HTTP，不测 TLS", essential=False))
+            else:
+                checks.append(_check("tls", "warn", "TLS", "明文 HTTP：凭据会明文发出去，只在可信的内网里这样用"))
+        else:
+            done.append("TLS")
+            try:
+                with ssl.create_default_context().wrap_socket(sock, server_hostname=host) as tls:
+                    version = tls.version() or "TLS"
+            except ssl.SSLCertVerificationError:
+                return checks + [_check("tls", "fail", "TLS 握手",
+                                        "证书校验不过：自签或内部 CA 的证书页面上不支持（自定义 CA 要填服务器上的文件路径），"
+                                        "这类地址在主配置里配 ca")]
+            except (ssl.SSLError, OSError) as exc:
+                return checks + [_check("tls", "fail", "TLS 握手", f"握手失败（{exc.__class__.__name__}）", transient=True)]
+            checks.append(_check("tls", "ok", "TLS 握手", f"通（{version}，证书和主机名都校验过）"))
+    checks.append(_check("request", "skip", "接口本身", "测试不发 HTTP 请求、不带凭据：接口和凭据对不对，第一次调用时才知道",
+                         essential=False))
+    return checks
+
+
+def _page_connect_category(exc):
+    """连库失败 → (类别, 给人看的话)。只按错误码和几个固定的词归类，不转述驱动的原文。"""
+    message = str(exc).lower()
+    state = str(getattr(exc, "sqlstate", "") or "")
+    code = exc.args[0] if getattr(exc, "args", None) and isinstance(exc.args[0], int) else None
+    if (state in ("28P01", "28000") or code in (1045, 1044, 1698) or "authentication failed" in message
+            or "access denied" in message or "no pg_hba.conf entry" in message):
+        return "denied", "账号或密码不对，或者数据库不允许从工具服务这台机器登录"
+    if state == "3D000" or code == 1049 or ("database" in message and "does not exist" in message):
+        return "missing", "库不存在（库名不对，或者这个账号看不到它）"
+    if "ssl" in message or "tls" in message or "certificate" in message or code == 2026:
+        return "tls", "TLS 不通：数据库不支持、证书校验不过，或者 TLS 方式选得不对"
+    if "timeout" in message or "timed out" in message:
+        return "timeout", "连接超时：地址、端口不通，或者被防火墙挡住了"
+    if ("translate host name" in message or "name or service not known" in message or "nodename nor servname" in message
+            or "getaddrinfo" in message or code == 2005):
+        return "unreachable", "地址解析不了：主机名写错了，或者工具服务这台机器解析不到它"
+    if "refused" in message or code in (2003, 2006, 2013):
+        return "unreachable", "连不上：端口没开，或者被防火墙挡住了"
+    return "unknown", "连不上数据库（没法归类，不转述原文）"
+
+
+def _page_db_checks(conn, secret, use_stored, done):
+    """数据库的测试：用和查询同一套连接参数（默认只读事务、语句超时），在只读事务里执行 SELECT 1。
+    use_stored：用存着的凭据（走真正调用时的路：去向对得上才给）；否则只用这次新输入的 secret（可以没有），从不碰存着的。"""
+    module, reason = _driver(conn["type"])
+    if module is None:
+        return [_check("driver", "fail", "数据库驱动", reason)]
+    done.append("连库")
+    probe = dict(conn, timeout=min(conn["timeout"], PRECHECK_SQL_TIMEOUT))
+    if not use_stored:
+        probe["origin"] = "draft"        # 不是 page：_postgres_kwargs / _mysql_kwargs 不会去取存着的凭据
+    title = "连上数据库，在只读事务里执行 SELECT 1"
+    used = []
+    try:
+        if conn["type"] == "postgres":
+            kwargs = _postgres_kwargs(probe, used)
+            if secret and not use_stored:
+                kwargs["password"] = secret
+            db = module.connect(autocommit=False, **kwargs)
+            try:
+                db.read_only = True
+                cursor = db.cursor()
+                cursor.execute("SELECT 1")
+                cursor.fetchall()
+                db.rollback()
+            finally:
+                with contextlib.suppress(Exception):
+                    db.close()
+        else:
+            kwargs = _mysql_kwargs(probe, module, used)
+            if secret and not use_stored:
+                kwargs["password"] = secret
+            db = module.connect(**kwargs)
+            try:
+                cursor = db.cursor()
+                _mysql_limits(cursor, module, probe)
+                cursor.execute("START TRANSACTION READ ONLY")
+                cursor.execute("SELECT 1")
+                cursor.fetchall()
+            finally:
+                with contextlib.suppress(Exception):
+                    db.close()
+    except ValueError as exc:            # 页面凭据用不了（没设、去向变过、凭据文件有问题）：原因是我们自己写的话
+        return [_check("db", "fail", title, str(exc))]
+    except Exception as exc:
+        category, text = _page_connect_category(exc)
+        return [_check("db", "warn" if category == "timeout" else "fail", title, text,
+                       transient=category in ("timeout", "unreachable"))]
+    return [_check("db", "ok", title, "连上了，只读事务里 SELECT 1 正常")]
+
+
+def _page_conn_checks(conn, secret, use_stored, done):
+    if conn["type"] == "http":
+        return _page_net_checks(conn["base"], conn.get("auth"), done)
+    return _page_db_checks(conn, secret, use_stored, done)
+
+
+def _page_remember(kind, name, dest, result):
+    if result.get("state") == "done":
+        _page_tests[(kind, name)] = {"dest": dest, "at": result.get("at", ""), "verdict": result.get("verdict", ""),
+                                     "label": result.get("label", "")}
+
+
+def _page_last_test(kind, holder, name):
+    """最近一次测试的结论（只在内存里，重启就没了）；去向变过的不算。"""
+    record = _page_tests.get((kind, name))
+    if record and record["dest"] == _page_dest(holder):
+        return {key: record[key] for key in ("at", "verdict", "label")}
+    return None
+
+
+def _page_test_saved(kind, name, caller):
+    """保存之后测一次：走真正调用时的那条路（凭据从页面凭据文件取、去向要对得上）。"""
+    if kind == "connection":
+        holder = (_state.get("connections") or {}).get(name)
+        label, run = f"测试连接 {name}", lambda done: (_page_conn_checks(holder, None, True, done), "")
+    else:
+        holder = (_state.get("mcp_servers") or {}).get(name)
+        label, run = f"测试 MCP server {name}", lambda done: (_page_net_checks(holder["url"], holder["auth"], done), "")
+    if not holder or holder.get("origin") != "page":
+        return None
+    result = _page_probe(label, caller, run)
+    _page_remember(kind, name, _page_dest(holder), result)
+    return result
+
+
+def _page_scan_checks(host, done):
+    """扫描 host key（ssh-keyscan）：只拿来给人核对，不登记。"""
+    done.append("ssh-keyscan")
+    title = f"取 {host['address']}:{host['port']} 的 host key"
+    try:
+        keys = scan_host_keys(host)
+    except ConfigError as exc:
+        return [_check("scan", "fail", title, str(exc))]
+    except (subprocess.SubprocessError, OSError) as exc:
+        return [_check("scan", "fail", title, f"ssh-keyscan 失败（{exc.__class__.__name__}）", transient=True)]
+    if not keys:
+        return [_check("scan", "fail", title, "取不到 host key：连不上，或者那不是 SSH 服务", transient=True)]
+    check = _check("scan", "ok", title, f"扫到 {len(keys)} 把 host key：去目标主机的控制台上核对指纹，一致再确认")
+    check["keys"] = [{"type": keytype, "fingerprint": digest, "key": blob} for keytype, blob, digest in keys]
+    return [check]
+
+
+def _page_check_checks(host, done):
+    """检查连通（等于命令行的 status）：现连一次，逐个工具列出能不能在这台上跑。"""
+    done.append("连主机")
+    status = check_host(host)
+    good = bool(status.get("reachable")) and not status.get("error")
+    error = status.get("error") or "连不上"
+    for prefix in (f"主机 {host['name']}：", f"主机 {host['name']} 的"):
+        if error.startswith(prefix):
+            error = error[len(prefix):].strip() or "连不上"
+    check = _check("host", "ok" if good else "fail", f"连主机 {host['name']}", "连通" if good else error, transient=not good)
+    check["host"] = _host_view(host)
+    check["tools"] = {name: dict(zip(("state", "reason"), _host_tool_state(spec, host)))
+                      for name, spec in sorted(_command_tools().items()) if _applicable(spec, host)[0]}
+    return [check]
+
+
+# ---- 页面加的主机：目标主机上要做的事、安装包、白名单版本、对现有工具的影响 ---------------------------------------------
+
+def _page_install(host):
+    """页面加的主机在目标主机上要做的事：authorized_keys 那一行（restrict、from= 工具服务的出口地址、受控模式再加 command= 执行器）、
+    建账号的命令、装执行器的命令、撤销的命令。页面和命令行（host-info）都从这里拿，两边一字不差，可以在 A 上对照。"""
+    key, why = public_key(host)
+    if key:
+        key = " ".join(key.split()[:2] + [f"doc2sop-ops:{host['name']}"])
+    guarded, user = host["mode"] == "guarded", host["user"]
+    options = f'restrict,from="{",".join(host["from"])}"'
+    if guarded:
+        options += f',command="/usr/bin/python3 -I {EXEC_DIR}/ops_exec.py --stdio"'
+    line = f"{options} {key}" if key else ""
+    account = [f"useradd -M --shell /bin/sh {user}", f"install -d -o root -g root -m 0755 ~{user} ~{user}/.ssh"]
+    if guarded:
+        account.append(f"install -d -o root -g root -m 0755 {EXEC_DIR}")
+    if line:
+        account += [f"printf '%s\\n' '{line}' > ~{user}/.ssh/authorized_keys",
+                    f"chown root:root ~{user}/.ssh/authorized_keys && chmod 0644 ~{user}/.ssh/authorized_keys"]
+    bundle = f"doc2sop-ops-{host['name']}.tgz"
+    return {"authorized_keys": line, "key_problem": "" if key else why, "account": account,
+            "bundle_name": bundle if guarded else "",
+            "install": f"tar -xzf {bundle} && sh {host['name']}/install.sh" if guarded else "",
+            "revoke": [f"rm -r ~{user}" + (f" {EXEC_DIR}" if guarded else "") + f" && userdel {user}"],
+            "readonly": "强制命令 + 白名单" if guarded else "账号权限（直连：账号能做的事模型都能做）"}
+
+
+def _allowlist_version(text):
+    return ops_exec.parse_allowlist(json.loads(text))[1]["version"]
+
+
+def _page_bundle_info(name):
+    """A 上存着的安装包：文件、sha256、大小、里面白名单的版本和生成时间；没有就是 None。"""
+    try:
+        path = _page_bundle_path(name)
+        with open(path, "rb") as handle:
+            data = handle.read(PAGE_BUNDLE_MAX + 1)
+    except (ConfigError, OSError):
+        return None
+    info = {"file": path, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data), "version": "",
+            "generated_at": ""}
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+            member = archive.extractfile(f"{name}/allowlist.json")
+            _, meta, _ = ops_exec.parse_allowlist(json.loads(member.read(ops_exec.ALLOWLIST_MAX + 1).decode("utf-8")))
+        info.update(version=meta["version"], generated_at=meta["generated_at"])
+    except Exception:
+        info["broken"] = True
+    return info
+
+
+def _page_bundle_build(host):
+    """生成安装包，存成 A 上的 page-bundles/<主机名>.tgz（0644，覆盖上一次的）：内容和 push --print 导出的一样
+    （<主机名>/allowlist.json、ops_exec.py、install.sh）。下载接口原样给出这个文件。"""
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    text = allowlist_for(host, stamp)
+    files = (("allowlist.json", text.encode("utf-8")), ("ops_exec.py", Path(ops_exec.__file__).read_bytes()),
+             ("install.sh", install_script(text).encode("utf-8")))
+    buffer, moment = io.BytesIO(), int(time.time())
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for filename, data in files:
+            member = tarfile.TarInfo(f"{host['name']}/{filename}")
+            member.size, member.mode, member.mtime = len(data), 0o644, moment
+            member.uid = member.gid = 0
+            member.uname = member.gname = "root"
+            archive.addfile(member, io.BytesIO(data))
+    folder = _page_bundles_dir()
+    os.makedirs(folder, mode=0o755, exist_ok=True)
+    path = _page_bundle_path(host["name"])
+    temporary = os.path.join(folder, f".{host['name']}.{secrets.token_hex(3)}.tmp")
+    try:
+        with open(temporary, "wb") as handle:
+            handle.write(buffer.getvalue())
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
+    return _page_bundle_info(host["name"])
+
+
+def _allowlist_state(host):
+    """受控模式的主机：现在生成会是哪个白名单版本、主机上报的是哪个、对不对得上。直连模式没有白名单。"""
+    if host.get("via") != "ssh" or host["mode"] != "guarded":
+        return None
+    try:
+        expected = _allowlist_version(allowlist_for(host))
+    except Exception:   # 白名单生成不出来（工具定义有问题）：页面上照样能看主机
+        expected = ""
+    status = _cached_status(host) or {}
+    installed = (status.get("allowlist") or {}).get("version") or ""
+    return {"expected": expected, "installed": installed, "executor": status.get("executor") or "",
+            "stale": bool(installed and expected and installed != expected)}
+
+
+def _target_summary(spec, cfg):
+    if cfg is None:
+        return {"available": True, "default": LOCAL_HOST, "required": False}
+    info = _target_info(spec, cfg)
+    if info is None:
+        return {"available": False, "default": "", "required": False}
+    return {"available": True, "default": info[2] or "", "required": info[2] is None}
+
+
+def _target_impact(after):
+    """主机清单从现在的变成 after：哪些命令型工具的 target 会从有默认值变成必填、默认值会变、没有能跑它的主机。
+    页面上加、改、删主机之前列出来，要用户确认（列表变了回 409）。"""
+    before, out = _hosts(), []
+    for name, spec in sorted(_command_tools().items()):
+        old, new = _target_summary(spec, before), _target_summary(spec, after)
+        if old == new:
+            continue
+        if not new["available"]:
+            text = "之后没有能跑它的主机"
+        elif not old["available"]:
+            text = "原来没有能跑它的主机，之后" + (f"不填 target 就在 {new['default']} 上跑" if new["default"] else "要指定 target")
+        elif new["required"]:
+            text = f"target 原来不填就是 {old['default']}，之后必须指定"
+        elif old["required"]:
+            text = f"target 原来必须指定，之后不填就是 {new['default']}"
+        else:
+            text = f"target 的默认值从 {old['default']} 变成 {new['default']}"
+        out.append({"tool": name, "label": spec.get("label", ""), "text": text})
+    return out
+
+
+def _hosts_after(change):
+    """改动之后的主机清单：change(页面主机字典, 已核对的名字集合) 就地改这两样，主配置的主机照旧。"""
+    page = _state.get("page") or {}
+    hosts = dict(page.get("hosts") or {})
+    active = {name for name in hosts if _pinned_keys(name, _page_known_hosts())}
+    change(hosts, active)
+    return _merge_page_hosts(page.get("main_hosts"), hosts, active)
+
+
+# ---- 页面上的动作：连接、远程 MCP server -----------------------------------------------------------------------------
+# 顺序固定：先查请求本身（字段、重名、要确认的列表），这一步不对不消耗口令次数；再核对口令；最后才写。都在 _page_lock 里，
+# 和批准申请互斥。测试在锁外面做（最多等 PRECHECK_ON_DEMAND 秒），走真正调用时的那条路。
+
+_PAGE_HOLDERS = {"connection": {"list": "connections", "id": "name", "what": "连接", "field": "connection"},
+                 "mcp": {"list": "mcp_servers", "id": "id", "what": "MCP server", "field": "server"}}
+_PAGE_CONN_ALL = ("name", "type", "label", "base", "auth", "auth_header", "host", "port", "database", "user", "tls",
+                  "timeout", "external")
+
+
+def _page_holder_entry(kind, raw):
+    """请求里的连接 / server → (写进旁路文件的条目, 校验过的字典, 名字)。和加载旁路文件是同一套校验。"""
+    what = _PAGE_HOLDERS[kind]["what"]
+    if not isinstance(raw, dict):
+        raise ConfigError(f"缺少{what}的内容")
+    if kind == "connection":
+        if str(raw.get("type", "")).strip() == "sqlite":
+            _check_page_connection({"name": raw.get("name"), "type": "sqlite"})
+        entry = _page_clean(raw, _PAGE_CONN_ALL, ints=("port", "timeout"))
+        holder = _check_page_connection(entry)
+        return entry, holder, holder["name"]
+    if any(raw.get(key) not in (None, "", []) for key in ("command", "args", "env", "cwd")):
+        _check_page_mcp({"id": raw.get("id"), "command": "stdio"})
+    entry = _page_clean(raw, PAGE_MCP_FIELDS, ints=("timeout",))
+    ident, holder = _check_page_mcp(entry)
+    return entry, holder, ident
+
+
+def _page_holder_old(kind, entry):
+    try:
+        return _check_page_connection(entry) if kind == "connection" else _check_page_mcp(entry)[1]
+    except ConfigError:
+        return None
+
+
+def _page_users(kind, ident):
+    """在用这个连接 / server 的已批准工具。只算页面上的那一个真正加载了的时候：被主配置同名盖住时，那些工具用的是主配置的。"""
+    tools = _state.get("tools") or {}
+    if kind == "connection":
+        holder = (_state.get("connections") or {}).get(ident)
+        if not holder or holder.get("origin") != "page":
+            return []
+        return sorted(name for name, spec in tools.items() if (spec.get("connection") or {}).get("name") == ident)
+    holder = (_state.get("mcp_servers") or {}).get(ident)
+    if not holder or holder.get("origin") != "page":
+        return []
+    return sorted(name for name, spec in tools.items() if spec.get("type") == "mcp" and spec["mcp"]["server"] == ident)
+
+
+PAGE_TYPE_LABELS = {"postgres": "PostgreSQL", "mysql": "MySQL", "http": "HTTP"}
+
+
+def _page_verb(verb, what):
+    """「新增连接」「新增 MCP server」：汉字和英文之间空一格。"""
+    return f"{verb} {what}" if what[:1].isascii() else f"{verb}{what}"
+
+
+def _page_describe(kind, holder):
+    """变更记录、日志里的一句话：只有去向，没有凭据。"""
+    if kind == "mcp":
+        text = f"{holder['url']}，凭据{('放在 ' + _page_auth_header(holder)) if holder.get('auth') != 'none' else '：不带'}"
+    elif holder["type"] == "http":
+        text = f"HTTP {holder['base']}，凭据{('放在 ' + _page_auth_header(holder)) if holder.get('auth') != 'none' else '：不带'}"
+    else:
+        text = (f"{PAGE_TYPE_LABELS.get(holder['type'], holder['type'])} {holder['host']}:{holder['port']}/{holder['database']}，"
+                f"账号 {holder['user']}，TLS {holder['tls']}")
+    return text + ("，标为外部" if holder.get("declared_external") else "")
+
+
+def _page_holder_save(kind, payload, caller):
+    """新增（payload 里没有 original）或修改（original 是原来的名字）一个连接 / MCP server。
+
+    凭据：这次输了就设成新的（绑定新的去向）；去向变了又没输，原来的作废删掉；选了不带凭据、或者勾了清除，删掉；否则不动。
+    新增时同名的旧凭据（手改旁路文件留下的）一律删掉。写完重新加载，再走真正调用时的那条路测一次（不通也已经存好，写明）。"""
+    _page_writable()
+    meta = _PAGE_HOLDERS[kind]
+    what = meta["what"]
+    entry, holder, ident = _page_holder_entry(kind, payload.get(meta["field"]))
+    original = str(payload.get("original") or "").strip()
+    value, clear = _page_secret_input(payload, holder)
+    with _page_lock:
+        all_tools()
+        page = _state.get("page") or {}
+        document = _page_document()
+        entries = document[meta["list"]]
+        index = _page_index(entries, meta["id"], original or ident)
+        old = None
+        if original:
+            if index is None:
+                raise NotFound(f"页面上没有{what} {original[:40]}")
+            if ident != original:
+                raise ConfigError(f"{what}不能改名：删掉再加一个")
+            old = _page_holder_old(kind, entries[index])
+            if kind == "connection" and old is not None and old["type"] != holder["type"]:
+                raise ConfigError("连接不能改类型：删掉再加一个")
+            _page_confirm(payload, "confirm", _page_users(kind, ident), f"在用这个{what}的已批准工具")
+        else:
+            if index is not None:
+                raise Conflict(f"页面上已经有叫 {ident} 的{what}")
+            if ident in (page.get(f"main_{meta['list']}") or ()):
+                raise Conflict(f"主配置里已经有叫 {ident} 的{what}：页面上不能用这个名字（主配置优先）")
+            if len(entries) >= PAGE_LIMITS[meta["list"]]:
+                raise ConfigError(f"页面上最多加 {PAGE_LIMITS[meta['list']]} 个{what}")
+        _, problem = _page_secret_records()
+        if problem:
+            raise Conflict(f"{problem}。这次什么都没改")
+        moved = bool(original) and (old is None or _page_dest(old) != _page_dest(holder))
+        action = _page_verb("修改" if original else "新增", what)
+        check_passphrase(payload.get("passphrase"), action, ident, caller)
+        if index is None:
+            entries.append(entry)
+        else:
+            entries[index] = entry
+        _page_write(document)
+        key = holder["page_secret"]["key"]
+        if value:
+            _page_secret_change(key, _page_dest(holder), value)
+            note = "凭据已设置"
+        elif clear or holder.get("auth") == "none" or moved or not original:
+            dropped = _page_secret_change(key)
+            if holder.get("auth") == "none":
+                note = "不带凭据"
+            elif moved and dropped:
+                note = "去向变了，原来存的凭据已作废，要重新输入"
+            elif clear and dropped:
+                note = "凭据已清除"
+            else:
+                note = "还没有凭据"
+        else:
+            note = "凭据没改"
+        refresh(force=True)
+        _page_change(action, ident, f"{_page_describe(kind, holder)}；{note}", caller)
+    test = _page_test_saved(kind, ident, caller)
+    return {"saved": ident, "note": note, "test": test, "item": _page_holder_view(kind, ident)}
+
+
+def _page_drop_mcp_tools(ident, document):
+    """删掉页面上加的 MCP server 时一并删掉：它的待审申请、ops_tools.mcp.yaml 里它的已批准条目、页面上对这些工具的对外开放设置。
+    同一个 id 以后再加回来，旧的批准不会复活。返回删掉的工具名。"""
+    with _pending_lock:
+        pending = list_pending()
+        kept = [item for item in pending if str(item.get("author", "")) != f"mcp:{ident}"]
+        if len(kept) != len(pending):
+            _write_yaml(_sibling("pending"), {"pending": kept})
+    approved = _read_yaml(_mcp_file())
+    tools = approved.get("tools") if isinstance(approved.get("tools"), list) else []
+    mine = [item for item in tools if isinstance(item, dict) and (item.get("mcp") or {}).get("server") == ident]
+    removed = [str(item.get("name", "")) for item in mine]
+    if mine:
+        _write_yaml(_mcp_file(), {**approved, "tools": [item for item in tools if item not in mine]})
+    document["export"] = [record for record in document["export"]
+                          if not (isinstance(record, dict) and record.get("tool") in removed)]
+    return removed
+
+
+def _page_holder_delete(kind, payload, caller):
+    _page_writable()
+    meta = _PAGE_HOLDERS[kind]
+    what = meta["what"]
+    ident = str(payload.get(meta["id"]) or "").strip()
+    with _page_lock:
+        all_tools()
+        document = _page_document()
+        entries = document[meta["list"]]
+        index = _page_index(entries, meta["id"], ident)
+        if index is None:
+            raise NotFound(f"页面上没有{what} {ident[:40]}")
+        users = _page_users(kind, ident)
+        _page_confirm(payload, "confirm", users, f"在用这个{what}的已批准工具")
+        _, problem = _page_secret_records()
+        if problem:
+            raise Conflict(f"{problem}。这次什么都没删：凭据要和{what}一起删")
+        owned = kind == "mcp" and ((_state.get("mcp_servers") or {}).get(ident) or {}).get("origin") == "page"
+        if owned:
+            _read_yaml(_mcp_file())          # 批准文件读不了就别往下走：先在宿主机上修好
+        check_passphrase(payload.get("passphrase"), _page_verb("删除", what), ident, caller)
+        entries.pop(index)
+        removed = _page_drop_mcp_tools(ident, document) if owned else []
+        _page_write(document)
+        _page_secret_change(f"{'connection' if kind == 'connection' else 'mcp'}:{ident}")
+        refresh(force=True)
+        detail = "凭据一起删了"
+        if users:
+            detail += f"；在用它的工具从此加载不了：{'、'.join(users)}"
+        if removed:
+            detail += f"；它的已批准工具一并删了：{'、'.join(removed)}"
+        _page_change(_page_verb("删除", what), ident, detail, caller)
+    _page_tests.pop((kind, ident), None)
+    return {"deleted": ident, "affected": users, "removed_tools": removed}
+
+
+def _page_holder_test(kind, payload, caller):
+    """测试（要口令）。连接是草稿时只用这次输入的凭据；修改已有的、去向没变、又没输新的，才用存着的那一份——
+    存着的凭据永远不会被拿去测一个新的去向。"""
+    _page_writable()
+    meta = _PAGE_HOLDERS[kind]
+    entry, holder, ident = _page_holder_entry(kind, payload.get(meta["field"]))
+    value, _ = _page_secret_input(payload, holder)
+    original = str(payload.get("original") or "").strip()
+    all_tools()
+    saved = ((_state.get("connections") if kind == "connection" else _state.get("mcp_servers")) or {}).get(original) \
+        if original else None
+    use_saved = bool(saved and saved.get("origin") == "page" and original == ident and not value
+                     and (saved.get("page_secret") or {}).get("state") == "set"
+                     and _page_dest(saved) == _page_dest(holder))
+    check_passphrase(payload.get("passphrase"), _page_verb("测试", meta["what"]), ident, caller)
+    if kind == "connection":
+        run = lambda done: (_page_conn_checks(holder, value, use_saved, done), "")   # noqa: E731
+    else:
+        run = lambda done: (_page_net_checks(holder["url"], holder["auth"], done), "")   # noqa: E731
+    result = _page_probe(f"{_page_verb('测试', meta['what'])} {ident}", caller, run)
+    if use_saved:
+        _page_remember(kind, ident, _page_dest(holder), result)
+    return {"test": result, "used_saved_secret": use_saved}
+
+
+def page_connection_save(payload, caller=""):
+    return _page_holder_save("connection", payload, caller)
+
+
+def page_connection_delete(payload, caller=""):
+    return _page_holder_delete("connection", payload, caller)
+
+
+def page_connection_test(payload, caller=""):
+    return _page_holder_test("connection", payload, caller)
+
+
+def page_mcp_save(payload, caller=""):
+    return _page_holder_save("mcp", payload, caller)
+
+
+def page_mcp_delete(payload, caller=""):
+    return _page_holder_delete("mcp", payload, caller)
+
+
+def page_mcp_test(payload, caller=""):
+    return _page_holder_test("mcp", payload, caller)
+
+
+# ---- 页面上的动作：对外开放 ------------------------------------------------------------------------------------------
+
+def page_export(payload, caller=""):
+    """对外开放的开关：打开要口令（记下工具此刻的定义指纹），关闭不要（只缩小能力，和停用工具一样）。
+    旁路文件里只留和主配置不一样的那一条：主配置写了 export: true 的关掉时记一条 off；主配置没开放的打开时记一条 on。"""
+    _page_writable()
+    name = str(payload.get("tool") or "").strip()
+    on = payload.get("on")
+    if not isinstance(on, bool):
+        raise ConfigError("on 只能是 true（打开）或 false（关闭）")
+    with _page_lock:
+        spec = all_tools().get(name)
+        if spec is None:
+            raise NotFound(f"没有工具 {name[:64]}")
+        document = _page_document()
+        records = document["export"]
+        index = _page_index(records, "tool", name)
+        main_on = bool(spec.get("export_main"))
+        if on:
+            check_passphrase(payload.get("passphrase"), "打开对外开放", name, caller)
+            record = None if main_on else {"tool": name, "on": True, "fp": _tool_fp(spec)}
+        else:
+            record = {"tool": name, "on": False} if main_on else None
+        if index is not None:
+            records.pop(index)
+        if record is not None:
+            records.append(record)
+        _page_write(document)
+        refresh(force=True)
+        now = bool((_state["tools"].get(name) or {}).get("export"))
+        _page_change("打开对外开放" if on else "关闭对外开放", name,
+                     ("主配置里写了 export: true；" if main_on else "") + ("现在对外开放" if now else "现在不对外开放"), caller)
+    return {"tool": name, "export": now}
+
+
+# ---- 页面上的动作：远程主机 ------------------------------------------------------------------------------------------
+
+def _page_host_entry(raw):
+    if not isinstance(raw, dict):
+        raise ConfigError("缺少主机的内容")
+    if raw.get("key") not in (None, ""):
+        _check_page_host({"name": raw.get("name"), "key": "x"})
+    entry = _page_clean(raw, PAGE_HOST_FIELDS, ints=("port",), lists=("groups", "tools", "from"))
+    return entry, _check_page_host(entry)
+
+
+def _page_ssh_tools():
+    missing = [name for name in ("ssh-keygen", "ssh-keyscan") if not shutil.which(name)]
+    if missing:
+        raise ConfigError(f"工具服务这台机器没有 {'、'.join(missing)}（OpenSSH 客户端）：页面上加不了主机")
+
+
+def _page_new_key(name):
+    """给页面加的主机生成私钥：ed25519、不设口令（靠文件权限保护）、0600、属工具服务的运行账号。私钥从不出工具服务。"""
+    keygen = shutil.which("ssh-keygen")
+    if not keygen:
+        raise ConfigError("工具服务这台机器没有 ssh-keygen（OpenSSH 客户端）：页面上加不了主机")
+    path = _page_key_path(name)
+    folder = os.path.dirname(path)
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    temporary = os.path.join(folder, f".{name}.{secrets.token_hex(3)}.tmp")
+    try:
+        done = subprocess.run([keygen, "-q", "-t", "ed25519", "-N", "", "-C", f"doc2sop-ops:{name}", "-f", temporary],
+                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        if done.returncode != 0 or not os.path.isfile(temporary):
+            raise ConfigError(f"ssh-keygen 没能生成私钥（退出码 {done.returncode}）")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary + ".pub", path + ".pub")
+        os.replace(temporary, path)
+    finally:
+        for leftover in (temporary, temporary + ".pub"):
+            with contextlib.suppress(OSError):
+                os.unlink(leftover)
+
+
+def _page_unpin(name):
+    """从 ops_tools.page.known_hosts 里删掉这台主机登记的 host key（地址变了、主机删了）。"""
+    path = _page_known_hosts()
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return
+    kept = [line for line in lines if not (line.split() and name in line.split()[0].split(","))]
+    if kept != lines:
+        temporary = f"{path}.{secrets.token_hex(3)}.tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(kept) + ("\n" if kept else ""))
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+
+
+def _page_revoke(host):
+    guarded, user = host["mode"] == "guarded", host["user"]
+    return [f"rm -r ~{user}" + (f" {EXEC_DIR}" if guarded else "") + f" && userdel {user}"]
+
+
+def _page_host(name):
+    host = ((_state.get("page") or {}).get("hosts") or {}).get(name)
+    if host is None:
+        raise NotFound(f"页面上没有主机 {str(name)[:40]}（或者它的配置有问题，见「配置问题」）")
+    return host
+
+
+def page_host_save(payload, caller=""):
+    """新增或修改一台主机（要口令）。新增时生成这台主机的私钥、扫一次 host key，但要核对过 host key 才进主机清单。
+    修改了地址或端口，原来登记的 host key 作废（要重新核对，在那之前它不在主机清单里）。
+    dry_run：只算会影响哪些工具的 target（不核对口令、不改任何东西），页面拿它让用户确认。"""
+    _page_writable()
+    entry, host = _page_host_entry(payload.get("host"))
+    name = host["name"]
+    original = str(payload.get("original") or "").strip()
+    with _page_lock:
+        all_tools()
+        page = _state.get("page") or {}
+        document = _page_document()
+        entries = document["hosts"]
+        index = _page_index(entries, "name", original or name)
+        old = None
+        if original:
+            if index is None:
+                raise NotFound(f"页面上没有主机 {original[:40]}")
+            if name != original:
+                raise ConfigError("主机不能改名：删掉再加一个")
+            with contextlib.suppress(ConfigError):
+                old = _check_page_host(entries[index])
+        else:
+            if index is not None:
+                raise Conflict(f"页面上已经有叫 {name} 的主机")
+            if name in ((page.get("main_hosts") or {}).get("hosts") or {}):
+                raise Conflict(f"主配置里已经有叫 {name} 的主机：页面上不能用这个名字（主配置优先）")
+            if len(entries) >= PAGE_LIMITS["hosts"]:
+                raise ConfigError(f"页面上最多加 {PAGE_LIMITS['hosts']} 台主机")
+            _page_ssh_tools()
+        moved = bool(original) and (old is None or (old["address"], old["port"]) != (host["address"], host["port"]))
+
+        def change(hosts, active):
+            hosts[name] = host
+            if moved:
+                active.discard(name)
+
+        impact = _target_impact(_hosts_after(change)) if original else []
+        if payload.get("dry_run") is True:
+            return {"dry_run": True, "impact": impact}
+        _page_confirm(payload, "confirm_impact", impact, "这些工具的 target 会变")
+        action = "修改主机" if original else "新增主机"
+        check_passphrase(payload.get("passphrase"), action, name, caller)
+        if not original:
+            _page_new_key(name)
+        if index is None:
+            entries.append(entry)
+        else:
+            entries[index] = entry
+        _page_write(document)
+        if moved:
+            _page_unpin(name)
+        refresh(force=True)
+        mode = "受控" if host["mode"] == "guarded" else "直连"
+        detail = f"{host['user']}@{host['address']}:{host['port']}，{mode}，出口地址 {','.join(host['from'])}"
+        if not original:
+            detail += "；生成了这台主机的私钥"
+        elif moved:
+            detail += "；地址变了，原来登记的 host key 作废，要重新核对"
+        _page_change(action, name, detail, caller)
+    projected = []
+    if not original:
+        projected = _target_impact(_hosts_after(lambda hosts, active: active.add(name)))
+    scan = _page_probe(f"扫描 host key {name}", caller, lambda done: (_page_scan_checks(host, done), "")) \
+        if not original or moved else None
+    return {"saved": name, "scan": scan, "impact": impact, "projected_impact": projected, "item": _page_host_view(name)}
+
+
+def page_host_trust(payload, caller=""):
+    """核对 host key 之后登记（要口令）：页面上用户选中的、和目标主机控制台上一致的那个指纹。这边重新扫一次，只登记指纹和它
+    一致的那一把（和命令行 enroll --fingerprint 同一套逻辑），写进 ops_tools.page.known_hosts。不会自动信任。
+    登记之后这台主机就进了主机清单：先算出会影响哪些工具的 target，要用户确认。dry_run 只算影响。"""
+    _page_writable()
+    name = str(payload.get("name") or "").strip()
+    fingerprint = str(payload.get("fingerprint") or "").strip()
+    with _page_lock:
+        all_tools()
+        host = _page_host(name)
+        pinned = _pinned_keys(name, _page_known_hosts())
+        impact = [] if pinned else _target_impact(_hosts_after(lambda hosts, active: active.add(name)))
+        if payload.get("dry_run") is True:
+            return {"dry_run": True, "impact": impact}
+        if not PAGE_FINGERPRINT.match(fingerprint):
+            raise ConfigError("要选一个指纹（SHA256:…）：你在目标主机控制台上核对过、两边一致的那一个")
+        if pinned and payload.get("replace") is not True:
+            shown = "、".join(key_fingerprint(blob) for _, blob in pinned)
+            raise Conflict(f"{name} 已经登记过 host key（{shown}）。host key 变了先查清原因（重装？有人冒充？），确认无误再勾「替换」")
+        _page_confirm(payload, "confirm_impact", impact, "登记之后这些工具的 target 会变")
+        _page_ssh_tools()
+        check_passphrase(payload.get("passphrase"), "核对 host key", name, caller)
+        scan = _page_probe(f"核对 host key {name}", caller, lambda done: (_page_scan_checks(host, done), ""))
+        found = next((check.get("keys") for check in scan.get("checks") or [] if check.get("keys")), None)
+        if found is None:
+            text = "；".join(check.get("text", "") for check in scan.get("checks") or []) or "还在排队，稍后再试"
+            raise Conflict(f"重新扫描 host key 没成（{text}）：没有登记")
+        chosen = next((key for key in found if key["fingerprint"] == fingerprint), None)
+        if chosen is None:
+            raise Conflict("指纹对不上重新扫描到的任何一个 host key，没有登记：核对的不是这台主机，或者中间有人冒充")
+        keytype, blob, digest = chosen["type"], chosen["key"], chosen["fingerprint"]
+        _write_known_hosts(name, keytype, blob, _page_known_hosts())
+        refresh(force=True)
+        _monitor.wake()
+        _page_change("核对 host key", name, f"登记了 {keytype} {digest}" + ("（替换了原来的）" if pinned else ""), caller)
+    return {"trusted": name, "type": keytype, "fingerprint": digest, "impact": impact, "item": _page_host_view(name)}
+
+
+def page_host_delete(payload, caller=""):
+    """删除一台页面主机（要口令）：旁路条目、私钥和公钥、登记的 host key、安装包一起删掉。删之前算出 target 会变的工具，要确认。"""
+    _page_writable()
+    name = str(payload.get("name") or "").strip()
+    with _page_lock:
+        all_tools()
+        document = _page_document()
+        entries = document["hosts"]
+        index = _page_index(entries, "name", name)
+        if index is None:
+            raise NotFound(f"页面上没有主机 {name[:40]}")
+        host = ((_state.get("page") or {}).get("hosts") or {}).get(name)
+
+        def change(hosts, active):
+            hosts.pop(name, None)
+            active.discard(name)
+
+        impact = _target_impact(_hosts_after(change))
+        if payload.get("dry_run") is True:
+            return {"dry_run": True, "impact": impact}
+        _page_confirm(payload, "confirm_impact", impact, "删掉之后这些工具的 target 会变")
+        check_passphrase(payload.get("passphrase"), "删除主机", name, caller)
+        entries.pop(index)
+        _page_write(document)
+        _page_unpin(name)
+        for path in (_page_key_path(name), _page_key_path(name) + ".pub", _page_bundle_path(name)):
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+        refresh(force=True)
+        _page_change("删除主机", name, "私钥、登记的 host key、安装包一起删了", caller)
+    return {"deleted": name, "revoke": _page_revoke(host) if host else [], "impact": impact}
+
+
+def page_host_scan(payload, caller=""):
+    """重新扫描 host key（不要口令，限频）：只扫已经保存的地址，只拿来给人核对，不登记。"""
+    _probe_allowed()
+    name = str(payload.get("name") or "").strip()
+    all_tools()
+    host = _page_host(name)
+    return {"scan": _page_probe(f"扫描 host key {name}", caller, lambda done: (_page_scan_checks(host, done), ""))}
+
+
+def page_host_check(payload, caller=""):
+    """检查连通（不要口令，限频）：等于命令行的 status。主配置的主机也能查（只读）。"""
+    _probe_allowed()
+    name = str(payload.get("name") or "").strip()
+    all_tools()
+    host = ((_hosts() or {}).get("hosts") or {}).get(name) or ((_state.get("page") or {}).get("hosts") or {}).get(name)
+    if host is None or host.get("via") != "ssh":
+        raise NotFound(f"没有远程主机 {name[:40]}")
+    result = _page_probe(f"检查主机 {name}", caller, lambda done: (_page_check_checks(host, done), ""))
+    return {"check": result, "item": _page_host_view(name) if host.get("origin") == "page" else None}
+
+
+def page_host_bundle(payload, caller=""):
+    """生成安装包（不要口令：内容只是现在的白名单和执行器）。存成 A 上的 page-bundles/<主机名>.tgz，覆盖上一次的。"""
+    _page_writable()
+    name = str(payload.get("name") or "").strip()
+    all_tools()
+    host = _page_host(name)
+    if host["mode"] != "guarded":
+        raise ConfigError(f"{name} 是直连模式：不用装执行器和白名单，没有安装包")
+    with _page_lock:
+        if time.monotonic() - _page_bundle_times.get(name, -PAGE_BUNDLE_GAP) < PAGE_BUNDLE_GAP:
+            raise RateLimited("刚生成过，稍等几秒再生成")
+        info = _page_bundle_build(host)
+        _page_bundle_times[name] = time.monotonic()
+        _page_change("生成安装包", name, f"{info['file']}，sha256 {info['sha256']}，白名单 {info['version']}", caller)
+    return {"bundle": info}
+
+
+# ---- 页面要看的：GET /tools/config、安装包下载、命令行 host-info ----------------------------------------------------
+
+def _page_host_item(name, host, page):
+    pinned = _pinned_keys(name, _page_known_hosts())
+    status = _cached_status(host)
+    guarded = host["mode"] == "guarded"
+    allowlist = _allowlist_state(host)
+    if not pinned:
+        step = "verify"
+    elif status is None:
+        step = "check"
+    elif not status.get("reachable") or status.get("error"):
+        step = "install"
+    elif allowlist and allowlist["stale"]:
+        step = "update"
+    else:
+        step = "ok"
+    return {"name": name, **_host_view(host), "origin": "page", "from": list(host["from"]),
+            "fields": ((page.get("entries") or {}).get("hosts") or {}).get(name, {}),
+            "trusted": [{"type": keytype, "fingerprint": key_fingerprint(blob)} for keytype, blob in pinned],
+            "active": name in ((_hosts() or {}).get("hosts") or {}), "step": step,
+            "install": _page_install(host), "bundle": _page_bundle_info(name) if guarded else None,
+            "allowlist": allowlist}
+
+
+def _page_host_view(name):
+    page = _state.get("page") or {}
+    host = (page.get("hosts") or {}).get(name)
+    return _page_host_item(name, host, page) if host else None
+
+
+def _page_holder_view(kind, ident):
+    view = config_view()
+    items = view["connections"] if kind == "connection" else view["mcp_servers"]
+    return next((item for item in items if item.get("name", item.get("id")) == ident), None)
+
+
+def config_view():
+    """页面「主机与数据源」要的全部。主配置的条目只读；页面上加的带凭据状态（没有值）、原始字段（给修改表单）、
+    最近一次测试的结论；主机带停在哪一步、要放进目标主机的内容、安装包、白名单版本。还有没加载的页面条目、配置问题、
+    最近的配置变更、审批口令的状态。"""
+    tools = all_tools()
+    page = _state.get("page") or {}
+    entries = page.get("entries") or {}
+    users, approved = {}, {}
+    for name, spec in tools.items():
+        conn = (spec.get("connection") or {}).get("name")
+        if conn:
+            users.setdefault(conn, []).append(name)
+        if spec.get("type") == "mcp":
+            approved.setdefault(spec["mcp"]["server"], []).append(name)
+    connections = []
+    for name, conn in sorted((_state.get("connections") or {}).items()):
+        item = {"name": name, "origin": conn.get("origin") or "main", "type": conn["type"], "label": conn.get("label", ""),
+                "address": _conn_address(conn), "external": bool(conn.get("external")),
+                "external_why": conn.get("external_why", ""), "used_by": sorted(users.get(name, []))}
+        if conn["type"] in ("postgres", "mysql"):
+            item.update(user=conn["user"], driver=_driver(conn["type"])[1])
+        if conn.get("origin") == "page":
+            item.update(fields=(entries.get("connections") or {}).get(name, {}), secret=_page_secret_view(conn),
+                        auth=conn.get("auth", ""), auth_header=_page_auth_header(conn),
+                        test=_page_last_test("connection", conn, name))
+        connections.append(item)
+    servers = []
+    for ident, status in mcp_status().items():
+        config = (_state.get("mcp_servers") or {}).get(ident) or {}
+        item = {"id": ident, **status, "origin": config.get("origin") or "main", "used_by": sorted(approved.get(ident, []))}
+        if config.get("origin") == "page":
+            item.update(fields=(entries.get("mcp_servers") or {}).get(ident, {}), auth=config.get("auth", ""),
+                        auth_header=_page_auth_header(config), test=_page_last_test("mcp", config, ident))
+        servers.append(item)
+    export = [{"tool": name, "label": spec.get("label", ""), "group": spec.get("group", ""),
+               "type": spec.get("type", "command"), "enabled": spec["enabled"], "export": bool(spec.get("export")),
+               "main": bool(spec.get("export_main")), "page": spec.get("export_page", ""),
+               "external": bool(spec.get("external"))} for name, spec in sorted(tools.items())]
+    main_hosts = (page.get("main_hosts") or {}).get("hosts") or {}
+    cfg = _hosts()
+    if not main_hosts and cfg is not None:
+        # 主配置没有 hosts 段、页面上加的主机打开了主机模式：本机算一台（默认在本机跑），也列出来
+        main_hosts = {name: host for name, host in cfg["hosts"].items() if host.get("origin") != "page"}
+    hosts = [{"name": name, **_host_view(host), "origin": "main", "allowlist": _allowlist_state(host),
+              **({"implicit": True} if host.get("implicit") else {})}
+             for name, host in main_hosts.items()]
+    hosts += [_page_host_item(name, host, page) for name, host in (page.get("hosts") or {}).items()]
+    return {"enabled": page_config_enabled(), "readable": page.get("readable", True), "approval": approval_status(),
+            "connections": connections, "mcp_servers": servers, "export": export, "hosts": hosts,
+            "host_mode": {"configured": cfg is not None, "default": (cfg or {}).get("default", ""),
+                          "local": (cfg or {}).get("local") or ""},
+            "skipped": list(page.get("skipped") or []), "problems": list(_state.get("problems") or []),
+            "changes": _page_changes(), "limits": dict(PAGE_LIMITS),
+            "ssh": {"keygen": bool(shutil.which("ssh-keygen")), "keyscan": bool(shutil.which("ssh-keyscan"))},
+            "files": {"page": str(_page_file()), "known_hosts": str(_page_known_hosts()), "log": str(_page_log_file()),
+                      "bundles": _page_bundles_dir(), "secrets": _page_secrets_file(),
+                      "keys": os.path.join(_private_dir(), "page-hosts")},
+            "cli": _cli_command("host-info")}
+
+
+def page_bundle_download(name):
+    """原样给出 A 上存着的安装包（base64）和它的 sha256：下载下来的和 A 上的是同一份，可以在 A 上 sha256sum 对照。"""
+    try:
+        path = _page_bundle_path(name)
+        with open(path, "rb") as handle:
+            data = handle.read(PAGE_BUNDLE_MAX + 1)
+    except ConfigError:
+        raise NotFound(f"主机名不合法：{str(name)[:40]!r}") from None
+    except OSError:
+        raise NotFound(f"还没有 {name} 的安装包：先在页面上点「生成安装包」") from None
+    if len(data) > PAGE_BUNDLE_MAX:
+        raise ConfigError("安装包太大，不像是工具服务生成的")
+    return {"filename": f"doc2sop-ops-{name}.tgz", "file": path, "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(), "data": base64.b64encode(data).decode("ascii")}
+
+
+def host_info(name):
+    """命令行 host-info：页面上加的一台主机要放进目标主机的内容，和页面上显示的一字不差（只读，什么都不改）。
+    谨慎的管理员在 A 上用它和页面上看到的对照，再用 sha256sum 核对下载下来的安装包。"""
+    refresh(force=True)
+    host = ((_state.get("page") or {}).get("hosts") or {}).get(name)
+    if host is None:
+        raise ConfigError(f"页面上没有加主机 {name}（主配置里的主机用 enroll 打印安装片段）")
+    info = _page_install(host)
+    pinned = _pinned_keys(name, _page_known_hosts())
+    mode = "受控" if host["mode"] == "guarded" else "直连（只读靠账号权限）"
+    print(f"页面上加的主机 {name}：{host['user']}@{host['address']}:{host['port']}，{mode}，{host['os']}")
+    print("host key：" + ("、".join(f"{keytype} {key_fingerprint(blob)}" for keytype, blob in pinned) if pinned
+                          else "还没在页面上核对"))
+    if info["key_problem"]:
+        print(f"公钥读不出来：{info['key_problem']}")
+    print("目标主机上 authorized_keys 里的那一行：")
+    print(f"  {info['authorized_keys']}")
+    print("在目标主机上以 root 执行（建账号、放公钥，只做一次）：")
+    for line in info["account"]:
+        print(f"  {line}")
+    if host["mode"] == "guarded":
+        bundle = _page_bundle_info(name)
+        if bundle:
+            print(f"安装包：{bundle['file']}")
+            print(f"  sha256  {bundle['sha256']}（和页面上下载的那份对一下：sha256sum {bundle['file']}）")
+            print(f"  白名单  {bundle['version']}（生成于 {bundle['generated_at']}）")
+        else:
+            print("安装包：还没生成（在页面上点「生成安装包」）")
+        print(f"  现在生成会是 {(_allowlist_state(host) or {}).get('expected', '')}")
+        print(f"在目标主机上以 root 执行（装执行器和白名单）：{info['install']}")
+    print("撤销（在目标主机上以 root 执行）：" + "；".join(info["revoke"]))
+    return 0
+
+
 # /exec 的调用方：应用带上「谁发起的」——项目 Agent 的会话，或对外 MCP 的客户端——写进日志，两边的日志对得上。
 # 只记录、不鉴权（鉴权仍是 X-Ops-Token）；值来自请求头，进日志前只留可打印的 ASCII，防止伪造日志行。
 CALLER_HEADER = "X-Ops-Caller"
@@ -7224,14 +9090,33 @@ class Handler(BaseHTTPRequestHandler):
             # 「待审批」页最多等 3 秒；?wait=0 是工作台和导航徽标用的：没做完的检查不等，照样交给后台去做
             return self._send(200, review_all(self.headers.get(CALLER_HEADER, ""),
                                               wait=0 if self.path.endswith("?wait=0") else None))
+        if self.path == "/tools/config":
+            # 页面「主机与数据源」：主配置的条目只读，页面上加的可以改；凭据只有状态，永远没有值
+            return self._send(200, config_view())
+        if self.path.startswith(self.BUNDLE_PREFIX):
+            try:
+                return self._send(200, page_bundle_download(self.path[len(self.BUNDLE_PREFIX):]))
+            except ConfigError as exc:
+                return self._send(404 if isinstance(exc, NotFound) else 400, {"error": str(exc)})
         self._send(404, {"error": "Not found"})
+
+    BUNDLE_PREFIX = "/tools/config/bundle/"
 
     # 页面审批的写操作：批准、重新确认脚本、提交并立即批准要审批口令（工具服务核对），拒绝不要；
     # 设置口令：还没设时直接设，已经设了要旧口令；「检查一下」（草稿，不入队）和「重新检查」只试探、不改任何东西，限频
+    # 页面上配置主机与数据源（/tools/config/…）：扩大能力的要口令，关闭对外开放、扫描 host key、检查连通、生成安装包不要
     PAGE_ACTIONS = {"/tools/approve": page_approve, "/tools/reject": page_reject,
                     "/tools/trust": page_trust, "/tools/propose-approve": page_propose_approve,
                     "/tools/set-passphrase": page_set_passphrase,
-                    "/tools/check": page_check, "/tools/recheck": page_recheck}
+                    "/tools/check": page_check, "/tools/recheck": page_recheck,
+                    "/tools/config/connection-save": page_connection_save,
+                    "/tools/config/connection-delete": page_connection_delete,
+                    "/tools/config/connection-test": page_connection_test,
+                    "/tools/config/mcp-save": page_mcp_save, "/tools/config/mcp-delete": page_mcp_delete,
+                    "/tools/config/mcp-test": page_mcp_test, "/tools/config/export": page_export,
+                    "/tools/config/host-save": page_host_save, "/tools/config/host-delete": page_host_delete,
+                    "/tools/config/host-trust": page_host_trust, "/tools/config/host-scan": page_host_scan,
+                    "/tools/config/host-check": page_host_check, "/tools/config/host-bundle": page_host_bundle}
 
     def do_POST(self):
         if self.path not in ("/exec", "/tools/override", "/tools/propose") and self.path not in self.PAGE_ACTIONS:
@@ -7297,15 +9182,17 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, {"pending": item, "total": len(list_pending())})
 
     def _page(self, action, payload):
-        """页面审批的一个动作。错误一律只回人话：口令不会出现在回复和日志里（这里不打印 payload）。"""
+        """页面审批的一个动作。错误一律只回人话：口令不会出现在回复和日志里（这里不打印 payload）。
+        页面配置的凭据同理。409 时可能带上要用户重新确认的列表（extra：在用它的工具、target 会变的工具）。"""
         try:
             return self._send(200, action(payload, self.headers.get(CALLER_HEADER, "")))
         except ApprovalRefused as exc:
             return self._send(exc.status, {"error": str(exc)})
         except ConfigError as exc:
             status = 404 if isinstance(exc, NotFound) else 409 if isinstance(exc, Conflict) else \
-                429 if isinstance(exc, RateLimited) else 400
+                429 if isinstance(exc, RateLimited) else 403 if isinstance(exc, Forbidden) else 400
             extra = {"pending": exc.pending} if getattr(exc, "pending", None) else {}
+            extra.update(getattr(exc, "extra", None) or {})
             return self._send(status, {"error": str(exc), **extra})
         except Exception as exc:   # 写文件失败之类：回一句话，别把连接直接掐断
             print(f"[approval] 处理失败：{exc.__class__.__name__}: {exc}", flush=True)
@@ -7498,9 +9385,9 @@ def scan_host_keys(host):
     return keys
 
 
-def _write_known_hosts(alias, keytype, blob):
-    """登记（或替换）一台主机的 host key：按主机名登记，原子写入，权限 644。"""
-    path = _known_hosts()
+def _write_known_hosts(alias, keytype, blob, path=None):
+    """登记（或替换）一台主机的 host key：按主机名登记，原子写入，权限 644。path 不给就是主配置那份。"""
+    path = Path(path or _known_hosts())
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -7575,6 +9462,9 @@ def enroll(name, fingerprint=None, replace=False, source="", ask=None):
     host = _cli_hosts(target=name)[0]
     if host["via"] != "ssh":
         raise ConfigError(f"{name} 是本机，不用 enroll")
+    if host.get("origin") == "page":
+        raise ConfigError(f"{name} 是页面上加的主机：它的 host key 在页面上核对（登记在 {_page_known_hosts().name}）；"
+                          f"要看放进目标主机的内容，用 host-info {name}")
     keys = scan_host_keys(host)
     if not keys:
         raise ConfigError(f"从 {host['address']}:{host['port']} 取不到 host key：连不上，或者那不是 SSH 服务")
@@ -7720,6 +9610,15 @@ def _cli(command, ident, config, attest_readonly=False, options=None):
         return _print_pending()
     if command == "scripts":
         return _print_scripts()
+    if command == "host-info":
+        if not ident:
+            print("用法：ops_readonly.py host-info <页面上加的主机名>", file=sys.stderr)
+            return 2
+        try:
+            return host_info(ident)
+        except (ConfigError, HostError) as exc:
+            print(f"失败：{exc}", file=sys.stderr)
+            return 1
     if command in ("enroll", "push", "status"):
         try:
             if options.get("env_file"):
@@ -7781,11 +9680,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", nargs="?", default="serve",
                         choices=["serve", "pending", "approve", "reject",
-                                 "scripts", "trust", "enroll", "push", "status", "set-approval-passphrase"],
+                                 "scripts", "trust", "enroll", "push", "status", "set-approval-passphrase", "host-info"],
                         help="serve 起服务；pending/approve/reject/scripts/trust 审批工具与脚本；"
                              "enroll/push/status 接入和检查远程主机；"
-                             "set-approval-passphrase 设置或重置页面审批的口令（root 执行）")
-    parser.add_argument("ident", nargs="?", help="待审申请的 id、工具名、脚本名；enroll 时是主机名")
+                             "set-approval-passphrase 设置或重置页面审批的口令（root 执行）；"
+                             "host-info 只读地打印页面上加的一台主机要放进目标主机的内容和安装包的 sha256（和页面上的对照）")
+    parser.add_argument("ident", nargs="?", help="待审申请的 id、工具名、脚本名；enroll、host-info 时是主机名")
     parser.add_argument("--port", type=int, default=8799)
     parser.add_argument("--config", default=str(DEFAULT_CONFIG),
                         help="Tool definitions; edits are picked up live.")
@@ -7859,6 +9759,8 @@ def main():
             f"{name}（{conn['type']}{'，外部' if conn.get('external') else ''}）" for name, conn in connections.items()))
     if _vendor["problem"]:
         print(f"（{_vendor['problem']}）")
+    if not page_config_enabled():
+        print("页面配置主机与数据源：已关（OPS_PAGE_CONFIG=off），页面上只能看，不能加、改、删")
     # 没声明 server 也要起这个线程：配置热加载后新加的 mcp_servers 靠它连接和发现
     _mcp.start_background()
     # 主机同理：热加载后新加的 hosts 靠它检查（没配主机时它什么都不连）

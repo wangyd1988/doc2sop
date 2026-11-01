@@ -42,9 +42,12 @@ for item in chroma files vision_cache.json; do
   [ -e "$DATA/$item" ] && cp -a "$DATA/$item" "$WORK/data/"
 done
 # 工具配置也带上（宿主机侧，不在 data 里）：主文件、页面改的开关、脚本信任表、批准过的 MCP 工具、待审申请、
-# 远程主机登记的 host key（私钥不在这里，也不该进备份包）
+# 远程主机登记的 host key，页面上加的连接 / MCP server / 对外开放 / 主机和它们的 host key、配置变更记录。
+# 私钥和页面上输入的凭据（/etc/ops-readonly 下的 page-secrets.json、page-hosts/）不在这里，也不该进备份包；
+# 安装包（page-bundles/）随时能在页面上重新生成，也不带
 for f in /opt/ops/ops_tools.yaml /opt/ops/ops_tools.overrides.yaml /opt/ops/ops_tools.trust.yaml \
-         /opt/ops/ops_tools.mcp.yaml /opt/ops/ops_tools.pending.yaml /opt/ops/ops_tools.known_hosts; do
+         /opt/ops/ops_tools.mcp.yaml /opt/ops/ops_tools.pending.yaml /opt/ops/ops_tools.known_hosts \
+         /opt/ops/ops_tools.page.yaml /opt/ops/ops_tools.page.known_hosts /opt/ops/ops_tools.page.log; do
   [ -f "$f" ] && { mkdir -p "$WORK/ops"; cp -a "$f" "$WORK/ops/"; }
 done
 

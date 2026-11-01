@@ -10,6 +10,7 @@ import contextlib
 import contextvars
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from app.config import OPS_TOKEN, OPS_URL, log, why
@@ -219,6 +220,39 @@ def recheck(ident: str = "", script: str = "", caller="") -> dict:
     """「重新检查」：一条待审申请（ident），或一个要重新确认的脚本（script），不用缓存再试探一遍。"""
     payload = {"script": script} if script else {"id": ident}
     return _action("/tools/recheck", payload, caller, old=OLD_SERVICE_CHECK)
+
+
+# --- 页面上配置主机与数据源 ----------------------------------------------------------------
+# 连接、远程 MCP server、对外开放、远程主机。口令和凭据原样转交给工具服务（它核对口令、存凭据），这里不保存、不记录。
+
+OLD_SERVICE_CONFIG = ("工具服务版本较旧，页面上不能配置主机与数据源：升级宿主机上的 ops_readonly.py（和 ops_exec.py 一起拷），"
+                      "或者照旧在宿主机上配置")
+
+
+def config_view(caller="") -> dict:
+    """页面「主机与数据源」要的全部（主配置的只读，页面上加的能改）。老工具服务没有这个接口：supported=False，页面照旧只读。"""
+    if not enabled():
+        return {"supported": False, "error": "未配置只读工具接口（OPS_URL / OPS_TOKEN）"}
+    try:
+        data = _request("/tools/config", timeout=20, headers=_caller_headers(caller))
+    except OpsUnavailable as exc:
+        return {"supported": False, "error": OLD_SERVICE_CONFIG if exc.status == 404 else str(exc)}
+    return {"supported": True, **data}
+
+
+def config_action(action: str, payload: dict, caller="") -> dict:
+    """一个页面配置动作（connection-save、host-trust……），由工具服务做；要口令的由它核对。"""
+    return _action(f"/tools/config/{action}", payload, caller, old=OLD_SERVICE_CONFIG)
+
+
+def config_bundle(name: str) -> dict:
+    """页面加的主机的安装包：A 上那个文件原样（base64）和它的 sha256。"""
+    try:
+        return _request("/tools/config/bundle/" + urllib.parse.quote(name, safe=""), timeout=20)
+    except OpsUnavailable as exc:
+        if exc.status == 404 and str(exc) in ("Not found", "接口返回 404"):
+            raise OpsUnavailable(OLD_SERVICE_CONFIG, status=501) from None
+        raise
 
 
 def execute(name: str, args: dict) -> dict:
