@@ -57,6 +57,11 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+try:
+    import fcntl          # 设置审批口令时和命令行互斥（_approval_file_lock）
+except ImportError:       # Windows
+    fcntl = None
+
 
 def _load_core():
     """执行核心 ops_exec.py：和本文件放在同一个目录（升级工具服务时两个文件一起拷）。"""
@@ -2798,11 +2803,13 @@ def _approve_mcp(item, spec, attest_readonly):
 
 
 # ---- 页面审批：审批口令 ----------------------------------------------------------------------------------------
-# 页面上批准工具申请、重新确认脚本，都要另输一个审批口令。它和网页登录密码无关：只能由宿主机 root 用命令行设置
-# （set-approval-passphrase），只以加盐的慢哈希存在 root 才能读的文件里，只在这里核对——应用只转交口令，
-# 不保存、不记录，也判断不了对错。网页密码泄露、应用被攻破，都加不了工具。
-# 连续输错 APPROVAL_FAILURES 次锁定 APPROVAL_LOCK 秒，所有要口令的入口（批准、重新确认脚本、提交并立即批准）共用一个计数；
-# 锁在内存里，重启工具服务清零。命令行审批不经过口令，也不受锁定影响：能在宿主机上跑命令的本来就是 root。
+# 页面上批准工具申请、重新确认脚本，都要另输一个审批口令。它和网页登录密码无关：只以加盐的慢哈希存在 root 才能读的文件里，
+# 只在这里核对——应用只转交口令，不保存、不记录，也判断不了对错。
+# 谁能设：宿主机上的 root 用命令行（set-approval-passphrase），或者在页面上——还没设时直接设，已经设了要输旧口令才能改；
+# 页面上没有找回，忘了只能在宿主机上重设。所以设好之后，网页密码泄露、应用被攻破，都加不了工具、改不了口令。
+# 例外是还没设的那段时间：拿到网页密码的人能抢先设。部署后马上设，设好后看一眼页面上显示的设置时间和来源。
+# 连续输错 APPROVAL_FAILURES 次锁定 APPROVAL_LOCK 秒，所有要口令的入口（批准、重新确认脚本、提交并立即批准、改口令）
+# 共用一个计数；锁在内存里，重启工具服务清零。命令行不经过口令，也不受锁定影响：能在宿主机上跑命令的本来就是 root。
 
 APPROVAL_FILE = "/etc/ops-readonly/approval.hash"
 APPROVAL_OWNER = 0                       # 口令文件必须属于这个 uid（root）
@@ -2812,8 +2819,9 @@ APPROVAL_LOCK = 15 * 60
 # 慢哈希：scrypt 取 OWASP 建议的组合之一（N=2^14、r=8、p=5，约 16 MB 内存）；没有 scrypt 的 Python 退回 PBKDF2
 SCRYPT_PARAMS = {"n": 2 ** 14, "r": 8, "p": 5}
 PBKDF2_ITERATIONS = 600000
+APPROVAL_SET_BY = ("page", "cli")       # 口令是怎么设的：页面上 / 宿主机命令行
 _approval = {"failures": 0, "locked_until": 0.0, "logged": None}
-_approval_lock = threading.Lock()        # 核对串行：并发的请求也只能一个一个试，锁定前最多试 APPROVAL_FAILURES 次
+_approval_lock = threading.Lock()        # 核对、设置串行：并发的请求也只能一个一个试，锁定前最多试 APPROVAL_FAILURES 次
 
 
 def _approval_path():
@@ -2830,6 +2838,19 @@ def _cli_command(*words):
         if config != DEFAULT_CONFIG:
             prefix += f" --config {shlex.quote(str(config))}"
     return " ".join([prefix] + [shlex.quote(str(word)) for word in words])
+
+
+def _approval_meta(record):
+    """口令记录里的设置时间和方式（页面上设的还有来源地址），只给页面显示、不参与核对。
+    老记录没有这几项，写得不对的也当作没有：留空，记录照常能用。"""
+    at, by, source = record.get("set_at"), record.get("set_by"), record.get("set_from")
+    if not (isinstance(at, str)
+            and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(:[0-9]{2})?(Z|[+-][0-9]{2}:?[0-9]{2})?", at)):
+        at = ""
+    by = by if by in APPROVAL_SET_BY else ""
+    if not (by == "page" and isinstance(source, str) and re.fullmatch(r"[0-9A-Za-z.:%\[\]_-]{1,64}", source)):
+        source = ""
+    return {"set_at": at, "set_by": by, "set_from": source}
 
 
 def _approval_record(data):
@@ -2851,11 +2872,12 @@ def _approval_record(data):
         if not (2 ** 14 <= n <= 2 ** 20 and n & (n - 1) == 0 and 1 <= r <= 16 and 1 <= p <= 16
                 and 128 * r * n <= 256 * 1024 * 1024):
             raise ValueError("scrypt 的参数超出范围")
-        return {"algo": algo, "n": n, "r": r, "p": p, "salt": salt, "hash": digest}
+        return {"algo": algo, "n": n, "r": r, "p": p, "salt": salt, "hash": digest, "meta": _approval_meta(record)}
     if algo == "pbkdf2_sha256":
         if not numbers("iterations") or not 100000 <= record["iterations"] <= 10000000:
             raise ValueError("PBKDF2 的迭代次数超出范围")
-        return {"algo": algo, "iterations": record["iterations"], "salt": salt, "hash": digest}
+        return {"algo": algo, "iterations": record["iterations"], "salt": salt, "hash": digest,
+                "meta": _approval_meta(record)}
     raise ValueError(f"不认识的算法 {str(algo)[:20]}")
 
 
@@ -2887,7 +2909,9 @@ def _read_approval():
             if os.name == "posix" and (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
                 problem = "在检查之后被换掉了"
             else:
-                return _approval_record(data), ""
+                record = _approval_record(data)
+                record["stamp"] = _file_stamp(info)   # 页面上改口令时，写之前核对文件还是不是这一份
+                return record, ""
         except OSError as exc:
             problem = f"读不了（{exc.strerror or exc}）"
         except ValueError as exc:     # 含 JSON、UTF-8 解码错误
@@ -2904,17 +2928,49 @@ def _approval_state():
     return record, problem
 
 
+def _file_stamp(info):
+    return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size)
+
+
+def _approval_stamp():
+    """口令文件此刻的样子（设备、inode、修改时间、大小）；没有这个文件是 None。"""
+    try:
+        return _file_stamp(os.lstat(_approval_path()))
+    except OSError:
+        return None
+
+
+@contextlib.contextmanager
+def _approval_file_lock():
+    """设置口令的跨进程锁：页面上的设置 / 修改（工具服务）和宿主机上的 set-approval-passphrase（命令行）
+    各自「读、核对、写」，不能互相插进来——不然命令行刚重设的口令，会被一个正在途中的页面修改盖回去。
+    锁文件在口令文件旁边（approval.hash.lock），目录不存在就照写口令文件的做法建。没有 fcntl 的系统（Windows）
+    只有进程内的 _approval_lock。"""
+    path = _approval_path()
+    os.makedirs(os.path.dirname(os.path.abspath(path)), mode=0o700, exist_ok=True)
+    descriptor = os.open(path + ".lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        if fcntl is not None:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
 def _lock_minutes_left():
     left = _approval["locked_until"] - time.time()
     return max(1, int((left + 59) // 60)) if left > 0 else 0
 
 
 def approval_status():
-    """页面要的：设没设、锁没锁、还有几分钟解锁，文件不满足要求时的原因。不含哈希、盐和算法参数。"""
+    """页面要的：设没设、锁没锁、还有几分钟解锁，文件不满足要求时的原因，什么时候、怎么设的（页面上设的还有来源地址）。
+    不含哈希、盐和算法参数。page_set 说明这个版本的工具服务能在页面上设置、修改口令（老版本没有这一项）。"""
     record, problem = _approval_state()
     minutes = _lock_minutes_left()
+    meta = record["meta"] if record else {"set_at": "", "set_by": "", "set_from": ""}
     return {"configured": record is not None, "locked": minutes > 0, "unlock_minutes": minutes,
             "problem": problem, "max_failures": APPROVAL_FAILURES, "lock_minutes": APPROVAL_LOCK // 60,
+            "min_length": APPROVAL_MIN, "page_set": True, **meta,
             "command": _cli_command("set-approval-passphrase")}
 
 
@@ -2927,12 +2983,17 @@ def _derive(record, passphrase):
     return hashlib.pbkdf2_hmac("sha256", secret, record["salt"], record["iterations"], dklen=32)
 
 
-def new_approval_record(passphrase):
+def new_approval_record(passphrase, by="cli", source=""):
+    """一条口令记录：加盐慢哈希，加上设置时间（带时区）和方式；页面上设的再带上来源地址（只给页面显示，不参与核对）。"""
     salt = secrets.token_bytes(16)
     params = {"algo": "scrypt", **SCRYPT_PARAMS} if hasattr(hashlib, "scrypt") else \
         {"algo": "pbkdf2_sha256", "iterations": PBKDF2_ITERATIONS}
     digest = _derive({**params, "salt": salt}, passphrase)
-    return {**params, "salt": salt.hex(), "hash": digest.hex(), "set_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    record = {**params, "salt": salt.hex(), "hash": digest.hex(),
+              "set_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"), "set_by": by}
+    if by == "page" and source:
+        record["set_from"] = source
+    return record
 
 
 class ApprovalRefused(Exception):
@@ -2944,50 +3005,147 @@ class ApprovalRefused(Exception):
 
 
 def _approval_log(action, target, result, caller):
-    print(f"[approval] {action} {target}：{result} caller={_caller(caller) or '-'}", flush=True)
+    print(f"[approval] {action}{' ' + target if target else ''}：{result} caller={_caller(caller) or '-'}", flush=True)
+
+
+def _locked_refusal(minutes):
+    return ApprovalRefused(423, f"审批口令连续输错 {APPROVAL_FAILURES} 次，页面审批已锁定，{minutes} 分钟后解锁；"
+                                f"宿主机上的命令行审批不受影响")
+
+
+def _verify(record, passphrase, action, target, caller):
+    """核对口令，调用方持有 _approval_lock：对了返回；不对计一次失败，到次数就锁定；锁定中不核对。都抛 ApprovalRefused。"""
+    minutes = _lock_minutes_left()
+    if minutes:
+        _approval_log(action, target, f"没有核对（锁定中，{minutes} 分钟后解锁）", caller)
+        raise _locked_refusal(minutes)
+    try:
+        ok = len(passphrase) <= APPROVAL_MAX and secrets.compare_digest(_derive(record, passphrase), record["hash"])
+    except UnicodeEncodeError:
+        ok = False
+    except (ValueError, MemoryError, AttributeError) as exc:
+        _approval_log(action, target, f"没有核对（{exc.__class__.__name__}）", caller)
+        raise ApprovalRefused(409, f"这台机器核对不了审批口令（{exc.__class__.__name__}: {exc}）：用 "
+                                   f"set-approval-passphrase 重新设置；命令行审批照常可用") from None
+    if ok:
+        _approval.update(failures=0, locked_until=0.0)
+        _approval_log(action, target, "口令正确", caller)
+        return
+    _approval["failures"] += 1
+    failures = _approval["failures"]
+    if failures >= APPROVAL_FAILURES:
+        _approval.update(failures=0, locked_until=time.time() + APPROVAL_LOCK)
+        _approval_log(action, target, f"口令错误（连续第 {failures} 次），页面审批锁定 {APPROVAL_LOCK // 60} 分钟", caller)
+        raise ApprovalRefused(423, f"审批口令连续输错 {APPROVAL_FAILURES} 次，页面审批锁定 {APPROVAL_LOCK // 60} 分钟；"
+                                   f"宿主机上的命令行审批不受影响")
+    _approval_log(action, target, f"口令错误（连续第 {failures} 次）", caller)
+    raise ApprovalRefused(403, f"审批口令不对，还能再试 {APPROVAL_FAILURES - failures} 次")
+
+
+def _unusable(problem):
+    """没设口令、口令文件不满足要求时，页面上的批准为什么不行、怎么办。"""
+    command = _cli_command("set-approval-passphrase")
+    if problem:
+        return f"{problem}。在宿主机上查明原因后用 {command} 重新设置"
+    return f"还没有设置审批口令：在页面「设置 → 审批口令」里设置，或在宿主机上执行 {command}；设置之前命令行审批照常可用"
 
 
 def check_passphrase(passphrase, action, target, caller=""):
-    """页面审批的口令核对：对了返回，不对抛 ApprovalRefused。每次尝试记一行日志，只记结果和来源，不记口令。"""
+    """页面审批的口令核对：对了返回，不对抛 ApprovalRefused。每次尝试记一行日志，只记结果和来源，不记口令。
+    口令文件在锁里读：和页面上改口令串行，核对的总是此刻的口令。"""
     if not isinstance(passphrase, str) or not passphrase:
         raise ApprovalRefused(400, "没有输入审批口令")
-    record, problem = _approval_state()
-    if record is None:
-        reason = problem or "还没有设置审批口令"
-        _approval_log(action, target, f"没有核对（{reason}）", caller)
-        raise ApprovalRefused(409, f"{reason}。在宿主机上执行 {_cli_command('set-approval-passphrase')} 设置；"
-                                   f"设置之前命令行审批照常可用")
     with _approval_lock:
-        minutes = _lock_minutes_left()
-        if minutes:
-            _approval_log(action, target, f"没有核对（锁定中，{minutes} 分钟后解锁）", caller)
-            raise ApprovalRefused(423, f"审批口令连续输错 {APPROVAL_FAILURES} 次，页面审批已锁定，{minutes} 分钟后解锁；"
-                                       f"宿主机上的命令行审批不受影响")
+        record, problem = _approval_state()
+        if record is None:
+            _approval_log(action, target, f"没有核对（{problem or '还没有设置审批口令'}）", caller)
+            raise ApprovalRefused(409, _unusable(problem))
+        _verify(record, passphrase, action, target, caller)
+
+
+def _caller_source(caller):
+    """caller（应用带来的「web user=… ip=…」）里的来源地址：页面上设口令时写进口令记录，给页面显示。"""
+    match = re.search(r"(?:^| )ip=([0-9A-Za-z.:%\[\]_-]{1,64})(?= |$)", _caller(caller))
+    return match.group(1) if match and match.group(1) != "-" else ""
+
+
+def page_set_passphrase(payload, caller=""):
+    """页面上设置或修改审批口令（应用转交，X-Ops-Token 之后）。
+
+    还没设：直接设，新口令就够。已经设了：要旧口令，和批准共用输错计数和锁定，锁定期间不能改。口令文件不满足要求时
+    页面上不能设也不能改，不覆盖它。先拿进程内的锁，再拿和命令行共用的文件锁，然后重新读状态：两个首次设置同时到，
+    后到的按「已设置」处理；命令行在页面修改的半路上重设，要等页面这次写完，页面下一次就要核对命令行设的口令。
+    首次设置用不覆盖的方式写；修改在写之前再核对一次，文件还是刚才核对的那一份（不配合锁、直接改文件的也盖不掉）。
+    日志只记首次设置 / 修改和来源，不记口令。"""
+    new, current = payload.get("new"), payload.get("current")
+    if not isinstance(new, str) or not new:
+        raise ApprovalRefused(400, "没有输入新的审批口令")
+    if len(new) < APPROVAL_MIN:
+        raise ApprovalRefused(400, f"新的审批口令至少 {APPROVAL_MIN} 个字符")
+    if len(new) > APPROVAL_MAX:
+        raise ApprovalRefused(400, f"新的审批口令最多 {APPROVAL_MAX} 个字符")
+    try:
+        new.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ApprovalRefused(400, "新的审批口令里有不能编码的字符") from None
+    if current is not None and not isinstance(current, str):
+        raise ApprovalRefused(400, "旧口令必须是文本")
+    command = _cli_command("set-approval-passphrase")
+    if os.name == "posix" and os.geteuid() != APPROVAL_OWNER:
+        raise ApprovalRefused(409, f"工具服务不是以 root 运行，它写出的口令文件自己也不认：在宿主机上用 root 执行 {command}")
+    source = _caller_source(caller)
+    with _approval_lock:
+        _refuse_problem(_approval_state()[1], caller, command)   # 口令文件有问题：连锁文件都不碰
         try:
-            ok = len(passphrase) <= APPROVAL_MAX and secrets.compare_digest(_derive(record, passphrase), record["hash"])
-        except UnicodeEncodeError:
-            ok = False
-        except (ValueError, MemoryError, AttributeError) as exc:
-            _approval_log(action, target, f"没有核对（{exc.__class__.__name__}）", caller)
-            raise ApprovalRefused(409, f"这台机器核对不了审批口令（{exc.__class__.__name__}: {exc}）：用 "
-                                       f"set-approval-passphrase 重新设置；命令行审批照常可用") from None
-        if ok:
-            _approval.update(failures=0, locked_until=0.0)
-            _approval_log(action, target, "口令正确", caller)
-            return
-        _approval["failures"] += 1
-        failures = _approval["failures"]
-        if failures >= APPROVAL_FAILURES:
-            _approval.update(failures=0, locked_until=time.time() + APPROVAL_LOCK)
-            _approval_log(action, target, f"口令错误（连续第 {failures} 次），页面审批锁定 {APPROVAL_LOCK // 60} 分钟", caller)
-            raise ApprovalRefused(423, f"审批口令连续输错 {APPROVAL_FAILURES} 次，页面审批锁定 {APPROVAL_LOCK // 60} 分钟；"
-                                       f"宿主机上的命令行审批不受影响")
-        _approval_log(action, target, f"口令错误（连续第 {failures} 次）", caller)
-        raise ApprovalRefused(403, f"审批口令不对，还能再试 {APPROVAL_FAILURES - failures} 次")
+            with _approval_file_lock():
+                first = _set_locked(new, current, source, caller, command)
+        except OSError as exc:   # 建不了目录、开不了锁文件、写不了口令文件（「刚被建好」已在里面处理）
+            _approval_log("设置审批口令", "", f"没写成（{exc.__class__.__name__}: {exc.strerror or exc}）", caller)
+            raise ApprovalRefused(500, f"写不了口令文件 {_approval_path()}（{exc.strerror or exc}）：工具服务的 systemd 单元用了 "
+                                       f"ProtectSystem=strict 时，要把它所在的目录加进 ReadWritePaths（见 "
+                                       f"deploy/ops-readonly.service.example）；也可以在宿主机上执行 {command}") from None
+    print(f"[approval] {'首次设置了' if first else '修改了'}审批口令 caller={_caller(caller) or '-'}", flush=True)
+    return {"first": first, "approval": approval_status()}
 
 
-def _write_private(path, text):
-    """原子写一个只有属主能读写的文件（0600）：先写同目录的临时文件，再 rename 过去（盖掉同名的符号链接本身，不跟随）。"""
+def _refuse_problem(problem, caller, command):
+    if problem:
+        _approval_log("设置审批口令", "", f"没有设置（{problem}）", caller)
+        raise ApprovalRefused(409, f"{problem}。页面上不能设置也不能改，也不会覆盖它：在宿主机上查明原因后用 {command} 重新设置")
+
+
+def _set_locked(new, current, source, caller, command):
+    """page_set_passphrase 拿到两把锁之后：重新读状态、核对旧口令、写。返回是不是首次设置。"""
+    record, problem = _approval_state()
+    _refuse_problem(problem, caller, command)
+    first = record is None
+    action = "首次设置审批口令" if first else "修改审批口令"
+    minutes = _lock_minutes_left()
+    if minutes:
+        _approval_log(action, "", f"没有{'设置' if first else '修改'}（锁定中，{minutes} 分钟后解锁）", caller)
+        raise _locked_refusal(minutes)
+    if not first:
+        if not current:
+            _approval_log(action, "", "没有修改（已经设置过了，没有输旧口令）", caller)
+            raise ApprovalRefused(409, f"已经设置了审批口令：要改得先输旧口令。忘了旧口令只能在宿主机上重设：{command}")
+        _verify(record, current, action, "", caller)
+    text = json.dumps(new_approval_record(new, "page", source)) + "\n"
+    if not first and _approval_stamp() != record["stamp"]:
+        _approval_log(action, "", "没有修改（口令文件在核对之后被改过）", caller)
+        raise ApprovalRefused(409, "口令文件刚被改过（可能是宿主机上刚重设）：这次没有修改。刷新页面，用现在的口令再改")
+    try:
+        _write_private(_approval_path(), text, exclusive=first)
+    except FileExistsError:
+        _approval_log(action, "", "没有设置（口令文件刚被建好）", caller)
+        raise ApprovalRefused(409, f"审批口令刚被设置过：要改得先输旧口令。不是你设的就在宿主机上重设：{command}") from None
+    return first
+
+
+def _write_private(path, text, exclusive=False):
+    """原子写一个只有属主能读写的文件（0600）：先写同目录的临时文件，再 rename 过去（盖掉同名的符号链接本身，不跟随）。
+
+    exclusive：同名的东西已经在了（哪怕是坏文件、符号链接）就不写，抛 FileExistsError——页面上首次设置口令用它，
+    不会盖掉同一时刻别人刚设好的口令。用硬链接落位，内容照样是一次写全的；文件系统不支持硬链接时退回「看过不在再换」。"""
     folder = os.path.dirname(os.path.abspath(path))
     os.makedirs(folder, mode=0o700, exist_ok=True)
     temporary = os.path.join(folder, f".{os.path.basename(path)}.{secrets.token_hex(3)}.tmp")
@@ -2998,7 +3156,20 @@ def _write_private(path, text):
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
+        if not exclusive:
+            os.replace(temporary, path)
+            return
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            raise
+        except OSError:
+            if os.path.lexists(path):
+                raise FileExistsError(path) from None
+            os.replace(temporary, path)
+            return
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
     except BaseException:
         try:
             os.unlink(temporary)
@@ -3027,7 +3198,8 @@ def set_approval_passphrase():
     if len(first) > APPROVAL_MAX:
         print(f"失败：审批口令最多 {APPROVAL_MAX} 个字符，没有改动", file=sys.stderr)
         return 1
-    _write_private(path, json.dumps(new_approval_record(first)) + "\n")
+    with _approval_file_lock():   # 页面上正在改口令时，等它写完再写：命令行设的这一份留到最后
+        _write_private(path, json.dumps(new_approval_record(first, "cli")) + "\n")
     print(f"已设置审批口令：{path}（只存加盐的慢哈希" + ("，属主 root、权限 0600）" if os.name == "posix" else "）"))
     print(f"页面上批准工具、重新确认脚本时输入它；连续输错 {APPROVAL_FAILURES} 次，页面审批锁定 {APPROVAL_LOCK // 60} 分钟。")
     print("正在运行的工具服务不用重启：下一次批准就用新口令。不要和网页登录密码相同。")
@@ -6011,6 +6183,16 @@ class Handler(BaseHTTPRequestHandler):
         supplied = self.headers.get("X-Ops-Token", "")
         return secrets.compare_digest(supplied, self.token)
 
+    def _discard_body(self):
+        """不处理的请求也先把请求体读掉（最多 1 MB）再回复：没读的数据留在连接里，关连接时对方收到的是 RST，
+        常常读不到这条 401 / 404（Windows 上尤其明显），应用那边就只看到「连接被重置」。"""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if 0 < length <= 1 << 20:
+                self.rfile.read(length)
+        except (ValueError, OSError):
+            pass
+
     def do_GET(self):
         if self.path == "/health":
             return self._send(200, {"status": "ok", "tools": sorted(available_tools()),
@@ -6040,14 +6222,18 @@ class Handler(BaseHTTPRequestHandler):
                                     "held": held, "approval": approval_status()})
         self._send(404, {"error": "Not found"})
 
-    # 页面审批的写操作：批准、重新确认脚本、提交并立即批准要审批口令（工具服务核对），拒绝不要
+    # 页面审批的写操作：批准、重新确认脚本、提交并立即批准要审批口令（工具服务核对），拒绝不要；
+    # 设置口令：还没设时直接设，已经设了要旧口令
     PAGE_ACTIONS = {"/tools/approve": page_approve, "/tools/reject": page_reject,
-                    "/tools/trust": page_trust, "/tools/propose-approve": page_propose_approve}
+                    "/tools/trust": page_trust, "/tools/propose-approve": page_propose_approve,
+                    "/tools/set-passphrase": page_set_passphrase}
 
     def do_POST(self):
         if self.path not in ("/exec", "/tools/override", "/tools/propose") and self.path not in self.PAGE_ACTIONS:
+            self._discard_body()
             return self._send(404, {"error": "Not found"})
         if not self._authorised():
+            self._discard_body()
             return self._send(401, {"error": "令牌无效"})
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -6624,9 +6810,14 @@ def main():
         print(f"（有 {waiting} 条新工具申请待审：ops_readonly.py pending）")
     record, problem = _approval_state()
     if record is not None:
-        print(f"页面审批：已设置审批口令（{_approval_path()}）")
+        meta = record["meta"]
+        how = {"page": f"在页面上设置{'（来自 ' + meta['set_from'] + '）' if meta['set_from'] else ''}",
+               "cli": "用命令行设置"}.get(meta["set_by"], "")
+        print(f"页面审批：已设置审批口令（{_approval_path()}"
+              + "".join(f"，{part}" for part in (meta["set_at"], how) if part) + "）")
     elif not problem:
-        print(f"页面审批：还没有设置审批口令，页面上只能看、能拒绝；设置：{_cli_command('set-approval-passphrase')}")
+        print(f"页面审批：还没有设置审批口令，页面上只能看、能拒绝。马上设：页面「设置 → 审批口令」，"
+              f"或 {_cli_command('set-approval-passphrase')}——设好之前，拿到网页密码的人能抢先设")
     if _state["mcp_servers"]:
         print(f"MCP server {len(_state['mcp_servers'])} 个：{', '.join(sorted(_state['mcp_servers']))}，"
               f"后台连接中；发现的工具会进入待审列表")

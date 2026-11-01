@@ -127,6 +127,8 @@ def propose(tool: dict, author: str = "web") -> dict:
 # 口令原样转交给工具服务核对：这里不保存、不记录，也判断不了对错。caller 是「谁、从哪里」，工具服务只写进日志。
 
 OLD_SERVICE = "工具服务版本较旧，不支持页面审批：升级宿主机上的 ops_readonly.py（和 ops_exec.py 一起拷）"
+OLD_SERVICE_SET = ("工具服务版本较旧，页面上不能设置审批口令：升级宿主机上的 ops_readonly.py（和 ops_exec.py 一起拷），"
+                   "或在宿主机上用 set-approval-passphrase 设置")
 
 
 def _caller_headers(caller):
@@ -164,12 +166,12 @@ def review() -> dict:
             "approval": data.get("approval") or _no_approval(OLD_SERVICE)}
 
 
-def _action(path, payload, caller):
+def _action(path, payload, caller, old=OLD_SERVICE):
     try:
         return _request(path, payload, timeout=60, headers=_caller_headers(caller))
     except OpsUnavailable as exc:
         if exc.status == 404 and str(exc) in ("Not found", "接口返回 404"):
-            raise OpsUnavailable(OLD_SERVICE, status=501) from None
+            raise OpsUnavailable(old, status=501) from None
         raise
 
 
@@ -193,6 +195,14 @@ def propose_approve(tool: dict, author: str, passphrase: str, script_sha256="", 
     if script_sha256:
         payload["script_sha256"] = script_sha256
     return _action("/tools/propose-approve", payload, caller)
+
+
+def set_passphrase(new: str, current: str = "", caller="") -> dict:
+    """页面上设置或修改审批口令：还没设时只要新口令，已经设了要带旧口令（工具服务核对、计数）。"""
+    payload = {"new": new}
+    if current:
+        payload["current"] = current
+    return _action("/tools/set-passphrase", payload, caller, old=OLD_SERVICE_SET)
 
 
 def execute(name: str, args: dict) -> dict:

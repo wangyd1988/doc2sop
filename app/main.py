@@ -668,9 +668,9 @@ def tools_propose(body: ToolProposal):
 
 
 # --- 页面审批 ------------------------------------------------------------------
-# 批准、重新确认脚本、提交并立即批准要输审批口令。口令只在这几个请求里经过应用：原样转给工具服务核对，
-# 不保存、不记日志，也不出现在任何回复里——所以请求体手动解析，不走 FastAPI 的校验（它的 422 会回显输入）。
-# 拒绝不要口令。
+# 批准、重新确认脚本、提交并立即批准要输审批口令；设置、修改审批口令也在这里。口令只在这几个请求里经过应用：
+# 原样转给工具服务核对，不保存、不记日志，也不出现在任何回复里——所以请求体手动解析，不走 FastAPI 的校验
+# （它的 422 会回显输入）。拒绝不要口令。
 
 APPROVAL_BODY_MAX = 64 * 1024
 OPS_REFUSALS = (400, 403, 404, 409, 423, 501)
@@ -712,6 +712,26 @@ def _ops_refused(exc: ops_client.OpsUnavailable) -> JSONResponse:
 @app.get("/api/tools/approval")
 def tools_approval():
     return ops_client.approval_status()
+
+
+@app.post("/api/tools/approval/passphrase")
+async def tools_set_passphrase(request: Request):
+    """页面上设置或修改审批口令：还没设时新口令就够，已经设了要旧口令（current），都由工具服务核对、写文件。
+    新口令不能和网页登录密码相同——工具服务不知道网页密码，所以这一条在这里查。"""
+    data = await _json_body(request)
+    new, current = data.get("new"), data.get("current")
+    if not isinstance(new, str) or not new:
+        raise HTTPException(400, "没有输入新的审批口令")
+    if current is not None and not isinstance(current, str):
+        raise HTTPException(400, "旧口令必须是文本")
+    if WEB_PASSWORD and secrets.compare_digest(new.encode("utf-8", "surrogatepass"), WEB_PASSWORD.encode("utf-8")):
+        raise HTTPException(400, "新的审批口令不能和网页登录密码相同：网页密码泄露时，它还要挡住加工具")
+    try:
+        result = await run_in_threadpool(ops_client.set_passphrase, new, current or "", _approval_caller(request))
+    except ops_client.OpsUnavailable as exc:
+        return _ops_refused(exc)
+    log.info("approval passphrase %s from the page", "set for the first time" if result.get("first") else "changed")
+    return result
 
 
 @app.post("/api/tools/pending/{pending_id}/approve")

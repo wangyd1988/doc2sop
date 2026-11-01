@@ -560,6 +560,9 @@ body.settings #mgroups, body.settings #mlist, body.settings #mdetail, body.setti
 .sf .warn { border: 1px solid #f59e0b; background: rgba(245,158,11,.08); border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-top: 10px; }
 .sf .warn label { display: flex; grid-template-columns: none; gap: 8px; margin: 8px 0 0; }
 .sf .warn input { width: auto; }
+/* .sf .warn 是设置页里的提示框：别让它套到单栏页里的 pill warn、btn warn 上 */
+.sf .pill.warn { border: 1px solid transparent; border-radius: 999px; padding: 0 8px; font-size: 11.5px; margin: 0; }
+.sf .btn.warn { border: 0; border-radius: 9px; padding: 7px 14px; font-size: 13px; margin: 0; }
 .sf dl { display: grid; grid-template-columns: 110px 1fr; gap: 6px 10px; font-size: 13px; margin: 0; }
 .sf dt { color: var(--muted); } .sf dd { margin: 0; }
 .sf .note { font-size: 12px; color: var(--muted); line-height: 1.7; }
@@ -836,8 +839,29 @@ table.pt .rx { display: block; font-size: 11px; color: var(--muted); font-family
 .dlg .err { font-size: 12.5px; color: var(--danger); }
 .dlg .err:empty { display: none; }
 .dlg .row { display: flex; justify-content: flex-end; gap: 8px; }
+.dlg .sum code { font-size: 11.5px; background: var(--panel-2); padding: 1px 5px; border-radius: 5px; word-break: break-all; }
 @keyframes pop { from { transform: translateY(8px) scale(.98); opacity: 0; } }
 @keyframes fade { from { opacity: 0; } }
+
+/* 审批口令的设置 / 修改表单：设置页和「主机与数据源」的卡片里，「待审批」里「现在设置」打开的对话框里 */
+.passform { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.passform label { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 4px 10px; align-items: center; margin: 0;
+                  font-size: 13px; font-weight: 400; }
+.passform label > span { color: var(--muted); }
+.passform label > i { grid-column: 2; font-style: normal; font-size: 11.5px; color: var(--muted); }
+.passform input { font: inherit; font-size: 14px; padding: 8px 11px; border-radius: 8px; border: 1px solid var(--border);
+                  background: var(--panel-2); color: var(--text); outline: none; min-width: 0; width: 100%; box-sizing: border-box; }
+.passform input:focus { border-color: var(--accent); background: var(--panel); }
+.passform input:disabled { opacity: .55; cursor: not-allowed; }
+.passform .plain { font-size: 12px; line-height: 1.6; color: #92400e; background: rgba(245,158,11,.1);
+                   border: 1px solid rgba(245,158,11,.4); border-radius: 9px; padding: 8px 10px; }
+.passform .err { font-size: 12.5px; color: var(--danger); }
+.passform .err:empty { display: none; }
+.passform .pf-row { display: flex; gap: 8px; justify-content: flex-end; }
+.pass-who { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+.nopass .np-act { margin: 6px 0; }
+@media (prefers-color-scheme: dark) { .passform .plain { color: #fbbf24; } }
+@media (max-width: 820px) { .passform label { grid-template-columns: 1fr; } .passform label > i { grid-column: auto; } }
 
 /* 单栏页里的「在宿主机上怎么做」 */
 .sf .howto { font-size: 12px; color: var(--muted); background: var(--panel-2); border-radius: 9px; padding: 9px 12px; margin-top: 12px; line-height: 1.75; }
@@ -2267,7 +2291,7 @@ function tlProposeForm() {
     <div class="pb-edit"><div class="row">
       <button class="ok" id="tlDoPropose">提交申请</button>
       <button class="ok" id="tlDoProposeApprove" style="background:#f59e0b" ${approvalInfo().configured ? ''
-        : 'disabled title="还没有设置审批口令：在宿主机上执行 set-approval-passphrase 后才能在页面上批准"'}>提交并立即批准…</button>
+        : 'disabled title="还没有设置审批口令：先在「设置 → 审批口令」里设置（或在宿主机上执行 set-approval-passphrase）"'}>提交并立即批准…</button>
       <button class="cancel" id="tlCancelPropose">取消</button>
     </div></div>
     <div class="pb-err" id="tlProposeErr" hidden></div>
@@ -2636,8 +2660,11 @@ async function refreshBadges() {
 function todoCounts(o = overview) {
   const p = (o && o.pending) || {};
   const tools = (p.tools || []).length + (p.scripts || []).length, sops = (p.proposals || []).length;
-  return {tools, sops, all: tools + sops + (p.hosts || []).length};
+  const pass = passUnset(o) ? 1 : 0;
+  return {tools, sops, pass, all: tools + sops + (p.hosts || []).length + pass};
 }
+// 还没设审批口令（工具服务连得上、口令文件也没毛病）：工作台「待处理」里多一项，点了去设置
+function passUnset(o) { return !!o && !!o.approval && o.approval.configured === false && !o.approval.problem; }
 function nb(id, text, cls, title) {
   const el = $(id);
   el.textContent = text || '';
@@ -2799,6 +2826,9 @@ function route() {
 }
 window.addEventListener('popstate', route);
 const openPending = id => go('tools', {tab: 'pending', item: id});
+// 去设置页的审批口令卡片：设置页是异步画的，画好后滚过去、聚焦第一个输入框
+let wantPass = false;
+function goSetPass() { wantPass = true; go('settings'); }
 
 /* ---------- 工作台 ----------
    一屏看全：问点什么（示例按查知识 / 查数据 / 按 SOP 排查 / 计算分组）、四张状态卡（知识库、工具、SOP、对外接入）、
@@ -2831,6 +2861,9 @@ function tdRow(cls, icon, title, sub, action) {
 }
 function todoHtml(o) {
   const p = o.pending || {}, rows = [];
+  if (passUnset(o)) rows.push(tdRow('tl', '🔐', '还没设审批口令',
+    '部署后马上设：设好之前页面上不能批准工具，拿到网页密码的人也能抢先设',
+    '<button class="btn sm warn" data-todo="passphrase">去设置</button>'));
   for (const t of p.tools || []) {
     const mcp = String(t.author || '').startsWith('mcp:');
     rows.push(tdRow('tl', mcp ? '🔌' : '🔧', `工具申请：${esc(t.label || t.name)}<code>${esc(t.name)}</code>`,
@@ -2929,6 +2962,7 @@ $('home').addEventListener('click', e => {
   const td = e.target.closest('[data-todo]');
   if (td) {
     const id = td.dataset.id;
+    if (td.dataset.todo === 'passphrase') return goSetPass();
     if (td.dataset.todo === 'tool') return openPending(id);
     if (td.dataset.todo === 'script') return openPending('script:' + id);
     if (td.dataset.todo === 'proposal') return go('sop', {tab: 'proposals', item: id});
@@ -3113,8 +3147,9 @@ async function renderDetail() {
 }
 
 /* ---------- 待审批：申请的完整内容、风险提示，批准要输审批口令 ----------
-   审批口令不是网页登录密码：只在宿主机上设置，只存哈希，由工具服务核对（应用只转交，不保存、不记录）。
-   没设口令时批准按钮不可用，并写明在宿主机上怎么设；拒绝不用口令。风险提示由工具服务自动检测，只是辅助：
+   审批口令不是网页登录密码：只存哈希，由工具服务核对（应用只转交，不保存、不记录）。还没设时页面上直接设，
+   设好之后改要旧口令，忘了只能在宿主机上重设（见下面「审批口令：在页面上设置、修改」）。
+   没设口令时批准按钮不可用，旁边有「现在设置」；拒绝不用口令。风险提示由工具服务自动检测，只是辅助：
    没检测到问题时只说「没有检测到风险」，不说成没有风险；脚本型总有一条「可以执行任意命令，请逐行看内容」。 */
 let apState = {pending: [], held: [], approval: null};
 const apResults = {};   // 刚批准的：id -> 结果（写在主配置第几行、备份在哪、重新加载后几个工具）
@@ -3192,10 +3227,13 @@ function paramType(p) {
   return esc([p.type, p.format].filter(Boolean).join(' · ') || '文本');
 }
 function nopassHtml(cli, verb = '批准') {
-  const ap = approvalInfo();
+  const ap = approvalInfo(), min = ap.min_length || 12;
   const why = ap.problem
-    ? `<b>🔒 页面审批现在不可用</b>${esc(ap.problem)}。<br>设置或重置审批口令（交互输入两次，不回显，至少 12 个字符）：`
-    : '<b>🔒 还没有设置审批口令，页面上不能批准</b>审批口令和网页登录密码不同，只能由管理员在宿主机上设置（交互输入两次，不回显，至少 12 个字符）：';
+    ? `<b>🔒 页面审批现在不可用</b>${esc(ap.problem)}。<br>设置或重置审批口令（交互输入两次，不回显，至少 ${min} 个字符）：`
+    : ap.page_set
+      ? `<b>🔒 还没有设置审批口令，页面上不能批准</b>审批口令和网页登录密码不同，现在就能在页面上设置（新口令输两遍，至少 ${min} 个字符）：
+        <div class="np-act"><button type="button" class="btn sm warn" data-setpass>现在设置…</button></div>也可以在宿主机上设置：`
+      : `<b>🔒 还没有设置审批口令，页面上不能批准</b>工具服务版本较旧，页面上不能设置；在宿主机上设置（交互输入两次，不回显，至少 ${min} 个字符）：`;
   return `<div class="nopass">${why}<div class="cli">$ ${esc(setCmd(ap))}</div>
     在这之前，照常可以在宿主机上${verb}：<div class="cli">$ ${esc(cli)}</div></div>`;
 }
@@ -3304,14 +3342,13 @@ function closeDialog(cancelled) {
 function askPassphrase({title, summary, confirm, run, done, cancel}) {
   closeDialog();
   const ap = approvalInfo();
-  const local = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(location.hostname);
   const wrap = document.createElement('div');
   wrap.className = 'dlg-scrim';
   wrap.innerHTML = `<form class="dlg" autocomplete="off">
     <h3>🔐 ${esc(title)}</h3><div class="sum">${summary || ''}</div>
     <label class="pw">审批口令<input type="password" id="dlgPass" autocomplete="off" spellcheck="false">
-      <span class="hint">不是网页登录密码。审批口令由管理员在宿主机上设置，只存哈希，由工具服务核对；连续输错 ${ap.max_failures || 5} 次，页面审批锁定 ${ap.lock_minutes || 15} 分钟。</span></label>
-    ${local ? '' : `<div class="plain">⚠ 当前是明文连接（${esc(location.host)}），口令会以明文经过网络。经 SSH 隧道、从本机地址（127.0.0.1）打开更安全。</div>`}
+      <span class="hint">不是网页登录密码。审批口令在「设置 → 审批口令」里设置和修改（忘了只能在宿主机上重设），只存哈希，由工具服务核对；连续输错 ${ap.max_failures || 5} 次，页面审批锁定 ${ap.lock_minutes || 15} 分钟。</span></label>
+    ${plainHint()}
     <div class="err" id="dlgErr"></div>
     <div class="row"><button type="button" class="btn" data-dlgcancel>取消</button><button type="submit" class="btn warn" id="dlgOk">${esc(confirm || '确定')}</button></div></form>`;
   document.body.appendChild(wrap);
@@ -3389,6 +3426,104 @@ function trustFlow(script) {
   });
 }
 
+/* ---------- 审批口令：在页面上设置、修改 ----------
+   还没设 → 新口令输两遍就设上；已经设了 → 要旧口令（和批准共用输错计数、锁定）；忘了只能在宿主机上重设，页面上没有找回。
+   设置页、「主机与数据源」的卡片里是同一个表单，「待审批」里的「现在设置」把它放进对话框。
+   口令只在这次请求里用：提交就清空输入框，不进 localStorage、不进地址栏（输入框没有 name，表单不会自己提交出去）。 */
+const LOCAL_HOSTS = ['127.0.0.1', 'localhost', '::1', '[::1]'];
+function plainHint() {
+  return LOCAL_HOSTS.includes(location.hostname) ? ''
+    : `<div class="plain">⚠ 当前是明文连接（${esc(location.host)}），口令会以明文经过网络。经 SSH 隧道、从本机地址（127.0.0.1）打开更安全。</div>`;
+}
+// 设置时间：带时区的按浏览器的时区显示；今年的只写月日和时分
+function setAtText(t) {
+  const d = new Date(String(t || '').replace(' ', 'T'));
+  if (!t || isNaN(d)) return String(t || '');
+  const p = n => String(n).padStart(2, '0');
+  const md = `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return d.getFullYear() === new Date().getFullYear() ? md : `${d.getFullYear()}-${md}`;
+}
+// 「已设置：11-01 11:30，在页面上设置（来自 1.2.3.4）」：万一不是自己设的，一眼看得出来
+function passWho(ap) {
+  const when = setAtText(ap.set_at);
+  const how = ap.set_by === 'page' ? `在页面上设置${ap.set_from ? `（来自 ${ap.set_from}）` : ''}`
+    : ap.set_by === 'cli' ? '在宿主机上用命令行设置' : '';
+  return esc(`已设置${when ? '：' + when : ''}${how ? '，' + how : ''}`);
+}
+function passFormHtml(ap, inDialog = false) {
+  const change = !!ap.configured, off = ap.locked ? ' disabled' : '';
+  const input = (key, label, auto, hint) => `<label><span>${label}</span><input type="password" data-pf="${key}" autocomplete="${auto}"
+      spellcheck="false" autocapitalize="off"${off}>${hint ? `<i>${hint}</i>` : ''}</label>`;
+  return `<form class="passform" method="post" data-passform="${change ? 'change' : 'set'}">
+    ${change ? input('old', '旧口令', 'current-password', '') : ''}
+    ${input('new', change ? '新口令' : '审批口令', 'new-password', `至少 ${ap.min_length || 12} 个字符，不能和网页登录密码相同`)}
+    ${input('new2', '再输一遍', 'new-password', '')}
+    ${plainHint()}<div class="err"></div>
+    <div class="pf-row">${inDialog ? '<button type="button" class="btn" data-dlgcancel>取消</button>' : ''}<button type="submit" class="btn warn"${off}>${
+      change ? '修改审批口令' : '设置审批口令'}</button></div></form>`;
+}
+/* 表单提交：先在页面上查（旧口令有没有输、新口令够不够长、两遍一样不一样），再交给应用转工具服务。
+   done(消息)：成功是 done(null)；状态变了（刚被别人设上、锁定、口令文件出了问题、工具服务较旧）先刷新状态再 done(原因)。 */
+function bindPassForm(root, done) {
+  const form = root.querySelector('[data-passform]'); if (!form) return;
+  const field = key => form.querySelector(`[data-pf="${key}"]`);
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const old = field('old'), a = field('new'), b = field('new2'), err = form.querySelector('.err'), ok = form.querySelector('[type=submit]');
+    const min = approvalInfo().min_length || 12;
+    err.textContent = '';
+    if (old && !old.value) { err.textContent = '先输旧口令'; return old.focus(); }
+    if (a.value.length < min) { err.textContent = `新口令至少 ${min} 个字符`; return a.focus(); }
+    if (a.value !== b.value) { a.value = ''; b.value = ''; err.textContent = '两次输入的新口令不一样，请重新输入'; return a.focus(); }
+    const body = old ? {new: a.value, current: old.value} : {new: a.value};
+    form.querySelectorAll('input[type=password]').forEach(x => { x.value = ''; });
+    const label = ok.textContent;
+    ok.disabled = true; ok.textContent = '提交中…';
+    try {
+      const r = await postJson('/api/tools/approval/passphrase', body);
+      apState.approval = r.approval;
+      if (overview) overview.approval = r.approval;
+      toast(r.first ? '已设置审批口令' : '已修改审批口令', 'ok');
+      done(null);
+    } catch (error) {
+      ok.disabled = false; ok.textContent = label;
+      if ([409, 423, 500, 501, 502].includes(error.status)) { await refreshApproval(); return done(error.message); }
+      err.textContent = error.message;
+      (old || a).focus();
+    }
+  });
+}
+// 卡片：画进 box 并接上表单；msg 是上一次提交被拒的原因（状态变了、表单重画之后再显示）
+function paintPass(box, msg) {
+  if (!box) return;
+  box.innerHTML = passCard(approvalInfo());
+  bindPassForm(box, m => { paintPass(box, m); refreshBadges(); });
+  if (!msg) return;
+  const err = box.querySelector('.passform .err');
+  if (err) err.textContent = msg; else toast(msg, 'err', 9000);
+}
+// 「待审批」里的「现在设置」：同一个表单放进对话框，设好后批准按钮就能用了
+function openPassDialog() {
+  closeDialog();
+  const ap = approvalInfo();
+  const wrap = document.createElement('div');
+  wrap.className = 'dlg-scrim';
+  wrap.innerHTML = `<div class="dlg"><h3>🔐 ${ap.configured ? '修改' : '设置'}审批口令</h3>
+    <div class="sum">和网页登录密码不同：页面上批准工具、重新确认脚本时输入它。设好之后要改得输旧口令；忘了只能在宿主机上重设：
+      <code>${esc(setCmd(ap))}</code></div>${passFormHtml(ap, true)}</div>`;
+  document.body.appendChild(wrap);
+  dlgCancel = null;
+  wrap.addEventListener('mousedown', e => { if (e.target === wrap) closeDialog(true); });
+  wrap.querySelector('[data-dlgcancel]').onclick = () => closeDialog(true);
+  bindPassForm(wrap, msg => {
+    closeDialog();
+    if (msg) toast(msg, 'err', 9000);
+    if (page === 'tools') renderManage();
+    refreshBadges();
+  });
+  setTimeout(() => wrap.querySelector('input:not([disabled])')?.focus(), 30);
+}
+
 /* ---------- SOP 页「待确认提议」：从自由排查里长出来的 SOP，保存或忽略 ---------- */
 async function renderProposals() {
   $('mgroups').innerHTML = '';
@@ -3411,8 +3546,9 @@ function renderProposalDetail() {
     : '<div class="md-empty">从左侧选一条提议<br>看步骤和依据的工具返回，再保存或忽略</div>';
 }
 
-/* ---------- 工具页「主机与数据源」：只读，写清在宿主机上怎么做 ----------
-   主机、连接、MCP server、对外开放（export）、审批口令都只能由管理员在宿主机上配：页面能定义的东西，网页密码一泄露就能被人改。 */
+/* ---------- 工具页「主机与数据源」：主机、连接、MCP server、脚本、对外开放只读，写清在宿主机上怎么做 ----------
+   这些都只能由管理员在宿主机上配：页面能定义的东西，网页密码一泄露就能被人改。审批口令例外：页面上能设能改，
+   但设好之后改要旧口令，忘了只能在宿主机上重设。 */
 // 主机连不上的原因：去掉开头重复的「主机 名字：」「主机 名字 的」，主机名已经单独写了
 function hostReason(name, text) {
   let s = String(text || '').trim();
@@ -3427,7 +3563,7 @@ async function renderInfra() {
     fetch('/api/tools/pending').then(r => r.ok ? r.json() : {}).catch(() => ({}))]);
   if (p.approval) apState.approval = p.approval;
   if (page !== 'tools' || tlTab !== 'infra') return;
-  const o = overview || {}, src = o.tools?.sources || {}, ap = approvalInfo();
+  const o = overview || {}, src = o.tools?.sources || {};
   const hosts = t.hosts || {configured: false}, conns = t.connections || {}, servers = t.mcp_servers || {};
   const held = Object.fromEntries((p.held || []).map(x => [x.script, x.state]));
   const hostRows = Object.entries(hosts.list || {}).map(([name, x]) => {
@@ -3451,8 +3587,8 @@ async function renderInfra() {
   const table = (head, rows, none) => rows ? `<table class="ax"><tr>${head.map(x => `<th>${x}</th>`).join('')}</tr>${rows}</table>` : `<div class="note">${none}</div>`;
   $('msettings').innerHTML = `<div class="sf">
     <h2>主机与数据源</h2>
-    <p class="lead">工具从哪里取数据。这一页只读：主机、连接、MCP server、对外开放哪些工具、审批口令，都只能由管理员在宿主机上配置——
-      页面上能改的东西，网页密码一泄露就能被别人改。每一块下面写了在宿主机上怎么做。</p>
+    <p class="lead">工具从哪里取数据。主机、连接、MCP server、对外开放哪些工具，都只能由管理员在宿主机上配置——页面上能改的东西，
+      网页密码一泄露就能被别人改；每一块下面写了在宿主机上怎么做。审批口令在最下面：可以在页面上设置，改要输旧口令。</p>
     <div class="card"><h3>主机 <small>命令型工具在哪些机器上跑</small><span class="ro">只读</span></h3>
       ${hosts.configured ? table(['名称', '账号与地址', '方式', '状态', '分组'], hostRows, '') : '<div class="note">没有配置主机清单：命令型工具都在工具服务所在的这台机器上跑。</div>'}
       <div class="howto"><b>在宿主机上加一台主机：</b>在 <code>/opt/ops/ops_tools.yaml</code> 的 <code>hosts</code> 里加一条 →
@@ -3475,18 +3611,34 @@ async function renderInfra() {
     <div class="card"><h3>计算沙箱与联网</h3>
       <div class="chipset"><span class="pill ${src.sandbox ? 'ok' : 'off'}">${src.sandbox ? '✓' : '–'} 计算沙箱（python_exec）</span><span class="pill ${src.web ? 'ok' : 'off'}">${src.web ? '✓' : '–'} 联网搜索</span></div>
       <div class="howto"><b>在宿主机上：</b>沙箱是 <code>.env</code> 的 <code>SANDBOX_URL</code>、<code>SANDBOX_TOKEN</code>；联网是 <code>WEB_SEARCH_TOOL</code>。改完重新发版（docs/正式部署.md）。</div></div>
-    <div class="card"><h3>审批口令 <small>在页面上批准工具时要输</small><span class="ro">只读</span></h3>${passCard(ap)}</div>
+    <div class="card" id="infraPass"><h3>审批口令 <small>在页面上批准工具时要输</small></h3><div id="infraPassBox"></div></div>
   </div>`;
+  paintPass($('infraPassBox'));
 }
-// 审批口令的状态（主机与数据源、设置两处共用）：设没设、锁没锁；口令文件不满足要求时写明原因
+// 审批口令的卡片（设置页、「主机与数据源」两处共用）：状态，加上对应的表单——还没设：设置；已经设了：什么时候、怎么设的，
+// 加上修改；锁定中：表单灰掉；口令文件有问题、工具服务较旧：不给表单，写明在宿主机上怎么办。每种状态都写上忘了怎么重设。
 function passCard(ap) {
+  const cmd = `<code>${esc(setCmd(ap))}</code>`;
   const chip = ap.locked ? `<span class="pill bad">锁定中，${unlockIn(ap)}</span>` : ap.configured ? '<span class="pill ok">已设置</span>'
     : ap.problem ? '<span class="pill bad">不可用</span>' : '<span class="pill warn">还没有设置</span>';
-  return `<div class="chipset" style="margin-bottom:8px">${chip}</div>
-    ${ap.problem ? `<div class="pb-warn" style="padding:0 0 8px">⚠ ${esc(ap.problem)}</div>` : ''}
-    审批口令和网页登录密码不同：只以加盐的慢哈希存在工具服务上（root 才能读），由工具服务核对；网页密码泄露了也批不了工具。
-    <div class="howto"><b>在宿主机上设置或重置：</b><code>${esc(setCmd(ap))}</code>（交互输入两次，不回显，至少 12 个字符）。
-      连续输错 ${ap.max_failures || 5} 次，页面审批锁定 ${ap.lock_minutes || 15} 分钟，锁定期间命令行审批照常可用；想马上解锁就重启工具服务。忘了就用同一个命令重设。</div>`;
+  let body;
+  if (ap.problem) {
+    body = `<div class="pb-warn" style="padding:0 0 6px">⚠ ${esc(ap.problem)}</div>
+      <div class="note">页面上不能设置也不能改，也不会覆盖这个文件：在宿主机上查明原因后，用下面的命令重新设置。</div>`;
+  } else if (!ap.page_set) {
+    body = `<div class="note">工具服务版本较旧，页面上不能设置审批口令：升级宿主机上的 <code>ops_readonly.py</code>（和 <code>ops_exec.py</code>
+      一起拷），或在宿主机上执行 ${cmd}（交互输入两次，不回显）。</div>`;
+  } else {
+    body = (ap.configured
+      ? `<div class="pass-who">${passWho(ap)}</div><div class="note">不是你设的？马上在宿主机上用下面的命令重设，再看工具服务日志里的 <code>[approval]</code> 记录。</div>`
+      : '<div class="note"><b>还没有设置。</b>设好之前，页面上不能批准工具；拿到网页密码的人也能抢先设——所以部署后马上设，设好后看一眼这里显示的设置时间和来源。</div>')
+      + (ap.locked ? `<div class="pb-warn" style="padding:8px 0 0">🔒 审批口令连续输错 ${ap.max_failures || 5} 次，页面审批锁定中，${unlockIn(ap)}：这期间页面上不能批准，也不能改口令。</div>` : '')
+      + passFormHtml(ap);
+  }
+  return `<div class="chipset" style="margin-bottom:8px">${chip}</div>${body}
+    <div class="howto"><b>忘了口令：</b>在宿主机上执行 ${cmd} 重设（页面上没有找回；交互输入两次，不回显）。<br>
+      审批口令和网页登录密码不同：只以加盐的慢哈希存在工具服务上（root 才能读），由工具服务核对。连续输错 ${ap.max_failures || 5} 次，
+      页面审批锁定 ${ap.lock_minutes || 15} 分钟（批准和改口令共用这个计数），锁定期间命令行照常；想马上解锁就重启工具服务。</div>`;
 }
 /* ---------- 模型设置页 ---------- */
 let stTest = null, stPoll = null;
@@ -3525,11 +3677,16 @@ async function renderSettings() {
     <p class="note"><b>为什么 key 不回显</b>：页面只能写入新 key，看不到旧的；文件存在 data/settings.json，权限 600。<b>和工具凭据的区别</b>：这里决定问题和片段发给哪个模型，工具凭据决定宿主机执行什么——后者永远不进页面。</p>
     <div class="card" id="stCardPacks"><h3>场景包 <small>一套文档 + 工具定义 + SOP，导入后就能问（docs/场景包.md）</small></h3><div id="stPacks" class="note">加载中…</div>
       <div class="row"><button id="stExport">导出 SOP（sops.json）</button><span class="note">把库里现场长出来、核对过的 SOP 按场景包格式导出，放进包里给别处用。工具定义不随包导入，由宿主机 include。</span></div></div>
-    <div class="card" id="stCardPass"><h3>审批口令 <small>在页面上批准工具时要输</small><span class="ro">只读</span></h3><div id="stPass" class="note">加载中…</div></div>
+    <div class="card" id="stCardPass"><h3>审批口令 <small>在页面上批准工具时要输</small></h3><div id="stPass"><div class="note">加载中…</div></div></div>
   </div>`;
   paintPacks();
   refreshApproval().then(() => {
-    const box = $('stPass'); if (box) box.innerHTML = passCard(approvalInfo());
+    if (mTab !== 'settings') { wantPass = false; return; }
+    paintPass($('stPass'));
+    if (!wantPass) return;
+    wantPass = false;
+    $('stCardPass')?.scrollIntoView({block: 'start'});
+    $('stPass')?.querySelector('input:not([disabled])')?.focus({preventScroll: true});
   });
   if (job && (job.status === 'queued' || job.status === 'running')) pollReindex(s.reindex_job);
 }
@@ -3825,6 +3982,7 @@ $('mdetail').addEventListener('click', async e => {
   const ok = e.target.closest('[data-approve]'); if (ok) return approveFlow(ok.dataset.approve);
   const no = e.target.closest('[data-apreject]'); if (no) return rejectFlow(no.dataset.apreject);
   const tr = e.target.closest('[data-trust]'); if (tr) return trustFlow(tr.dataset.trust);
+  if (e.target.closest('[data-setpass]')) return openPassDialog();
   const see = e.target.closest('[data-seetool]');
   if (see) { tlTab = 'all'; mGroup = null; return go('tools', {item: see.dataset.seetool}); }
   const use = e.target.closest('[data-asktool]');

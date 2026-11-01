@@ -1,4 +1,5 @@
-// 页面（app/web/index.html）的检查：内联脚本能编译；几个纯函数的行为（风险提示的措辞、主机原因去重）。
+// 页面（app/web/index.html）的检查：内联脚本能编译；几个纯函数的行为（风险提示的措辞、主机原因去重、参数范围转义、
+// 审批口令卡片在各个状态下给的表单和说明、工作台「待处理」里的「还没设审批口令」）。
 // 用法：node tests/page.test.js（和 picker.test.js 一样，不需要浏览器和依赖）
 const fs = require('fs');
 
@@ -62,6 +63,52 @@ check('对话下面有最近的对话', html.includes('id="navRecent"') && /conv
 // 口令只在这次请求里用：不进 localStorage、地址栏
 check('口令不进 localStorage', /localStorage\.setItem\([^)]*pass/i.test(html), false);
 check('手机上的占位文字是短的', html.includes("NARROW.matches ? '问点什么…'"), true);
+
+// 审批口令的卡片（设置页、主机与数据源）：每种状态给对的表单，每种状态都写上忘了怎么重设
+const lineOf = re => scripts.join('\n').match(re)[0];
+const passCode = [/^const esc = .*$/m, /^const setCmd = .*$/m, /^const unlockIn = .*$/m, /^const LOCAL_HOSTS = .*$/m].map(lineOf)
+  .concat(['plainHint', 'setAtText', 'passWho', 'passFormHtml', 'passCard', 'passUnset', 'todoCounts'].map(extract)).join('\n');
+const passFns = host => new Function('location', `${passCode}\nreturn {passCard, passFormHtml, passWho, setAtText, passUnset, todoCounts};`)(
+  {hostname: host, host: `${host}:8765`});
+const P = passFns('127.0.0.1');
+const base = {max_failures: 5, lock_minutes: 15, min_length: 12, page_set: true, problem: '',
+              command: 'python3 /opt/ops/ops_readonly.py set-approval-passphrase'};
+const count = (text, re) => (text.match(re) || []).length;
+const unset = P.passCard({...base, configured: false});
+check('没设：设置表单', unset.includes('data-passform="set"'), true);
+check('没设：新口令输两遍（new-password）', count(unset, /autocomplete="new-password"/g), 2);
+check('没设：不要旧口令', unset.includes('current-password'), false);
+check('没设：写明抢先设的风险', unset.includes('抢先设'), true);
+const done = P.passCard({...base, configured: true, set_at: '2026-11-01 11:30:00', set_by: 'page', set_from: '10.0.0.9'});
+check('已设：修改表单', done.includes('data-passform="change"'), true);
+check('已设：旧口令（current-password）', count(done, /autocomplete="current-password"/g), 1);
+check('已设：新口令输两遍（new-password）', count(done, /autocomplete="new-password"/g), 2);
+check('已设：写明设置时间和来源', done.includes(`已设置：${P.setAtText('2026-11-01 11:30:00')}，在页面上设置（来自 10.0.0.9）`), true);
+const locked = P.passCard({...base, configured: true, locked: true, unlock_minutes: 12, set_by: 'cli'});
+check('锁定：三个输入框和按钮都灰掉', count(locked, / disabled/g), 4);
+check('锁定：写明几分钟解锁', locked.includes('12 分钟后解锁'), true);
+check('命令行设的写明', locked.includes('在宿主机上用命令行设置'), true);
+const broken = P.passCard({...base, configured: false, problem: '口令文件 /etc/x 不属于 root：<b>'});
+check('口令文件有问题：不给表单', broken.includes('<form'), false);
+check('口令文件有问题：原因转义后显示', broken.includes('不属于 root：&lt;b&gt;'), true);
+const old = P.passCard({configured: false, problem: '', command: base.command});
+check('工具服务较旧：不给表单', old.includes('<form'), false);
+check('工具服务较旧：写明', old.includes('工具服务版本较旧'), true);
+for (const [label, card] of [['没设', unset], ['已设', done], ['锁定', locked], ['文件有问题', broken], ['较旧', old]]) {
+  check(`${label}：附「忘了口令」和宿主机命令`, card.includes('忘了口令') && card.includes(base.command), true);
+}
+check('输入框没有 name：表单不会把口令带进地址栏', /\bname=/.test(unset + done), false);
+check('来源地址转义', P.passWho({set_by: 'page', set_from: '<img src=x>'}).includes('<img'), false);
+check('从本机打开不提示明文', unset.includes('明文连接'), false);
+check('不是从本机打开时提示明文', passFns('10.0.0.5').passFormHtml({...base, configured: false}).includes('明文连接（10.0.0.5:8765）'), true);
+check('今年的设置时间只写月日时分', P.setAtText(`${new Date().getFullYear()}-11-01 11:30:00`), '11-01 11:30');
+check('往年的带上年份', P.setAtText('2020-03-04 05:06:07'), '2020-03-04 05:06');
+check('没有设置时间', P.setAtText(''), '');
+// 工作台「待处理」：还没设口令时多一项；口令文件有问题、工具服务没给状态时不算
+check('没设口令算一项待处理', P.todoCounts({approval: {configured: false, problem: ''}, pending: {}}).all, 1);
+check('口令文件有问题不算', P.passUnset({approval: {configured: false, problem: 'x'}}), false);
+check('已经设了不算', P.passUnset({approval: {configured: true}}), false);
+check('工具服务没给状态不算', P.passUnset({approval: {}}), false);
 
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

@@ -11,10 +11,12 @@ ExecStart=/usr/bin/python3 /opt/ops/ops_readonly.py --port 8799 --host 127.0.0.1
 Restart=always
 RestartSec=5
 
-# 系统目录只读，只放开工具服务自己的配置目录：页面上的申请、启停、审批要写 /opt/ops 下的主配置、待审、覆盖层、
-# 脚本哈希表、MCP 批准文件和备份。配置不在 /opt/ops 就改这一行。审批口令（/etc/ops-readonly/approval.hash）它只读不写
+# 系统目录只读，只放开工具服务自己要写的目录：
+# - /opt/ops：页面上的申请、启停、审批要写这里的主配置、待审、覆盖层、脚本哈希表、MCP 批准文件和备份。配置不在 /opt/ops 就改这一项。
+# - /etc/ops-readonly：页面上设置、修改审批口令要写 approval.hash（OPS_APPROVAL_FILE 改了位置就换成它所在的目录）。
+#   前面的 - 表示目录不存在也能启动，但那样页面上设不了口令：先 install -d -m 700 /etc/ops-readonly
 ProtectSystem=strict
-ReadWritePaths=/opt/ops
+ReadWritePaths=/opt/ops -/etc/ops-readonly
 ProtectHome=yes
 PrivateTmp=yes
 NoNewPrivileges=yes

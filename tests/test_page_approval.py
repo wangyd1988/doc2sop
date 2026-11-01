@@ -35,6 +35,7 @@ else:
 POSIX = os.name == "posix"
 PASS = "correct horse battery staple"
 WRONG = "not the passphrase at all"
+NEW = "a brand new approval passphrase"
 CONFIG = textwrap.dedent("""\
     tools:
       - {name: one, desc: 看内存, binary: free, argv: [free, -m], params: {}}
@@ -162,11 +163,15 @@ class PassphraseFileTests(_Page):
     def test_the_status_says_set_locked_and_minutes_but_never_the_hash(self):
         status = quiet(ops.approval_status)[0]
         self.assertEqual((status["configured"], status["locked"], status["problem"]), (False, False, ""))
+        self.assertEqual((status["set_at"], status["set_by"], status["set_from"]), ("", "", ""))
         self.set_passphrase()
         status = quiet(ops.approval_status)[0]
         self.assertEqual(set(status), {"configured", "locked", "unlock_minutes", "problem", "max_failures",
-                                       "lock_minutes", "command"})
+                                       "lock_minutes", "min_length", "page_set", "set_at", "set_by", "set_from",
+                                       "command"})
         self.assertTrue(status["configured"])
+        self.assertTrue(status["page_set"])
+        self.assertEqual((status["set_by"], status["set_from"], status["min_length"]), ("cli", "", 12))
         record = json.loads(self.passfile.read_text(encoding="utf-8"))
         dumped = json.dumps(status)
         for secret in (record["hash"], record["salt"], "scrypt", str(record["n"])):
@@ -307,6 +312,257 @@ class LockoutTests(_Page):
             error, _ = self.refused(ops.check_passphrase, value, "批准", "x")
             self.assertEqual(error.status, 400)
         self.assertEqual(ops._approval["failures"], 0)
+
+
+class PageSetTests(_Page):
+    """页面上设置、修改审批口令：还没设时直接设；已经设了要旧口令，和批准共用输错计数、锁定；有问题的口令文件不覆盖。"""
+
+    CALLER = "web user=admin ip=10.0.0.9"
+
+    def set_from_page(self, payload, caller=CALLER):
+        return quiet(ops.page_set_passphrase, payload, caller)
+
+    def assertRefused(self, payload, status, needle, caller=CALLER):
+        error, printed = self.refused(ops.page_set_passphrase, payload, caller)
+        self.assertIsInstance(error, ops.ApprovalRefused, repr(error))
+        self.assertEqual(error.status, status, str(error))
+        self.assertIn(needle, str(error))
+        return error, printed
+
+    def test_the_first_time_the_new_passphrase_is_enough(self):
+        result, printed = self.set_from_page({"new": PASS})
+        self.assertEqual(result["first"], True, printed)
+        status = result["approval"]
+        self.assertEqual((status["configured"], status["set_by"], status["set_from"]), (True, "page", "10.0.0.9"))
+        self.assertRegex(status["set_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$")
+        self.assertIsNone(quiet(ops.check_passphrase, PASS, "批准", "x")[0])
+        record = json.loads(self.passfile.read_text(encoding="utf-8"))
+        self.assertNotIn(PASS, json.dumps(record))
+        self.assertNotIn(record["hash"], json.dumps(status))
+        self.assertNotIn(record["salt"], json.dumps(status))
+        if POSIX:
+            self.assertEqual(stat.S_IMODE(self.passfile.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(self.passfile.parent.stat().st_mode), 0o700)   # 目录照命令行的做法建
+        self.assertEqual(list(self.passfile.parent.glob("*.tmp")), [])
+        self.assertIn("[approval] 首次设置了审批口令 caller=web user=admin ip=10.0.0.9", printed)
+        self.assertNotIn(PASS, printed)
+
+    def test_once_set_changing_needs_the_current_passphrase(self):
+        self.set_passphrase()
+        before = self.passfile.read_bytes()
+        _, printed = self.assertRefused({"new": NEW}, 409, "要改得先输旧口令")
+        self.assertIn("修改审批口令：没有修改（已经设置过了，没有输旧口令）", printed)
+        self.assertRefused({"new": NEW, "current": ""}, 409, "要改得先输旧口令")
+        self.assertEqual(ops._approval["failures"], 0)   # 没输旧口令不算一次尝试
+        _, printed = self.assertRefused({"new": NEW, "current": WRONG}, 403, "审批口令不对，还能再试 4 次")
+        self.assertIn("修改审批口令：口令错误（连续第 1 次）", printed)
+        self.assertEqual(self.passfile.read_bytes(), before)
+        result, printed = self.set_from_page({"new": NEW, "current": PASS})
+        self.assertEqual(result["first"], False, printed)
+        self.assertEqual((result["approval"]["set_by"], result["approval"]["set_from"]), ("page", "10.0.0.9"))
+        self.assertIn("[approval] 修改了审批口令 caller=web user=admin ip=10.0.0.9", printed)
+        self.assertEqual(ops._approval["failures"], 0)   # 旧口令对了，计数清零
+        for text in (PASS, NEW, WRONG):
+            self.assertNotIn(text, printed)
+        self.assertIsNone(quiet(ops.check_passphrase, NEW, "批准", "x")[0])
+        self.assertEqual(self.refused(ops.check_passphrase, PASS, "批准", "x")[0].status, 403)
+
+    def test_wrong_current_passphrases_count_toward_the_same_lockout_as_approvals(self):
+        self.set_passphrase()
+        before = self.passfile.read_bytes()
+        statuses = [self.refused(ops.check_passphrase, WRONG, "批准", "x")[0].status for _ in range(2)]
+        statuses += [self.refused(ops.page_set_passphrase, {"new": NEW, "current": WRONG})[0].status for _ in range(2)]
+        statuses.append(self.refused(ops.check_passphrase, WRONG, "批准", "x")[0].status)
+        self.assertEqual(statuses, [403, 403, 403, 403, 423])
+        _, printed = self.assertRefused({"new": NEW, "current": PASS}, 423, "分钟后解锁")   # 锁定中：旧口令对了也不能改
+        self.assertIn("锁定中", printed)
+        self.assertEqual(self.passfile.read_bytes(), before)
+        status = quiet(ops.approval_status)[0]
+        self.assertEqual((status["locked"], status["unlock_minutes"]), (True, 15))
+        with patch.object(sys, "stdin", io.StringIO(NEW + "\n")):   # 命令行不受锁定影响
+            self.assertEqual(quiet(ops._cli, "set-approval-passphrase", None, str(self.main))[0], 0)
+        later = time.time() + ops.APPROVAL_LOCK + 1
+        with patch.object(ops.time, "time", return_value=later):
+            result, printed = self.set_from_page({"new": PASS, "current": NEW})
+        self.assertEqual(result["first"], False, printed)
+
+    def test_two_first_time_settings_at_once_only_one_wins(self):
+        texts = [f"first-time passphrase {n}" for n in range(4)]
+        barrier = threading.Barrier(len(texts))
+        results = {}
+
+        def attempt(text):
+            barrier.wait(10)
+            try:
+                results[text] = ops.page_set_passphrase({"new": text}, self.CALLER)
+            except ops.ApprovalRefused as exc:
+                results[text] = exc
+
+        threads = [threading.Thread(target=attempt, args=(text,)) for text in texts]
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(60)
+        self.assertEqual(len(results), len(texts))
+        winners = [text for text, result in results.items() if isinstance(result, dict)]
+        self.assertEqual(len(winners), 1, results)
+        self.assertTrue(results[winners[0]]["first"])
+        for text, result in results.items():
+            if text != winners[0]:   # 后到的按「已设置」处理：要旧口令，也不算输错
+                self.assertEqual(result.status, 409)
+                self.assertIn("要改得先输旧口令", str(result))
+        self.assertEqual(ops._approval["failures"], 0)
+        self.assertEqual(printed.getvalue().count("首次设置了审批口令"), 1)
+        self.assertIsNone(quiet(ops.check_passphrase, winners[0], "批准", "x")[0])
+
+    def test_a_first_time_setting_never_overwrites_a_file_that_appeared_meanwhile(self):
+        """锁只管得了这个进程：同一时刻宿主机上有人用命令行设好了，页面上的首次设置也不盖掉它。"""
+        self.set_passphrase()
+        before = self.passfile.read_bytes()
+        with patch.object(ops, "_approval_state", return_value=(None, "")):   # 读的时候还没有，写的时候已经有了
+            _, printed = self.assertRefused({"new": NEW}, 409, "刚被设置过")
+        self.assertIn("口令文件刚被建好", printed)
+        self.assertEqual(self.passfile.read_bytes(), before)
+        self.assertEqual(list(self.passfile.parent.glob("*.tmp")), [])
+        self.assertIsNone(quiet(ops.check_passphrase, PASS, "批准", "x")[0])
+
+    def test_a_change_never_overwrites_a_file_that_changed_after_it_was_verified(self):
+        """页面核对的是读到的那一份；写之前文件已经换了（root 直接改了文件、没走锁），这次修改就不写。"""
+        self.set_passphrase()
+        stale = quiet(ops._approval_state)[0][0]
+        with patch.object(sys, "stdin", io.StringIO(NEW + "\n")):
+            self.assertEqual(quiet(ops.set_approval_passphrase)[0], 0)
+        reset = self.passfile.read_bytes()
+        with patch.object(ops, "_approval_state", return_value=(stale, "")):
+            _, printed = self.assertRefused({"new": "page passphrase 12", "current": PASS}, 409, "刚被改过")
+        self.assertIn("口令文件在核对之后被改过", printed)
+        self.assertEqual(self.passfile.read_bytes(), reset)
+        self.assertIsNone(quiet(ops.check_passphrase, NEW, "批准", "x")[0])
+
+    @unittest.skipUnless(POSIX and ops.fcntl is not None, "跨进程的锁（flock）只在 POSIX 上")
+    def test_a_host_reset_during_a_page_change_is_not_undone(self):
+        """页面修改正在途中（核对过、还没写），root 在宿主机上重设：命令行等页面这次写完再写，最后留下的是命令行设的。
+        不然拿到口令的人排着队发修改，就能把管理员的重设一次次盖回去。"""
+        self.set_passphrase()
+        verified, results, real_verify = threading.Event(), {}, ops._verify
+
+        def slow_verify(*args):
+            real_verify(*args)
+            verified.set()
+            time.sleep(0.5)
+
+        def page_change():
+            try:
+                results["page"] = ops.page_set_passphrase({"new": "page passphrase 12", "current": PASS}, self.CALLER)
+            except Exception as exc:   # 断言里看
+                results["page"] = exc
+
+        printed = io.StringIO()
+        with patch.object(ops, "_verify", slow_verify), contextlib.redirect_stdout(printed), \
+                contextlib.redirect_stderr(printed):
+            thread = threading.Thread(target=page_change)
+            thread.start()
+            self.assertTrue(verified.wait(30))
+            with patch.object(sys, "stdin", io.StringIO(NEW + "\n")):
+                self.assertEqual(ops.set_approval_passphrase(), 0)
+            thread.join(30)
+        self.assertIs(results["page"]["first"], False, results)
+        self.assertIsNone(quiet(ops.check_passphrase, NEW, "批准", "x")[0])
+        self.assertEqual(self.refused(ops.check_passphrase, "page passphrase 12", "批准", "x")[0].status, 403)
+
+    def test_a_passphrase_file_with_a_problem_is_never_overwritten(self):
+        ops._write_private(str(self.passfile), "garbage")
+        before = self.passfile.read_bytes()
+        for payload in ({"new": NEW}, {"new": NEW, "current": PASS}):
+            with self.subTest(payload=sorted(payload)):
+                error, _ = self.assertRefused(payload, 409, "不是有效的口令记录")
+                self.assertIn("不会覆盖它", str(error))
+        self.assertEqual(self.passfile.read_bytes(), before)
+        self.passfile.unlink()
+        self.passfile.mkdir()
+        self.assertRefused({"new": NEW}, 409, "不是普通文件")
+        self.assertTrue(self.passfile.is_dir())
+        self.passfile.rmdir()
+        if POSIX:
+            self.set_passphrase()
+            self.passfile.chmod(0o644)
+            before = self.passfile.read_bytes()
+            self.assertRefused({"new": NEW, "current": PASS}, 409, "组或其他用户可以读写")
+            self.assertEqual((self.passfile.read_bytes(), stat.S_IMODE(self.passfile.stat().st_mode)), (before, 0o644))
+            self.passfile.unlink()
+            real = self.dir / "elsewhere.hash"
+            ops._write_private(str(real), json.dumps(ops.new_approval_record(PASS)))
+            self.passfile.symlink_to(real)
+            target = real.read_bytes()
+            self.assertRefused({"new": NEW}, 409, "符号链接")
+            self.assertTrue(self.passfile.is_symlink())
+            self.assertEqual(real.read_bytes(), target)
+        self.assertEqual(ops._approval["failures"], 0)
+
+    def test_new_passphrases_shorter_than_12_or_not_text_are_refused_without_counting(self):
+        self.set_passphrase()
+        before = self.passfile.read_bytes()
+        cases = [({"new": "x" * 11, "current": PASS}, "至少 12 个字符"),
+                 ({"new": "x" * (ops.APPROVAL_MAX + 1), "current": PASS}, "最多"),
+                 ({"new": 123456789012345, "current": PASS}, "没有输入新的审批口令"),
+                 ({"new": "", "current": PASS}, "没有输入新的审批口令"),
+                 ({"current": PASS}, "没有输入新的审批口令"),
+                 ({"new": "\ud800" * 12, "current": PASS}, "不能编码"),
+                 ({"new": NEW, "current": 5}, "旧口令必须是文本")]
+        for payload, needle in cases:
+            with self.subTest(needle=needle):
+                self.assertRefused(payload, 400, needle)
+        self.assertEqual(ops._approval["failures"], 0)
+        self.assertEqual(self.passfile.read_bytes(), before)
+        self.passfile.unlink()
+        self.assertRefused({"new": "x" * 11}, 400, "至少 12 个字符")   # 首次设置也一样
+        self.assertFalse(self.passfile.exists())
+        self.assertTrue(self.set_from_page({"new": "x" * 12})[0]["first"])   # 正好 12 个字符可以
+
+    @unittest.skipUnless(POSIX, "属主检查只在 POSIX 上")
+    def test_a_service_not_running_as_root_does_not_write_a_file_it_would_reject(self):
+        with patch.object(ops, "APPROVAL_OWNER", os.geteuid() + 1):
+            self.assertRefused({"new": NEW}, 409, "不是以 root 运行")
+        self.assertFalse(self.passfile.exists())
+
+    def test_a_write_failure_says_what_to_do(self):
+        with patch.object(ops, "_write_private", side_effect=OSError(30, "Read-only file system")):
+            _, printed = self.assertRefused({"new": NEW}, 500, "ReadWritePaths")
+        self.assertIn("没写成", printed)
+        self.assertFalse(self.passfile.exists())
+
+    def test_records_without_the_new_fields_still_work(self):
+        record = ops.new_approval_record(PASS)
+        for key in ("set_at", "set_by", "set_from"):
+            record.pop(key, None)
+
+        def status_of(**fields):
+            ops._write_private(str(self.passfile), json.dumps({**record, **fields}))
+            status = quiet(ops.approval_status)[0]
+            self.assertTrue(status["configured"], status["problem"])
+            return status["set_at"], status["set_by"], status["set_from"]
+
+        self.assertEqual(status_of(), ("", "", ""))
+        self.assertIsNone(quiet(ops.check_passphrase, PASS, "批准", "x")[0])
+        # 上一版的命令行写的：只有不带时区的 set_at
+        self.assertEqual(status_of(set_at="2026-10-31 19:30:00"), ("2026-10-31 19:30:00", "", ""))
+        # 写得不对的留空，记录照常能用；来源只有页面上设的才有，只认地址里的字符
+        self.assertEqual(status_of(set_at="yesterday", set_by="admin", set_from="10.0.0.1"), ("", "", ""))
+        self.assertEqual(status_of(set_at="2026-11-01T11:30:00+08:00", set_by="page", set_from=EVIL),
+                         ("2026-11-01T11:30:00+08:00", "page", ""))
+        self.assertEqual(status_of(set_by="cli", set_from="10.0.0.1"), ("", "cli", ""))
+        self.assertEqual(status_of(set_by="page", set_from="[::1]"), ("", "page", "[::1]"))
+        self.assertIsNone(quiet(ops.check_passphrase, PASS, "批准", "x")[0])
+
+    def test_the_source_address_comes_from_the_caller(self):
+        """只认 caller 里独立的一项 ip=…；换行之类先被清洗成 ?，拼不出第二个 ip=。"""
+        for caller, source in (("web user=admin ip=127.0.0.1", "127.0.0.1"), ("web user=a ip=::1", "::1"),
+                               ("web user=a ip=-", ""), ("", ""), ("web user=ip=1.2.3.4", ""),
+                               ("web user=a ip=1.2.3.4\nip=6.6.6.6", "")):
+            with self.subTest(caller=caller):
+                self.assertEqual(ops._caller_source(caller), source)
 
 
 class PageActionTests(_Page):
@@ -682,6 +938,37 @@ class HttpTests(_Page):
         self.assertEqual(status, 409)
         self.assertIn("还没有设置审批口令", body["error"])
 
+    def test_refusals_reach_the_client_even_when_the_body_was_not_read(self):
+        """401 / 404 也先读掉请求体再回：不然关连接时对方收到 RST，常常读不到这条回复（Windows 上约 5%）。"""
+        payload = {"id": "x" * 200, "passphrase": WRONG}
+        statuses = [self.http(path, payload, token="bad")[0] for _ in range(40)
+                    for path in ("/tools/approve", "/tools/set-passphrase")]
+        statuses += [self.http("/tools/nope", payload)[0] for _ in range(20)]
+        self.assertEqual(statuses, [401] * 80 + [404] * 20)
+
+    def test_set_and_change_the_passphrase_over_http(self):
+        self.passfile.unlink()   # setUp 设过口令
+        self.assertEqual(self.http("/tools/set-passphrase", {"new": NEW}, token="bad")[0], 401)
+        self.assertFalse(self.passfile.exists())
+        status, body = self.http("/tools/set-passphrase", {"new": NEW})
+        self.assertEqual((status, body["first"]), (200, True), body)
+        self.assertEqual((body["approval"]["set_by"], body["approval"]["set_from"]), ("page", "10.1.2.3"))
+        status, body = self.http("/tools/set-passphrase", {"new": PASS})
+        self.assertEqual(status, 409)
+        self.assertIn("要改得先输旧口令", body["error"])
+        self.assertEqual(self.http("/tools/set-passphrase", {"new": PASS, "current": WRONG}),
+                         (403, {"error": "审批口令不对，还能再试 4 次"}))
+        self.assertEqual(self.http("/tools/set-passphrase", {"new": "short"})[0], 400)
+        status, body = self.http("/tools/set-passphrase", {"new": PASS, "current": NEW})
+        self.assertEqual((status, body["first"]), (200, False), body)
+        approval = self.http("/tools/approval")[1]["approval"]
+        self.assertEqual((approval["configured"], approval["set_by"], approval["set_from"]), (True, "page", "10.1.2.3"))
+        log = self.printed.getvalue()
+        self.assertIn("[approval] 首次设置了审批口令 caller=web user=admin ip=10.1.2.3", log)
+        self.assertIn("[approval] 修改了审批口令 caller=web user=admin ip=10.1.2.3", log)
+        for text in (PASS, NEW, WRONG):
+            self.assertNotIn(text, log)
+
 
 class CliTests(_Page):
     def test_the_cli_command_sets_the_passphrase(self):
@@ -690,7 +977,10 @@ class CliTests(_Page):
             code, printed = quiet(ops.main)
         self.assertEqual(code, 0, printed)
         self.assertIn("已设置审批口令", printed)
-        self.assertTrue(quiet(ops.approval_status)[0]["configured"])
+        status = quiet(ops.approval_status)[0]
+        self.assertTrue(status["configured"])
+        self.assertEqual((status["set_by"], status["set_from"]), ("cli", ""))   # 页面上显示「在宿主机上用命令行设置」
+        self.assertRegex(status["set_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$")
 
     def test_pending_prints_the_risks_too(self):
         self.script()
@@ -707,10 +997,13 @@ class CliTests(_Page):
                              "docker exec -it demo-ops python /srv/ops_readonly.py trust 'a b.sh'")
 
     def test_the_systemd_template_lets_the_service_write_its_config_directory(self):
-        """页面上的申请、启停、审批都要写 /opt/ops：ProtectSystem=strict 必须配着 ReadWritePaths，否则只读文件系统报错。"""
+        """页面上的申请、启停、审批要写 /opt/ops，页面上设口令要写 /etc/ops-readonly：ProtectSystem=strict 必须配着
+        ReadWritePaths，否则只读文件系统报错。口令目录带 -：没建这个目录的机器上服务照样能起来。"""
         unit = (REPO / "deploy" / "ops-readonly.service.example").read_text(encoding="utf-8").splitlines()
         self.assertIn("ProtectSystem=strict", unit)
-        self.assertIn("ReadWritePaths=/opt/ops", unit)
+        self.assertIn("ReadWritePaths=/opt/ops -/etc/ops-readonly", unit)
+        self.assertEqual(os.path.dirname(ops.APPROVAL_FILE), "/etc/ops-readonly")
+        self.assertNotIn("只读不写", "\n".join(unit))
         self.assertIn("ExecStart=/usr/bin/python3 /opt/ops/ops_readonly.py --port 8799 --host 127.0.0.1", unit)
 
 

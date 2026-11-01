@@ -41,6 +41,7 @@ else:
 POSIX = os.name == "posix"
 PASS = "correct horse battery staple"
 WRONG = "not the passphrase at all"
+NEW = "a brand new approval passphrase"
 CONFIG = "tools:\n  - {name: one, desc: 看内存, binary: free, argv: [free, -m], params: {}}\n"
 FORM = {"name": "pod_list", "label": "看 Pod", "desc": "列出 Pod", "binary": "kubectl",
         "argv": ["kubectl", "get", "pods", "-A"], "params": {}}
@@ -105,6 +106,7 @@ class _WithOps(unittest.TestCase):
         for text in texts + (self.printed.getvalue(),):
             self.assertNotIn(PASS, text)
             self.assertNotIn(WRONG, text)
+            self.assertNotIn(NEW, text)
 
 
 class ApprovalProxyTests(_WithOps):
@@ -221,6 +223,117 @@ class ApprovalProxyTests(_WithOps):
             self.assertEqual((response.status_code, response.json()["detail"]), (501, ops_client.OLD_SERVICE))
 
 
+class SetPassphraseProxyTests(_WithOps):
+    """页面上设置、修改审批口令：应用只转交（手动解析请求体，不回显、不记日志），只多查一条「不能和网页登录密码相同」。"""
+
+    URL = "/api/tools/approval/passphrase"
+
+    def test_set_the_first_time_then_change_with_the_current_one(self):
+        with self.assertLogs("kb", level="DEBUG") as logs:
+            first = self.post(self.URL, {"new": PASS})
+            again = self.post(self.URL, {"new": NEW})
+            wrong = self.post(self.URL, {"new": NEW, "current": WRONG})
+            right = self.post(self.URL, {"new": NEW, "current": PASS})
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertTrue(first.json()["first"])
+        approval = first.json()["approval"]
+        self.assertEqual((approval["configured"], approval["set_by"], approval["set_from"]), (True, "page", "testclient"))
+        self.assertEqual(again.status_code, 409)
+        self.assertIn("要改得先输旧口令", again.json()["detail"])
+        self.assertEqual((wrong.status_code, wrong.json()["detail"]), (403, "审批口令不对，还能再试 4 次"))
+        self.assertEqual(right.status_code, 200, right.text)
+        self.assertFalse(right.json()["first"])
+        self.assertIsNone(ops.check_passphrase(NEW, "批准", "x"))
+        status = self.client.get("/api/tools/approval", auth=self.auth).json()
+        self.assertEqual((status["configured"], status["set_by"], status["page_set"]), (True, "page", True))
+        self.assertIn(f"首次设置了审批口令 caller=web user={WEB_USER} ip=testclient", self.printed.getvalue())
+        self.assertIn(f"修改了审批口令 caller=web user={WEB_USER} ip=testclient", self.printed.getvalue())
+        self.assertNoPassphrase(first.text, again.text, wrong.text, right.text, "\n".join(logs.output))
+
+    def test_wrong_current_passphrases_lock_like_approvals(self):
+        self.set_passphrase()
+        item = self.propose()
+        codes = [self.post(self.URL, {"new": NEW, "current": WRONG}).status_code for _ in range(3)]
+        codes += [self.post(f"/api/tools/pending/{item['id']}/approve", {"passphrase": WRONG}).status_code
+                  for _ in range(2)]
+        self.assertEqual(codes, [403, 403, 403, 403, 423])
+        locked = self.post(self.URL, {"new": NEW, "current": PASS})
+        self.assertEqual(locked.status_code, 423)
+        self.assertIn("分钟后解锁", locked.json()["detail"])
+        status = self.client.get("/api/tools/approval", auth=self.auth).json()
+        self.assertEqual((status["locked"], status["unlock_minutes"]), (True, 15))
+        self.assertNoPassphrase(locked.text)
+
+    def test_the_new_passphrase_cannot_be_the_web_password(self):
+        response = self.post(self.URL, {"new": WEB_PASSWORD})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("不能和网页登录密码相同", response.json()["detail"])
+        self.assertNotIn(WEB_PASSWORD, response.text)
+        self.assertFalse(self.passfile.exists())
+        self.set_passphrase()
+        response = self.post(self.URL, {"new": WEB_PASSWORD, "current": PASS})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(ops._approval["failures"], 0)   # 在应用这一层就拦下，不经过口令核对
+        self.assertIsNone(ops.check_passphrase(PASS, "批准", "x"))
+
+    def test_bad_bodies_are_refused_without_echoing_or_logging_anything(self):
+        short = "tiny-secret"   # 11 个字符：工具服务拒绝，回复里也不带它
+        with self.assertLogs("kb", level="DEBUG") as logs:
+            cases = [
+                (self.post(self.URL, content=('{"new": "' + NEW + '", "current": "' + PASS + '",').encode(),
+                           headers={"Content-Type": "application/json"}), 400, "请求体不是合法 JSON"),
+                (self.post(self.URL, {"new": 123456789012345}), 400, "没有输入新的审批口令"),
+                (self.post(self.URL, {"current": PASS}), 400, "没有输入新的审批口令"),
+                (self.post(self.URL, {"new": NEW, "current": ["x"]}), 400, "旧口令必须是文本"),
+                (self.post(self.URL, [NEW]), 400, "请求体必须是 JSON 对象"),
+                (self.post(self.URL, {"new": NEW, "pad": "x" * (app_main.APPROVAL_BODY_MAX + 1)}), 413, "请求体太大"),
+                (self.post(self.URL, {"new": short}), 400, "至少 12 个字符"),
+            ]
+            app_main.log.info("marker")   # assertLogs 要求至少一条
+        output = "\n".join(logs.output)
+        for response, status, needle in cases:
+            with self.subTest(needle=needle):
+                self.assertEqual(response.status_code, status, response.text)
+                self.assertIn(needle, response.json()["detail"])
+                self.assertNoPassphrase(response.text)
+                self.assertNotIn(short, response.text)
+        self.assertNoPassphrase(output)
+        self.assertNotIn(short, output + self.printed.getvalue())
+        self.assertFalse(self.passfile.exists())
+
+    def test_cross_site_requests_are_refused(self):
+        response = self.post(self.URL, {"new": NEW}, headers={"Origin": "https://evil.example"})
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("跨站请求被拒绝", response.json()["detail"])
+        self.assertFalse(self.passfile.exists())
+        self.assertEqual(self.post(self.URL, {"new": NEW}, headers={"Referer": "http://evil.example/x"}).status_code, 403)
+        self.assertFalse(self.passfile.exists())
+        same = self.post(self.URL, {"new": NEW}, headers={"Origin": "http://testserver"})
+        self.assertEqual(same.status_code, 200, same.text)
+
+    def test_an_old_tool_service_degrades(self):
+        """上一版工具服务：有 /tools/approval，没有设置口令的接口——状态里没有 page_set，页面不给表单；硬发过去回 501。"""
+        previous = {"configured": False, "locked": False, "unlock_minutes": 0, "problem": "", "max_failures": 5,
+                    "lock_minutes": 15, "command": "python3 /opt/ops/ops_readonly.py set-approval-passphrase"}
+
+        def old(path, payload=None, timeout=30, headers=None):
+            if path == "/tools/approval":
+                return {"approval": previous}
+            raise ops_client.OpsUnavailable("Not found", status=404)
+
+        with patch.object(ops_client, "_request", side_effect=old):
+            status = self.client.get("/api/tools/approval", auth=self.auth).json()
+            self.assertFalse(status.get("page_set"))
+            response = self.post(self.URL, {"new": NEW})
+        self.assertEqual((response.status_code, response.json()["detail"]), (501, ops_client.OLD_SERVICE_SET))
+        self.assertIn("工具服务版本较旧", ops_client.OLD_SERVICE_SET)
+        self.assertNoPassphrase(response.text)
+        with patch.object(ops_client, "OPS_URL", "http://127.0.0.1:9"):   # 连不上：502，带着原因
+            response = self.post(self.URL, {"new": NEW})
+        self.assertEqual(response.status_code, 502)
+        self.assertFalse(self.passfile.exists())
+
+
 class OverviewTests(_WithOps):
     def setUp(self):
         super().setUp()
@@ -291,7 +404,7 @@ class SameOriginTests(unittest.TestCase):
     def test_cross_site_writes_are_refused_before_anything_else(self):
         for method, path in (("POST", "/api/proposals/p1/approve"), ("POST", "/api/tools/pending/a1/approve"),
                              ("DELETE", "/api/documents/x.md"), ("POST", "/api/tools/propose-approve"),
-                             ("POST", "/api/ask"), ("PUT", "/api/settings")):
+                             ("POST", "/api/tools/approval/passphrase"), ("POST", "/api/ask"), ("PUT", "/api/settings")):
             with self.subTest(path=path):
                 response = self.client.request(method, path, auth=self.auth, headers={"Origin": "https://evil.example"})
                 self.assertEqual(response.status_code, 403)
@@ -353,9 +466,11 @@ class PageTests(unittest.TestCase):
     def test_the_page_uses_the_real_approval_endpoints_and_wording(self):
         page = (REPO / "app" / "web" / "index.html").read_text(encoding="utf-8")
         for needle in ("/api/overview", "/api/tools/pending", "/api/tools/propose-approve", "/api/tools/approval",
+                       "/api/tools/approval/passphrase", 'autocomplete="${auto}"', "'current-password'",
+                       "'new-password'", "data-setpass", "还没设审批口令", "忘了口令",
                        "没有检测到风险", "id=\"navRecent\"", "homePlaceholder", "unlock_minutes", "data-pb"):
             self.assertIn(needle, page)
-        for gone in ("无风险", "/api/tools/held", "locked_until"):
+        for gone in ("无风险", "/api/tools/held", "locked_until", "只读不写"):
             self.assertNotIn(gone, page)
 
 
