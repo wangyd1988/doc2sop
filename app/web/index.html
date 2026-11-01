@@ -826,7 +826,7 @@ table.pt .rx { display: block; font-size: 11px; color: var(--muted); font-family
 .pc-verdict.unknown, .pc-verdict.checking { color: var(--muted); }
 .pc-list { display: flex; flex-direction: column; gap: 3px; margin: 7px 0 0; padding: 0; list-style: none; }
 .pc-list li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 6px; font-size: 12.5px; line-height: 1.55; }
-.pc-list li b { font-weight: 600; word-break: break-all; margin-right: 4px; }
+.pc-list li b { font-weight: 600; word-break: break-all; }
 .pc-list li.fail b { color: var(--danger); } .pc-list li.warn b { color: #b45309; } .pc-list li.skip { color: var(--muted); }
 .mrow .s .pcm { margin-left: 6px; } .pcm.blocked { color: var(--danger); } .pcm.problem { color: #b45309; } .pcm.ok { color: var(--ok); }
 .mr { border: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 10px; padding: 10px 12px;
@@ -2670,7 +2670,7 @@ $('tlPanel').addEventListener('click', async e => {
         tlProposing = false; tlChecked = null;
         apMine.set(d.pending.id, mine());
         toast(`申请已提交（编号 ${d.pending.id}）。批准之后才能用：在「待审批」里看自动检查${tlPrereview ? '、模型预审' : ''}和完整内容再批。`, 'ok', 7000);
-        openPending(d.pending.id);
+        openMine(d.pending.id);
       } catch (e2) { fail('提交失败：' + e2.message); }
       return;
     }
@@ -2693,13 +2693,13 @@ $('tlPanel').addEventListener('click', async e => {
       confirm: '提交并批准',
       run: passphrase => postJson('/api/tools/propose-approve', {tool: payload, passphrase, script_sha256: script?.sha256 || ''})
         .catch(err => { if (err.pending) queued = err.pending; throw err; }),
-      done: result => { tlProposing = false; tlChecked = null; apResults[result.id] = result; openPending(result.id); refreshBadges(); },
+      done: result => { tlProposing = false; tlChecked = null; apResults[result.id] = result; openMine(result.id); refreshBadges(); },
       cancel: () => {
         if (!queued) return;
         tlProposing = false; tlChecked = null;
         apMine.set(queued, mine());
         toast(`申请已提交（编号 ${queued}），还没有批准：在「待审批」里看原因再批`, '', 7000);
-        openPending(queued); refreshBadges();
+        openMine(queued); refreshBadges();
       },
     });
   }
@@ -3197,6 +3197,8 @@ function route() {
 }
 window.addEventListener('popstate', route);
 const openPending = id => go('tools', {tab: 'pending', item: id});
+// 申请人刚提交的：直接打开这条的详情（窄屏上详情盖住列表），当场看到自动检查和模型预审
+const openMine = id => { openPending(id); document.body.classList.add('detail'); };
 // 去设置页的审批口令卡片：设置页是异步画的，画好后滚过去、聚焦第一个输入框
 let wantPass = false;
 function goSetPass() { wantPass = true; go('settings'); }
@@ -3581,8 +3583,9 @@ function precheckHtml(p, invalid) {
   if (!p) return invalid ? '<div class="note" style="margin:0">申请本身现在批不了（原因见上面），没做自动检查。</div>'
     : '<div class="note" style="margin:0">工具服务版本较旧，没有自动检查：升级宿主机上的 ops_readonly.py（和 ops_exec.py 一起拷）后就有。</div>';
   if (p.state !== 'done') return '<div class="pc-verdict checking">⏳ 自动检查进行中…<small>做完自动刷新</small></div>';
-  const items = (p.checks || []).map(c => `<li class="${esc(c.status)}"><span>${PC_ICON[c.status] || '•'}</span><div><b>${esc(c.title)}</b>${esc(c.text)}</div></li>`).join('');
-  return `<div class="pc-verdict ${esc(p.verdict)}">${PC_VERDICT_ICON[p.verdict] || ''} ${esc(p.label)}${p.note ? `<small>${esc(p.note)}</small>` : ''}${p.at ? `<small>${esc(p.at)} 检查</small>` : ''}</div>`
+  const items = (p.checks || []).map(c => `<li class="${esc(c.status)}"><span>${PC_ICON[c.status] || '•'}</span><div><b>${esc(c.title)}</b>：${esc(c.text)}</div></li>`).join('');
+  const at = p.at ? (typeof ago === 'function' ? ago(p.at) : p.at) : '';
+  return `<div class="pc-verdict ${esc(p.verdict)}">${PC_VERDICT_ICON[p.verdict] || ''} ${esc(p.label)}${p.note ? `<small>${esc(p.note)}</small>` : ''}${at ? `<small>${esc(at)} 检查</small>` : ''}</div>`
     + (items ? `<ul class="pc-list">${items}</ul>` : '');
 }
 function prereviewHtml(r) {
