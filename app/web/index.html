@@ -554,6 +554,8 @@ body.nogroups #mgroups, body.nogroups .msplit[data-split="mgroups"] { display: n
 #mdetail #pbPanel .pb-step .ck { color: var(--text); }
 #mdetail #pbPanel .pb-step .ev { font-size: 13px; }
 #mdetail #pbPanel .pb-step .ev.bad { color: var(--danger); }
+/* 右栏只显示一张卡：停用的不再整张变淡（.pb.off 的 55% 透明度让文字发虚，生产上停用的 SOP 不少），改成虚线边框，头部照常写「已停用」 */
+#mdetail .pb.off { opacity: 1; border-style: dashed; }
 .md-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 60px 10px; line-height: 1.8; }
 /* 分栏拖拽条：细线，悬停/拖动时变粗变色 */
 .msplit { width: 5px; margin: 0 -2px; flex-shrink: 0; cursor: col-resize; position: relative; z-index: 5; background: transparent;

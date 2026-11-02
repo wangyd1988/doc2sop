@@ -461,6 +461,7 @@ check('云上协同的卡片和下拉不用全局的 .box、.ex', /class="(box|e
   }
   check('文档 / SOP / 工具的搜索不再重建输入框', code.includes("kept.dataset.tab === mTab"), true);
   check('等着的搜索请求回来时，不把还在打字的框改回旧值', code.includes('kept.value !== mSearch && document.activeElement !== kept'), true);
+  check('右栏里停用的 SOP、工具不整张变淡（文字发虚），改用虚线边框', html.includes('#mdetail .pb.off { opacity: 1; border-style: dashed; }'), true);
   check('选文档的筛选框按回车时不在组字', code.includes("e.target.id === 'pbDocFilter' && e.key === 'Enter' && !e.isComposing"), true);
 }
 
