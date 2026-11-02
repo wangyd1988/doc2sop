@@ -246,9 +246,13 @@ def is_continuation(question: str, history) -> bool:
     return bool(history) and len(q) <= 12 and bool(CONTINUATION.match(q))
 
 
-def catalog_context() -> str:
-    """The whole catalogue, grouped by category, for overview questions."""
+def catalog_context(categories=None) -> str:
+    """The whole catalogue, grouped by category, for overview questions.
+
+    categories 给了就只列这几个分类（群聊按会话限定了分类）；不给时和以前一字不差。"""
     docs = store.list_documents()
+    if categories is not None:
+        docs = [d for d in docs if d["category"] in set(categories)]
     if not docs:
         return "知识库目前是空的，还没有任何文档。"
     groups = {}

@@ -36,6 +36,11 @@ os.environ.pop("OPS_CLI", None)
 # 也就不会真的发邮件；要测的用例自己写这个文件。定时执行的后台线程也关掉，用例直接调 schedules.tick()。
 os.environ["AUTOMATION_FILE"] = str(Path(_TEMP.name, "automation.yaml"))
 os.environ["SCHEDULER"] = "false"
+# 云上协同：转接程序的地址和令牌强制清空（配好的机器上跑测试时，不能连上真的转接程序、往真的群里发）；
+# 要测它的用例自己起一个假的转接程序，直接调 chat_channel、chat_api。谁能用的配置文件指向临时目录。
+os.environ["CHAT_BRIDGE_URL"] = ""
+os.environ["CHAT_BRIDGE_TOKEN"] = ""
+os.environ["CHAT_FILE"] = str(Path(_TEMP.name, "chat.yaml"))
 
 Path(_TEMP.name, "files").mkdir(parents=True, exist_ok=True)
 

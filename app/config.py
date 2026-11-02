@@ -177,6 +177,14 @@ AUTOMATION_FILE = Path(os.environ.get("AUTOMATION_FILE", "") or DATA_DIR / "auto
 # 定时执行的后台线程。false 时计划照样能建、能「立即执行一次」，只是不按时间自动跑（告警触发不受影响）
 SCHEDULER = os.environ.get("SCHEDULER", "true").strip().lower() in _TRUE
 
+# --- 云上协同（docs/正式部署.md「云上协同」）---------------------------------------------------
+# 群里 @ 它提问、私聊问，计划和告警的结果推到群里。收发都经宿主机上的转接程序（deploy/ccwork/），kb-app 只连它的本机接口：
+# 地址只能是 http://127.0.0.1:端口 或 http://[::1]:端口，令牌和转接程序的 CHAT_BRIDGE_TOKEN 相同。两个都空着时：不起线程、
+# 不建表、不挂路由，问答和发给模型的提示词和以前一模一样。谁能用、能查什么写在 CHAT_FILE 里，文件不在 = 谁也没开通。
+CHAT_BRIDGE_URL = os.environ.get("CHAT_BRIDGE_URL", "").strip()
+CHAT_BRIDGE_TOKEN = os.environ.get("CHAT_BRIDGE_TOKEN", "").strip()
+CHAT_FILE = Path(os.environ.get("CHAT_FILE", "") or DATA_DIR / "chat.yaml")
+
 log = logging.getLogger("kb")
 # uvicorn 只配置自己的 logger，不配 root；不挂这个 handler，下面所有 log.info（检索计时、
 # 「rerank skipped」这类诊断）都会被静默丢掉，docker logs 里只剩 WARNING。

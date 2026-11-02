@@ -67,9 +67,11 @@ def suggest_category(name: str, sample: str, existing) -> str:
     return guess[:CATEGORY_MAX] or DEFAULT_CATEGORY
 
 
-def build_messages(question: str, context: str, history):
-    """System prompt + replayed history + retrieved context and the new question."""
-    messages = [("system", SYSTEM_PROMPT)]
+def build_messages(question: str, context: str, history, note: str | None = None):
+    """System prompt + replayed history + retrieved context and the new question.
+
+    note 接在系统提示词末尾（群聊的渠道说明）；不给时和以前一字不差。"""
+    messages = [("system", SYSTEM_PROMPT + (note or ""))]
     for role, content in history:
         messages.append(("human" if role == "user" else "ai", content[:HISTORY_CHARS]))
     messages.append(("human", f"知识库片段：\n{context}\n\n用户的问题：{question}"))

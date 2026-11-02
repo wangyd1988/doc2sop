@@ -116,8 +116,9 @@ CREATE TABLE IF NOT EXISTS feedback (
 );
 """)
 db.commit()
-# web 页面（对话里的「▶ 执行」、SOP 页的「立即执行一次」）、mcp 对外出口、schedule 定时执行、alert 告警触发
-CHANNELS = ("web", "mcp", "schedule", "alert")
+# web 页面（对话里的「▶ 执行」、SOP 页的「立即执行一次」）、mcp 对外出口、schedule 定时执行、alert 告警触发、
+# chat 群聊和私聊（云上协同；平台名记在 chat.db 的 chat_threads 里，以后接别的聊天工具也不用再加渠道值）
+CHANNELS = ("web", "mcp", "schedule", "alert", "chat")
 
 
 def _migrate(conn):

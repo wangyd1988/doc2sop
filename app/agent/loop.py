@@ -608,6 +608,8 @@ class TurnSetup:
     # 不绑时是 None，不收集
     outputs: list | None = None
     rebind: Callable | None = None               # 每次调模型前取这次用的模型：python_exec 的说明要现算（见 _rebinder）
+    categories: frozenset | None = None          # 知识类工具看得到哪些文档分类；None 是全部（群聊可以按会话限定）
+    allowed: frozenset | None = None             # 只许调的数据类工具（群聊按会话开通的名单）；None 是不限
     stats: dict = field(default_factory=lambda: {"model_calls": 0, "fallback": False, "forced_with": None})
 
 
@@ -693,7 +695,8 @@ def _build_graph(bound, system, current_prompt, by_name, allow_web=False, record
     def tools(state: TurnState):
         emit = get_stream_writer()
         call_msg = state["messages"][-1]
-        turn = registry.Turn(emit, state.get("usage"), caller=setup.caller, tools=setup.tools, outputs=setup.outputs)
+        turn = registry.Turn(emit, state.get("usage"), caller=setup.caller, categories=setup.categories,
+                             tools=setup.tools, outputs=setup.outputs)
         # 出网规则：模型会在同一条回复里并行发出搜索和数据类调用。执行这一批之前，先把其中数据类调用的
         # x-entity 实参登记成污点、本轮记为调过数据类工具——搜索排在前面先执行，也看得到同批的这些
         for call in call_msg.tool_calls:
@@ -709,6 +712,9 @@ def _build_graph(bound, system, current_prompt, by_name, allow_web=False, record
         for call in call_msg.tool_calls:
             name, args = call["name"], call.get("args") or {}
             binding = by_name.get(name)
+            if (binding is not None and binding.category == "data" and setup.allowed is not None
+                    and name not in setup.allowed):
+                binding = None      # 第二道：名单外的数据类工具本来就没绑，执行前再按名单核一遍
             category = binding.category if binding else registry.category_of(name)
             policy = registry.POLICIES.get(category, registry.POLICIES["data"])
             emit(("tool_call", {"tool": name, "args": args, "category": category}))
@@ -819,7 +825,7 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
         thread_id: str | None = None, model: str | None = None,
         execution_id: str | None = None, *, kb_tools: bool = False, plan: bool = False,
         hits=None, force_search: bool = False, prefetch=None, playbook=None, smart: bool = False,
-        material: str | None = None):
+        material: str | None = None, allowed=None, categories=None, note: str | None = None):
     """跑一轮对话，边跑边产出事件。
 
     产出 (kind, payload)：
@@ -855,11 +861,19 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
 
     material：告警触发的自动执行附上的告警内容（autorun 已写好说明和分隔线），放在本轮提问里「用户的问题」之前，
     是资料不是指令。它不进出网规则的「用户本轮消息」：告警里出现的名字不能因此豁免污点拦截。不给时提问和以前一字不差。
+
+    群聊（app/chat_channel.py）按会话收窄，三项都不给时和以前一字不差：
+      allowed     只绑这些数据类工具（工具名的集合，逐个开通）；给了空集合就一个数据工具都不绑，也不绑 python_exec
+      categories  知识类工具和 kb_search 说明里的目录只看这几个文档分类（预检索由调用方按同样的分类收窄）
+      note        接在系统提示词末尾的一段渠道说明（「回答会发到群里：先给结论……」）
     """
     options = registry.TurnOptions(allow_web=allow_web and web_search.enabled(), kb_tools=kb_tools, plan=plan)
     allow_web = options.allow_web
     # 按问题筛选只作用于数据类（POLICIES 里 selectable 的）：TOOL_LIMIT 只数它们，应用内工具固定绑定
     available = registry.data_tools()
+    if allowed is not None:
+        allowed = frozenset(allowed)
+        available = {name: entry for name, entry in available.items() if name in allowed}
     if len(available) > TOOL_LIMIT:
         available = select_tools(available, question, playbooks.referenced_tools())
     tools = build_tools(available)
@@ -870,9 +884,13 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
     if brief:
         options = replace(options, sop_tools=True)
     extra = registry.app_tools(options)
+    if allowed is not None and not available:
+        extra = [tool for tool in extra if tool.name != sandbox.NAME]
     by_name = {tool.name: registry.bind_data(tool, available.get(tool.name)) for tool in tools}
     by_name.update({tool.name: registry.bind_app(tool) for tool in extra})
-    bindable = tools + [schema_tool(tool.current()) for tool in extra]
+    scope = None if categories is None else registry.Turn(categories=categories)
+    bindable = tools + [schema_tool(tool.current(scope) if scope is not None and tool.category == "knowledge"
+                                    else tool.current()) for tool in extra]
     if not bindable:
         log.info("no tools available, agent answers from knowledge base only")
     client = chat_model(timeout=120, max_retries=1, **({"model": model} if model else {}))
@@ -896,7 +914,8 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
               + (EXEC_RULES if exec_on else "")
               + ((basis.web + (WEB_FETCH_RULES if fetch_on else "")) if allow_web else basis.no_web)
               + (EXTERNAL_RULES.format(names="、".join(external)) if external else "")
-              + (GENERAL_HISTORY_RULES if not smart and modes.history_uses_general(history) else ""))
+              + (GENERAL_HISTORY_RULES if not smart and modes.history_uses_general(history) else "")
+              + (note or ""))
     # SOP 只在确实有能进 SOP 的工具时注入，否则模型会照着 SOP 去调不存在的工具。
     steps = {name for name, binding in by_name.items() if registry.POLICIES[binding.category].sop}
     book = playbooks.as_prompt(steps, brief=brief) if steps else ""
@@ -932,7 +951,8 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
                       model_key=model_key, kb_ids=kb_on,
                       caller=f"agent conversation={thread_id}" + (f" execution={execution_id}" if execution_id else ""),
                       tools={name: titles.get(name, name) for name in data_names},
-                      outputs=[] if exec_on else None)
+                      outputs=[] if exec_on else None,
+                      categories=None if categories is None else frozenset(categories), allowed=allowed)
     if exec_on:
         setup.rebind = _rebinder(client, bindable, next(t for t in extra if t.name == sandbox.NAME),
                                  setup.outputs, bound)

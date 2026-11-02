@@ -33,7 +33,7 @@
 
 本地接口（都要令牌；除 /health 外都要协议版本头）：
     GET  /health                           {"ok": true, "protocol": [1, 1]}
-    GET  /status                           连接、计数、推送目标的名字、问题；不含密钥，ID 只有末 4 位
+    GET  /status                           连接、计数、推送目标的名字（和是群还是个人）、问题；不含密钥，ID 只有末 4 位
     GET  /events?epoch=&after=&wait=        长轮询取消息；after 是 kb-app 已经落库的最后编号，同时算确认；
                                            epoch 对不上回 409，带上新的 epoch
     POST /reply   {"handle", "text", "mention"} 或 {"handle", "stream": {request_id, seq, type, message_type, content}}
@@ -1155,6 +1155,7 @@ class Bridge:
                 "broker": f"{self.broker.host}:{self.broker.port}" if self.broker else "",
                 "send": self.cfg.send and not self.diagnose_only(), "robot": tail(self.robot.robot_id) if self.robot else "",
                 "conflict": bool(self.link and self.link.conflict), "targets": sorted(targets.targets),
+                "target_kinds": {name: kind for name, (kind, _) in sorted(targets.targets.items())},
                 "problems": problems, "queue": {"events": count, "bytes": size},
                 "kb_app_last_poll": now_iso(self.inbox.last_poll) if self.inbox.last_poll else None,
                 "counters": {**self.inbox.counters, **self.outbox.counters}}

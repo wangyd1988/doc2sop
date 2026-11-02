@@ -13,7 +13,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from app import graph, models, notify, playbooks, runs, settings
+from app import chat_push, graph, models, notify, playbooks, runs, settings
 from app.agent import loop as agent_loop
 from app.agent import registry
 from app.config import AGENT_MODE, KB_RETRIEVAL_MODE, KB_TOOLS, PLAN_TOOL, log, why
@@ -178,6 +178,7 @@ def execute(run_id, material="") -> dict | None:
             notify_after(done)
         except Exception:
             log.warning("auto run %s: notification failed", run_id, exc_info=True)
+        chat_push.after_run(done)       # 云上协同推送：关着时什么都不做；和邮件各管各的，自己兜住异常
     return runs.get(run_id)
 
 

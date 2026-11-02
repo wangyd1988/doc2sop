@@ -216,6 +216,8 @@ class ApiTests(ApiCase):
         status = self.call("/status")[1]
         self.assertEqual((status["state"], status["tls"], status["send"], status["robot"], status["targets"]),
                          ("starting", True, True, "…8765", ["王某某", "运维值班群"]))
+        # kb-app 据此只把全部缺口发给个人：只说是群还是个人，不给 ID
+        self.assertEqual(status["target_kinds"], {"王某某": "user", "运维值班群": "chat"})
         text = json.dumps(status, ensure_ascii=False)
         for secret in ("4242", "u_boss", "secret-1", "jwt-1", KEY.decode()):
             self.assertNotIn(secret, text)

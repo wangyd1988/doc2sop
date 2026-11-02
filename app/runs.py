@@ -3,7 +3,7 @@
 每次按 SOP 执行都留一份：对话里的「▶ 执行」、SOP 页的「立即执行一次」、定时执行、告警触发。记录建在图谱上——
 执行过的就是一条 executions（同一个 id），每一步调了什么工具、什么参数、完整返回都在 tool_calls 里。这里多存的是：
 
-    谁触发的（页面 / 定时 / 告警）、用了什么参数、开始和结束时间、SOP 当时的步骤（之后改了 SOP，记录里仍是执行时的样子）
+    谁触发的（页面 / 定时 / 告警 / 群聊）、用了什么参数、开始和结束时间、SOP 当时的步骤（之后改了 SOP，记录里仍是执行时的样子）
     结构化的结论：等级（正常 / 有异常 / 没跑成 / 没法判断）和异常项（哪一步、查看什么、看到的值、结论）
 
 结论从回答里按 SOP 输出格式（sop_tools.SOP_FORMAT）的逐步表格解析，不改提示词：结论只能是 ✅ ⚠️ ❌ ❓。
@@ -17,8 +17,8 @@ from datetime import datetime, timedelta, timezone
 from app import graph, playbooks
 from app.agent import registry
 
-TRIGGERS = ("web", "schedule", "alert")
-TRIGGER_NAMES = {"web": "页面", "schedule": "定时", "alert": "告警"}
+TRIGGERS = ("web", "schedule", "alert", "chat")
+TRIGGER_NAMES = {"web": "页面", "schedule": "定时", "alert": "告警", "chat": "群聊"}
 LEVELS = ("ok", "anomaly", "failed", "unknown")
 LEVEL_NAMES = {"ok": "正常", "anomaly": "有异常", "failed": "没跑成", "unknown": "没法判断"}
 LEVEL_ICONS = {"ok": "✅", "anomaly": "⚠️", "failed": "❌", "unknown": "❓"}

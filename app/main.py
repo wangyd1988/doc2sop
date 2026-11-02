@@ -11,6 +11,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -28,9 +29,9 @@ from app.agent import loop as agent_loop
 from app.agent import modes as answer_modes
 from app.agent import ops_client, prereview, registry, web_search
 from app.agent.extract import extract as extract_playbooks
-from app.config import (AGENT_MODE, ALLOWED_SUFFIXES, CATEGORY_MAX, BOT_NAME, DATA_DIR, EVAL_TOKEN,
-                        FILES_DIR, IMAGE_SUFFIXES, KB_RETRIEVAL_MODE, KB_TOOLS, MAX_FILE_BYTES, MCP_ENABLED,
-                        PLAN_TOOL, SMART_MODE, WEB_NOTE_CATEGORY, WEB_PASSWORD, WEB_USER, log)
+from app.config import (AGENT_MODE, ALLOWED_SUFFIXES, CATEGORY_MAX, BOT_NAME, CHAT_BRIDGE_TOKEN, CHAT_BRIDGE_URL,
+                        DATA_DIR, EVAL_TOKEN, FILES_DIR, IMAGE_SUFFIXES, KB_RETRIEVAL_MODE, KB_TOOLS, MAX_FILE_BYTES,
+                        MCP_ENABLED, PLAN_TOOL, SMART_MODE, WEB_NOTE_CATEGORY, WEB_PASSWORD, WEB_USER, log)
 from app.ingest.extract import ExtractionError, extract_pages
 from app.ingest.vision import ImageCollector
 from app.rag import store
@@ -1053,7 +1054,10 @@ def overview(request: Request):
 # --- Conversations -----------------------------------------------------------
 
 @app.get("/api/conversations")
-def list_conversations():
+def list_conversations(source: str = ""):
+    """对话列表。打开了云上协同时，群聊的对话带 source，能按来源筛选（source=web / chat）。"""
+    if chat is not None:
+        return chat.conversation_list(source)
     return {"conversations": conversations.list_conversations()}
 
 
@@ -1079,13 +1083,18 @@ def conversation_messages(conversation_id: str):
                 message["playbook"] = {"id": run["playbook_id"], "name": book["name"] if book else ""}
             if run["execution_id"] in pending:
                 message["proposal"] = proposal_view(pending[run["execution_id"]])
-    return {"id": conversation_id, "messages": messages}
+    out = {"id": conversation_id, "messages": messages}
+    if chat is not None:
+        out.update(chat.conversation_source(conversation_id))   # 群聊的对话：来源、只读
+    return out
 
 
 @app.delete("/api/conversations/{conversation_id}")
 def delete_conversation(conversation_id: str):
     conversations.delete(conversation_id)
     agent_loop.forget(conversation_id)  # Agent 的完整记忆也一起删掉
+    if chat is not None:
+        chat.forget(conversation_id)    # 群聊的对话删了：那个人下一次问另开一条
     return {"deleted": conversation_id}
 
 
@@ -1356,15 +1365,39 @@ class AskTurn:
     execution_id: str
     run_id: str | None
     root: object
+    # 群聊（start_chat_turn）才有的收窄，网页的一轮都是默认值
+    tools: tuple | None = None          # 只许用的数据类工具名；None 不限
+    categories: tuple | None = None     # 只查这几个文档分类；None 全部
+    within: frozenset | None = None     # 这几个分类里的文档（预检索的范围）
+    note: str = ""                      # 接在系统提示词末尾的渠道说明
 
     @property
     def conversation_id(self) -> str:
         return self.conversation["id"]
 
+    def loop_options(self) -> dict:
+        """给 agent_loop.run 的群聊参数：只传不是默认值的，网页的调用一字不变。"""
+        options = {}
+        if self.tools is not None:
+            options["allowed"] = self.tools
+        if self.categories is not None:
+            options["categories"] = self.categories
+        if self.note:
+            options["note"] = self.note
+        return options
+
 
 def start_turn(question, conversation_id, history, *, model_name, web, playbook_id, answer_mode, modes_on, kb_on,
-               mode) -> AskTurn:
-    """一轮问答开始：conversation_id 为 None 时新建对话。返回 turn_events 要用的这一轮的全部设定。"""
+               mode, title=None, channel="web", trigger="web", run_note="", tools=None, categories=None,
+               note="") -> AskTurn:
+    """一轮问答开始：conversation_id 为 None 时新建对话。返回 turn_events 要用的这一轮的全部设定。
+
+    后面几项是群聊（start_chat_turn）用的，网页不传；取默认值时和以前一字不差：
+      title              新建对话的标题（默认就是问题）
+      channel            图谱里这次执行的渠道；trigger、run_note 是「执行」SOP 时执行记录上的触发方式和备注
+      tools、categories  只许用的数据类工具名（None 不限）、只查的文档分类（None 全部）
+      note               接在系统提示词末尾的渠道说明
+    """
     # 「▶ 执行」沿用知识库模式的规则：结论只依据数据和知识库。这一轮仍记成用户当时选的模式
     smart = answer_mode == "smart" and not playbook_id
     if smart:
@@ -1373,14 +1406,15 @@ def start_turn(question, conversation_id, history, *, model_name, web, playbook_
     # Create the conversation first so the trace carries its real id from the very first turn.
     started_new = conversation_id is None
     conversation = ({"id": conversation_id} if conversation_id
-                    else conversations.create(question))
+                    else conversations.create(title or question))
     conversation_id = conversation["id"]
 
     root = start_root_run(question, conversation_id)
     # Tools are opt-in and degrade gracefully: nothing to bind (no ops endpoint, web off) means plain RAG.
     allow_web = AGENT_MODE != "off" and web and web_search.enabled()
     plan_on = PLAN_TOOL
-    use_agent = AGENT_MODE != "off" and registry.has_tools(allow_web, kb_tools=kb_on, plan=plan_on)
+    use_agent = AGENT_MODE != "off" and registry.has_tools(allow_web, kb_tools=kb_on, plan=plan_on,
+                                                           **({"data": tools} if tools is not None else {}))
     if not use_agent:
         kb_on = plan_on = False
     # 检索模式只在知识类工具绑上时才有意义；forced 遇到已知不支持 tool_choice 的模型直接按 prefetch 走
@@ -1394,22 +1428,28 @@ def start_turn(question, conversation_id, history, *, model_name, web, playbook_
     force = mode == "forced" and not (overview or continuation)
     playbook = playbooks.get(playbook_id) if plan_on and playbook_id else None
     # 图谱里的这一轮：工具的完整返回、最终结论质量、人工反馈都挂在它下面
-    execution_id = graph.start_execution(conversation_id, question, playbook_id)
+    execution_id = graph.start_execution(conversation_id, question, playbook_id,
+                                         **({"channel": channel} if channel != "web" else {}))
     # 「▶ 执行」的这一轮另记一条 SOP 执行记录（同一个 id）：回答结束后按 SOP 输出格式解析结论（runs.py）。
     # 旁路：记不下来不影响回答
     run_id = None
     if playbook_id:
         try:
             book = playbooks.get(playbook_id)
-            run_id = runs.create(book, "web", run_id=execution_id, execution_id=execution_id, status="running",
-                                 conversation_id=conversation_id, params=runs.params_from_question(book, question))
+            run_id = runs.create(book, trigger, run_id=execution_id, execution_id=execution_id, status="running",
+                                 conversation_id=conversation_id, params=runs.params_from_question(book, question),
+                                 **({"note": run_note} if run_note else {}))
         except Exception:
             log.warning("failed to start the run record for %s", execution_id, exc_info=True)
+    within = None
+    if categories is not None:
+        within = frozenset(d["source"] for d in store.list_documents() if d["category"] in set(categories))
     return AskTurn(question=question, conversation=conversation, started_new=started_new, history=history,
                    model_name=model_name, answer_mode=answer_mode, modes_on=modes_on, kb_on=kb_on, mode=mode,
                    smart=smart, allow_web=allow_web, plan_on=plan_on, use_agent=use_agent, overview=overview,
                    continuation=continuation, prefetching=prefetching, force=force, playbook=playbook,
-                   execution_id=execution_id, run_id=run_id, root=root)
+                   execution_id=execution_id, run_id=run_id, root=root, tools=tools, categories=categories,
+                   within=within, note=note)
 
 
 def turn_events(turn: AskTurn):
@@ -1428,6 +1468,8 @@ def turn_events(turn: AskTurn):
     search_query, hits = question, []
     started = time.monotonic()
     retrieved_at = first_token_at = None
+    # 群聊按会话限定了文档分类时，预检索只在这些文档里找；网页就是 retrieve 本身
+    search = retrieve if turn.within is None else partial(retrieve, within=turn.within)
 
     def line(**event):
         return event
@@ -1438,7 +1480,7 @@ def turn_events(turn: AskTurn):
         if history:
             emit(("stage", "rewrite"))
         search_query = rewrite_question(question, history)
-        return retrieve(search_query, progress=lambda stage: emit(("stage", stage)))
+        return search(search_query, progress=lambda stage: emit(("stage", stage)))
 
     try:
         # 知识类工具打开时，首行带上这一轮实际的检索模式（forced 遇到不支持 tool_choice 的模型会降成 prefetch），
@@ -1456,7 +1498,7 @@ def turn_events(turn: AskTurn):
                     if history:
                         yield line(stage="rewrite")
                     search_query = rewrite_question(question, history)
-                    hits = yield from _with_stages(retrieve, search_query)
+                    hits = yield from _with_stages(search, search_query)
                     if not kb_on:
                         # 片段 id 只给知识类工具用；关着时来源和以前一字不差
                         hits = [{k: v for k, v in hit.items() if k != "id"} for hit in hits]
@@ -1467,7 +1509,8 @@ def turn_events(turn: AskTurn):
         retrieved_at = time.monotonic()
         yield line(sources=hits)
         conversations.add_message(conversation_id, "user", question, mode=answer_mode)
-        context = (catalog_context() if turn.overview
+        context = (catalog_context(**({"categories": turn.categories} if turn.categories is not None else {}))
+                   if turn.overview
                    else (CONTINUATION_KB if kb_on else CONTINUATION) if turn.continuation
                    else as_context(hits, ids=kb_on) if turn.prefetching
                    else None)
@@ -1486,7 +1529,8 @@ def turn_events(turn: AskTurn):
                                                         kb_tools=kb_on, plan=turn.plan_on, hits=hits,
                                                         force_search=turn.force,
                                                         prefetch=fallback if turn.force else None,
-                                                        playbook=turn.playbook, smart=turn.smart):
+                                                        playbook=turn.playbook, smart=turn.smart,
+                                                        **turn.loop_options()):
                         if kind == "delta":
                             answer += payload
                             first_token_at = first_token_at or time.monotonic()
@@ -1516,7 +1560,7 @@ def turn_events(turn: AskTurn):
                 failure = f"工具调用流程失败：{exc.__class__.__name__}"
                 yield line(error=failure)
         else:
-            messages = build_messages(question, context, history)
+            messages = build_messages(question, context, history, **({"note": turn.note} if turn.note else {}))
             try:
                 # Re-attach to the root run: this body runs after the response returned.
                 with traced_under(root):
@@ -1588,6 +1632,9 @@ def ask(payload: Question, x_eval_token: str | None = Header(default=None)):
     conversation_id = payload.conversation_id
     if conversation_id and not conversations.exists(conversation_id):
         raise HTTPException(404, "对话不存在，请新建对话")
+    if conversation_id and chat is not None and chat.readonly(conversation_id):
+        # 网页上在群聊的对话里补问（比如查了库），会成为群里下一次回答的隐藏上下文
+        raise HTTPException(409, "这是云上协同里的对话，网页上只能查看；要接着问请新建对话")
     try:
         model_name = models.resolve(payload.model)
     except ValueError as exc:
@@ -1608,6 +1655,29 @@ def ask(payload: Question, x_eval_token: str | None = Header(default=None)):
                       playbook_id=payload.playbook_id, answer_mode=answer_mode, modes_on=modes_on, kb_on=kb_on,
                       mode=mode)
     return StreamingResponse(ndjson(turn_events(turn)), media_type="application/x-ndjson")
+
+
+def start_chat_turn(question, conversation_id, *, title, mode="kb", web=False, playbook_id=None, tools=(),
+                    categories=None, note="", run_note="") -> AskTurn:
+    """群聊、私聊的一轮（app/chat_channel.py 经 chat_api.install 拿到它）：和网页同一个核心，渠道记 chat。
+
+    模型用部署的默认模型，检索方式照部署的设置（不接受评测覆盖）；智能模式要部署本身打开了才用，否则按知识库模式答。
+    tools 是这个会话开通的数据类工具名（空的就一个都没有），categories 是只查的文档分类（None 全部）。"""
+    modes_on = smart_status()["available"]
+    answer_mode = "smart" if mode == "smart" and modes_on else "kb"
+    history = conversations.recent_history(conversation_id) if conversation_id else []
+    return start_turn(question, conversation_id, history, model_name=models.resolve(None), web=web,
+                      playbook_id=playbook_id, answer_mode=answer_mode, modes_on=modes_on, kb_on=KB_TOOLS,
+                      mode=KB_RETRIEVAL_MODE, title=title, channel="chat", trigger="chat", run_note=run_note,
+                      tools=tuple(tools), categories=None if categories is None else tuple(categories), note=note)
+
+
+# 云上协同（docs/正式部署.md「云上协同」）：CHAT_BRIDGE_URL、CHAT_BRIDGE_TOKEN 都空着时不导入、不挂路由、不起线程，
+# 问答和发给模型的提示词和以前一模一样。打开后群聊的对话在网页上只读（/api/ask 回 409），对话列表能按来源筛选。
+chat = None
+if CHAT_BRIDGE_URL or CHAT_BRIDGE_TOKEN:
+    from app import chat_api as chat
+    chat.install(app, start_chat_turn, turn_events, smart_status)
 
 
 # 演示场景包：DEMO_PACKS 非空时，模型一配好就在后台把文档和 SOP 导进来（docs/场景包.md）。

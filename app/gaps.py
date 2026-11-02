@@ -246,8 +246,10 @@ def _purge(items) -> list:
     return [i for i in items if i["key"] not in set(gone)]
 
 
-def board(limit=None, embed=True) -> dict:
-    """看板：扫新记录，去掉删了的、和忽略过的相似的，归组排序。embed=True 时后台限量补算向量。"""
+def board(limit=None, embed=True, only=None) -> dict:
+    """看板：扫新记录，去掉删了的、和忽略过的相似的，归组排序。embed=True 时后台限量补算向量。
+
+    only 是对话 ID 的集合时只看这些对话里的问题（云上协同按群发的每周摘要：只汇总这个群自己的问题）。"""
     scan()
     items = _purge(_open_items())
     ignores = _ignores()
@@ -255,6 +257,8 @@ def board(limit=None, embed=True) -> dict:
     if hidden:
         _set_status(hidden, "ignored")
         items = [i for i in items if i["key"] not in set(hidden)]
+    if only is not None:
+        items = [i for i in items if i["conversation_id"] in only]
     groups = cluster(items)
     if embed and any(i["vector"] is None for i in items):
         _maybe_embed()

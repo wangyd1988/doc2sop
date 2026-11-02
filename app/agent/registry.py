@@ -214,14 +214,20 @@ def app_tools(options: TurnOptions) -> list:
     return [tool for tool in APP_TOOLS if tool.wanted(options)]
 
 
-def has_tools(allow_web=False, kb_tools=False, plan=False) -> bool:
+def has_tools(allow_web=False, kb_tools=False, plan=False, data=None) -> bool:
     """有没有工具可绑（只看配置，不发请求）：有才走 Agent 分支，否则纯知识库问答。
 
     KB_TOOLS 打开后，没配工具服务、也没开联网的部署也有知识类工具可绑，同样走 Agent 分支；配了 SANDBOX_URL
     （python_exec）也一样。
+
+    data 是只许用的数据类工具名（群聊按会话开通的名单）；None 是不限，和以前一样。给了空名单时既不算工具服务，
+    也不算 python_exec——它只算本轮数据工具的返回。
     """
     options = TurnOptions(allow_web=allow_web, kb_tools=kb_tools, plan=plan)
-    return ops_client.enabled() or bool(app_tools(options))
+    if data is None:
+        return ops_client.enabled() or bool(app_tools(options))
+    return (bool(data) and ops_client.enabled()) or any(tool.name != sandbox.NAME or data
+                                                         for tool in app_tools(options))
 
 
 def category_of(name) -> str:
