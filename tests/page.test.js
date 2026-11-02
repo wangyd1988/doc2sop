@@ -177,6 +177,8 @@ const gap = R.gapRow({id: 'g"1', count: 3, example: '<img src=x onerror=alert(1)
 check('知识库缺口：问题、其他问法、线索都转义', raw.test(gap), false);
 check('知识库缺口：线索写成中文', gap.includes('有人工反馈 2'), true);
 check('知识库缺口：id 进属性也转义', gap.includes('data-gapopen="g&quot;1"'), true);
+// 问题标题不能用工作台示例问题的全局 .ex（4 列网格）：长问题会被挤在四分之一宽里折行
+check('知识库缺口：标题不用全局的 .ex', /class="ex"/.test(gap) || !gap.includes('class="gq"'), false);
 // 页面上只能选收件组的名字：自动执行页不显示收件地址、SMTP 账号
 check('自动执行页不显示收件地址、SMTP 账号', /\.addresses|mail\.user\b|mail\.password|mail\.host\b/.test(scripts.join('\n')), false);
 
