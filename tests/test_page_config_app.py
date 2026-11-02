@@ -240,6 +240,55 @@ class HostRelayTests(_App):
                                                                                   auth=self.auth).json()))
 
 
+class PasswordInstallRelayTests(_App):
+    """用密码安装：只收本机来的请求（经 SSH 隧道打开的页面）。别的地址 403，请求不转交给工具服务，口令次数不消耗。"""
+    CONFIG = HOSTS_CONFIG
+    SECRET = "Target-root-Password-77"
+
+    def body(self):
+        return {"name": "web01", "login": "root", "password": self.SECRET, "passphrase": PASS}
+
+    def test_requests_from_other_addresses_never_reach_the_tool_service(self):
+        relayed = []
+        with patch.object(ops_client, "config_action", lambda *a, **k: relayed.append(a) or {}), \
+                self.assertLogs("kb", level="DEBUG") as logs:
+            for peer in ("testclient", "10.0.0.5", "203.0.113.9", "::ffff:10.0.0.5"):
+                with self.subTest(peer=peer), TestClient(app, client=(peer, 50000)) as client:
+                    response = client.post("/api/tools/config/host-install", auth=self.auth, json=self.body())
+                    self.assertEqual(response.status_code, 403)
+                    self.assertIn("SSH 隧道", response.json()["detail"])
+                    self.assertNotIn(self.SECRET, response.text)
+        self.assertEqual(relayed, [])
+        self.assertEqual(ops._approval["failures"], 0)
+        self.assertNotIn(self.SECRET, "\n".join(logs.output))
+        self.assertNotIn(self.SECRET, self.printed.getvalue())
+
+    def test_local_requests_are_relayed_and_the_page_knows_where_it_was_opened(self):
+        with patch.object(ops, "host_install_support", lambda: {"supported": True, "why": ""}):
+            remote = self.client.get("/api/tools/config", auth=self.auth).json()["password_install"]
+            self.assertEqual((remote["supported"], remote["local"]), (True, False))
+            self.assertIn("SSH 隧道", remote["local_why"])
+            with TestClient(app, client=("127.0.0.1", 50000)) as local, self.assertLogs("kb", level="DEBUG") as logs:
+                view = local.get("/api/tools/config", auth=self.auth).json()["password_install"]
+                self.assertEqual(view, {"supported": True, "why": "", "local": True, "local_why": ""})
+                response = local.post("/api/tools/config/host-install", auth=self.auth, json=self.body())
+        self.assertEqual(response.status_code, 404, response.text)     # 转交到了工具服务：页面上没有这台主机
+        self.assertNotIn(self.SECRET, response.text + "\n".join(logs.output) + self.printed.getvalue())
+
+    def test_an_old_tool_service_has_no_password_install(self):
+        real = ops_client._request
+
+        def old(path, payload=None, timeout=30, headers=None):
+            if path == "/tools/config/host-install":
+                raise ops_client.OpsUnavailable("Not found", status=404, data={"error": "Not found"})
+            return real(path, payload, timeout, headers)
+
+        with patch.object(ops_client, "_request", old):
+            view = self.client.get("/api/tools/config", auth=self.auth).json()
+        self.assertFalse(view["password_install"]["supported"])
+        self.assertIn("工具服务较旧", view["password_install"]["why"])
+
+
 if __name__ == "__main__":
     logging.disable(logging.CRITICAL)
     unittest.main()

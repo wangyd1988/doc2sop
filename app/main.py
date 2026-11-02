@@ -917,7 +917,13 @@ def tools_recheck_script(script: str, request: Request):
 CONFIG_ACTIONS = {"connection-save": "write", "connection-delete": "write", "connection-test": "write",
                   "mcp-save": "write", "mcp-delete": "write", "mcp-test": "write", "export": "export",
                   "host-save": "write", "host-delete": "write", "host-trust": "write",
-                  "host-scan": "probe", "host-check": "probe", "host-bundle": "probe"}
+                  "host-scan": "probe", "host-check": "probe", "host-bundle": "probe", "host-install": "write"}
+# 用主机密码自动安装：请求里是目标主机的登录密码（往往是 root 的），只收本机来的请求（经 SSH 隧道打开的页面）。
+# 前提：应用直接监听、前面没有反向代理，也没设 FORWARDED_ALLOW_IPS，request.client.host 就是 TCP 对端、伪造不了。
+# 以后加反向代理（或改 uvicorn 的转发设置）要重新评估这一条。
+LOCAL_ONLY = {"host-install"}
+LOCAL_ADDRESSES = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+LOCAL_ONLY_REFUSAL = "请经 SSH 隧道打开页面（http://127.0.0.1:…）再用密码安装：密码不能经公网明文传输"
 # 每个来源地址每分钟最多几次：要口令的写操作、试探（扫描 host key、检查连通、生成安装包）、对外开放的开关。工具服务那边另有输错锁定和全局名额
 CONFIG_LIMITS = {"write": (10, 60), "probe": (6, 60), "export": (30, 60)}
 _config_hits: dict = {}
@@ -994,6 +1000,11 @@ def _config_target(action: str, data: dict) -> str:
 def tools_config(request: Request):
     """「主机与数据源」：主配置的条目只读，页面上加的能改；老工具服务回 supported=False，页面照旧只读。"""
     data = ops_client.config_view(_approval_caller(request))
+    if data.get("supported"):
+        address = request.client.host if request.client else ""
+        data["password_install"] = {**ops_client.host_install_support(_approval_caller(request)),
+                                    "local": address in LOCAL_ADDRESSES, "local_why": "" if address in LOCAL_ADDRESSES
+                                    else LOCAL_ONLY_REFUSAL}
     return _with_sops(data) if data.get("supported") else data
 
 
@@ -1002,8 +1013,12 @@ async def tools_config_action(action: str, request: Request):
     kind = CONFIG_ACTIONS.get(action)
     if kind is None:
         raise HTTPException(404, "没有这个操作")
-    data = await _json_body(request)
     address = request.client.host if request.client else "-"
+    if action in LOCAL_ONLY and address not in LOCAL_ADDRESSES:
+        # 请求体不读、不转交：密码不经过这里的任何代码，也不消耗口令次数
+        log.info("tools config %s refused: not from this machine (ip=%s)", action, address)
+        raise HTTPException(403, LOCAL_ONLY_REFUSAL)
+    data = await _json_body(request)
     wait = _config_wait(kind, address)
     if wait:
         log.info("tools config %s refused: too frequent (ip=%s)", action, address)

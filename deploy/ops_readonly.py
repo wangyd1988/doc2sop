@@ -47,9 +47,11 @@ import shutil
 import socket
 import ssl
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
+import tempfile
 import textwrap
 import threading
 import time
@@ -6702,11 +6704,14 @@ def _key_file(host):
     return path
 
 
-def _communicate(argv, data, timeout, limit, env=None):
-    """起一个子进程，喂 stdin、收 stdout/stderr（各最多 limit 字节），超时就杀掉。返回 (退出码, stdout, stderr)。"""
+def _communicate(argv, data, timeout, limit, env=None, started=None):
+    """起一个子进程，喂 stdin、收 stdout/stderr（各最多 limit 字节），超时就杀掉。返回 (退出码, stdout, stderr)。
+    started：进程起来之后、喂数据之前调用一次（拿到 pid，用密码安装时 askpass 要核对对方的父进程）。"""
     kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW} if hasattr(subprocess, "CREATE_NO_WINDOW") else {}
     proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             env=env, shell=False, **kwargs)
+    if started is not None:
+        started(proc)
     buffers = (bytearray(), bytearray())
 
     def pump(stream, buffer):
@@ -9034,6 +9039,475 @@ def page_host_bundle(payload, caller=""):
     return {"bundle": info}
 
 
+# ---- 页面上的动作：用主机密码自动安装 ----------------------------------------------------------------------------
+# 页面加的主机，核对登记了 host key 以后，可以输一次目标主机的登录账号和密码，由这里登录一次，把页面上给人手工执行的
+# 那几步（建受限账号、放 restrict 的公钥、装执行器和白名单）原样执行掉。密码只用这一次：
+#   - 只在内存里：不写文件，不进日志、报错、回复，不在任何进程的命令行和环境变量里；请求结束就丢掉。
+#   - 交给 ssh 的办法是 OpenSSH 自己的 SSH_ASKPASS（SSH_ASKPASS_REQUIRE=force）：私有临时目录（0700）里放一个 Unix socket
+#     和一个固定内容的小脚本，ssh 要密码时启动这个脚本，脚本连 socket 来取。这边核对对方是同一个账号、父进程正是这次起的 ssh，
+#     提示语是要密码的才给，整次最多给一次。目录用完就删。
+#   - host key 只认页面上核对登记过的（StrictHostKeyChecking=yes）：没登记就不启动 ssh；对不上 ssh 在认证之前就退出，密码发不出去。
+#   - 登录账号不是 root 时用 sudo：密码作为 stdin 的第一行，远端的 sh 读进一个不导出的变量，经内建的 printf 管道交给 sudo -S -v，
+#     sudo 的 stdin 只有这一行（密码不对只试一次）；之后 sudo -n 用刚验证过的时间戳执行，最后 sudo -k 清掉时间戳。
+# 要审批口令（扩大能力），OPS_PAGE_CONFIG=off 时不可用；主配置里的主机不能用（照旧在宿主机上 enroll / push）。
+
+INSTALL_TIMEOUT = 45                  # 一次安装的总时限（含建连、登录、执行）；应用等工具服务 60 秒
+INSTALL_CONNECT_TIMEOUT = 10
+INSTALL_PER_HOST = (3, 600)           # 每台主机 10 分钟最多试 3 次
+INSTALL_DENIED = (2, 900)             # 登录连续被拒 2 次：这台主机锁 15 分钟（防爆破，也免得触发目标主机的防爆破封禁）
+INSTALL_OUTPUT = 2048                 # 每一步给页面看的输出最多多少字符
+INSTALL_SECRET_MIN = 6                # 密码短于这个长度时输出里替换不可靠：每一步只给退出码，不给输出
+INSTALL_OPENSSH = (8, 4)              # SSH_ASKPASS_REQUIRE 从 OpenSSH 8.4 起才有
+INSTALL_RUN = 's=$(cat) || exit 90; exec </dev/null; eval "$s"'
+# 远端命令（不含密码）：root 直接执行；sudo 先 -v 验证（密码从 stdin 第一行来），再 -n 执行，最后 -k 清掉时间戳。
+# 退出码：96 读不到密码那一行、95 sudo 验证没过（密码不对或这个账号不能 sudo）、94 sudo 不缓存验证结果、90 读不到脚本
+INSTALL_ROOT_COMMAND = "exec /bin/sh -c '" + INSTALL_RUN + "'"
+INSTALL_SUDO_COMMAND = (
+    "exec /bin/sh -c 'IFS= read -r p || exit 96; printf \"%s\\n\" \"$p\" | sudo -S -p \"\" -v || exit 95; p=; "
+    "sudo -n true || exit 94; sudo -n -- /bin/sh -c \"s=\\$(cat) || exit 90; exec </dev/null; eval \\\"\\$s\\\"\"; "
+    "r=$?; sudo -k; exit $r'")
+_install_running = threading.Lock()   # 同一时刻只跑一个
+_install_guard = threading.Lock()
+_install_times = {}                   # 主机名 → 最近几次的时刻
+_install_denied = {}                  # 主机名 → [连续被拒次数, 最后一次的时刻]
+_install_openssh = {}                 # ssh 的路径 → 版本
+
+
+def _openssh_version(binary):
+    if binary not in _install_openssh:
+        version = None
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            done = subprocess.run([binary, "-V"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, timeout=10)
+            match = re.search(r"OpenSSH_(\d+)\.(\d+)", _decode(done.stderr) + _decode(done.stdout))
+            if match:
+                version = (int(match.group(1)), int(match.group(2)))
+        _install_openssh[binary] = version
+    return _install_openssh[binary]
+
+
+def host_install_support():
+    """GET /tools/config/host-install：这台工具服务能不能用密码自动安装、不能的原因。不碰任何主机。"""
+    if os.name != "posix" or not hasattr(socket, "AF_UNIX") or not hasattr(socket, "SO_PEERCRED"):
+        return {"supported": False, "why": "工具服务不在 Linux 上运行：用不了密码自动安装，照页面上的命令手工执行"}
+    if not page_config_enabled():
+        return {"supported": False, "why": "页面配置在宿主机上关了（OPS_PAGE_CONFIG=off）"}
+    binary = shutil.which("ssh")
+    if not binary:
+        return {"supported": False, "why": "工具服务这台机器没有 ssh 客户端（OpenSSH）"}
+    version = _openssh_version(binary)
+    if version is None or version < INSTALL_OPENSSH:
+        shown = f"{version[0]}.{version[1]}" if version else "认不出版本"
+        return {"supported": False, "why": f"工具服务这台机器的 OpenSSH 太旧（{shown}）：要 8.4 以上才能安全地交密码，照页面上的命令手工执行"}
+    if not os.path.isabs(sys.executable or "") or re.search(r"\s", sys.executable):
+        return {"supported": False, "why": "找不到工具服务自己的 Python 路径（或路径里有空白）"}
+    return {"supported": True, "why": ""}
+
+
+def _parent_pid(pid):
+    try:
+        with open(f"/proc/{int(pid)}/stat", encoding="ascii", errors="replace") as handle:
+            text = handle.read()
+        return int(text[text.rindex(")") + 2:].split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+class _Askpass:
+    """把密码交给这一次的 ssh：私有临时目录里一个 Unix socket 和一个固定内容的 askpass 小脚本，都不含密码。
+    只回答这一次起的 ssh 启动的 askpass（核对 uid 和父进程），只回答要密码的提示，整次最多回答一次。"""
+
+    def __init__(self, password):
+        self.folder = tempfile.mkdtemp(prefix="doc2sop-askpass-")
+        os.chmod(self.folder, 0o700)
+        self.socket_path = os.path.join(self.folder, "s")
+        self.script = os.path.join(self.folder, "askpass")
+        self._secret = password
+        self.asked = 0
+        self.answered = False
+        self.refused = ""                  # 回答不了的原因：问的不是密码、对方不是这次的 ssh
+        self.pid = None
+        self._stop = threading.Event()
+        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            self._server.bind(self.socket_path)
+            os.chmod(self.socket_path, 0o600)
+            self._server.listen(2)
+            self._server.settimeout(0.2)
+            descriptor = os.open(self.script, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(f"#!{sys.executable} -I\n"
+                             "import socket, sys\n"
+                             "try:\n"
+                             "    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+                             f"    s.connect({self.socket_path!r})\n"
+                             "    s.sendall((sys.argv[1] if len(sys.argv) > 1 else '')[:512].encode('utf-8', 'replace') + b'\\n')\n"
+                             "    s.shutdown(socket.SHUT_WR)\n"
+                             "    data = b''\n"
+                             "    while len(data) < 8192:\n"
+                             "        block = s.recv(4096)\n"
+                             "        if not block:\n"
+                             "            break\n"
+                             "        data += block\n"
+                             "except OSError:\n"
+                             "    sys.exit(1)\n"
+                             "if not data:\n"
+                             "    sys.exit(1)\n"
+                             "sys.stdout.buffer.write(data)\n")
+        except BaseException:
+            self.close()
+            raise
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def started(self, proc):
+        self.pid = proc.pid
+
+    def _serve(self):
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._server.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            with conn:
+                with contextlib.suppress(OSError, ValueError):
+                    self._answer(conn)
+
+    def _answer(self, conn):
+        conn.settimeout(5)
+        pid, uid, _ = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
+        if uid != os.geteuid() or self.pid is None or _parent_pid(pid) != self.pid:
+            self.refused = "peer"
+            return
+        prompt = b""
+        while len(prompt) < 1024 and not prompt.endswith(b"\n"):
+            block = conn.recv(1024)
+            if not block:
+                break
+            prompt += block
+        self.asked += 1
+        if self.answered or not re.search(r"password:\s*$", prompt.decode("utf-8", "replace").strip("\n"), re.I):
+            self.refused = self.refused or "prompt"
+            return
+        self.answered = True
+        conn.sendall(self._secret.encode("utf-8") + b"\n")
+
+    def close(self):
+        self._stop.set()
+        with contextlib.suppress(OSError):
+            self._server.close()
+        thread = getattr(self, "_thread", None)
+        if thread is not None:
+            thread.join(2)
+        self._secret = None
+        shutil.rmtree(self.folder, ignore_errors=True)
+
+
+def _password_forms(password):
+    """输出里要盖住的密码写法：原样、URL 编码、shell 转义、JSON 转义、base64。"""
+    forms = {password, urllib.parse.quote(password, safe=""), urllib.parse.quote_plus(password), shlex.quote(password),
+             password.replace("'", "'\\''"), re.sub(r"([^A-Za-z0-9_])", r"\\\1", password),
+             json.dumps(password, ensure_ascii=False)[1:-1], json.dumps(password)[1:-1],
+             base64.b64encode(password.encode("utf-8")).decode("ascii").rstrip("=")}
+    return sorted((form for form in forms if form), key=len, reverse=True)
+
+
+def _install_shown(text, password):
+    """一步的输出给页面看之前：盖住密码的各种写法，再截短。密码太短（替换不可靠）、盖完还认得出来的，整段不给。"""
+    if not text:
+        return "", False
+    if len(password) < INSTALL_SECRET_MIN:
+        return "", True
+    for form in _password_forms(password):
+        text = text.replace(form, "***")
+    if password.lower() in text.lower():
+        return "", True
+    text = text.strip()
+    return (text[:INSTALL_OUTPUT] + "…（截断）" if len(text) > INSTALL_OUTPUT else text), False
+
+
+def _install_ssh_argv(binary, host, login, known_hosts, command):
+    """用密码登录的 ssh：host key 只认页面登记的；只用密码（keyboard-interactive / password），不试密钥、不用 agent；
+    不读 ssh_config，不转发、不复用连接、不走跳板。和 SshTransport 一样严，只是认证方式换成密码。"""
+    options = {
+        "BatchMode": "no", "StrictHostKeyChecking": "yes", "UserKnownHostsFile": str(known_hosts),
+        "GlobalKnownHostsFile": os.devnull, "HostKeyAlias": host["name"], "CheckHostIP": "no",
+        "UpdateHostKeys": "no", "VerifyHostKeyDNS": "no", "PubkeyAuthentication": "no", "IdentitiesOnly": "yes",
+        "IdentityAgent": "none", "IdentityFile": "none", "PreferredAuthentications": "keyboard-interactive,password",
+        "PasswordAuthentication": "yes", "KbdInteractiveAuthentication": "yes", "NumberOfPasswordPrompts": "1",
+        "ConnectTimeout": str(INSTALL_CONNECT_TIMEOUT), "ServerAliveInterval": "10", "ServerAliveCountMax": "2",
+        "ControlMaster": "no", "ControlPath": "none", "ClearAllForwardings": "yes", "ForwardAgent": "no",
+        "ForwardX11": "no", "PermitLocalCommand": "no", "ProxyCommand": "none", "RequestTTY": "no", "LogLevel": "ERROR"}
+    out = [binary, "-F", os.devnull, "-T"]
+    for name, value in options.items():
+        out += ["-o", f"{name}={value}"]
+    return out + ["-p", str(host["port"]), "-l", login, "--", host["address"], command]
+
+
+def _install_script(host, install, nonce, installer):
+    """在目标主机上（root）执行的脚本：第 0 步只读地看账号在不在，然后逐行执行页面上给的建账号命令、安装包里 install.sh 的原文。
+    每一步前后打带随机标记的行，按标记切出每一步的输出和退出码；第一个失败就停。"""
+    user, line = host["user"], install["authorized_keys"]
+    mark = f"@@doc2sop-{nonce}"
+    out = ["exec 2>&1", "skip=",
+           f"if id -u {user} >/dev/null 2>&1; then",
+           f"  f=~{user}/.ssh/authorized_keys",
+           f"  if [ -f \"$f\" ] && [ ! -L \"$f\" ] && [ \"$(stat -c %u \"$f\" 2>/dev/null)\" = 0 ] && [ \"$(cat \"$f\")\" = '{line}' ]; then",
+           f"    echo '{mark} account ours'; skip=y",
+           "  else",
+           f"    echo '{mark} account foreign'; exit 0",
+           "  fi",
+           "else",
+           f"  echo '{mark} account absent'",
+           "fi",
+           "if [ \"$skip\" != y ]; then"]
+    for index, command in enumerate(install["account"], 1):
+        out += [f"echo '{mark} begin {index}'", command, f"r=$?; echo \"{mark} end {index} $r\"; [ \"$r\" = 0 ] || exit 0"]
+    out.append("fi")
+    if installer is not None:
+        index = len(install["account"]) + 1
+        quoted = installer.replace("'", "'\\''")
+        out += [f"echo '{mark} begin {index}'", f"i='{quoted}'", "( eval \"$i\" )",
+                f"r=$?; echo \"{mark} end {index} $r\"; [ \"$r\" = 0 ] || exit 0"]
+    out.append(f"echo '{mark} done'")
+    return "\n".join(out) + "\n"
+
+
+def _install_rate(name, consume):
+    """限频和锁定：每台主机 10 分钟最多 3 次；登录连续被拒 2 次锁 15 分钟。consume=False 只查不记。"""
+    now = time.monotonic()
+    limit, window = INSTALL_PER_HOST
+    denied_max, lock = INSTALL_DENIED
+    with _install_guard:
+        count, last = _install_denied.get(name, (0, 0.0))
+        if count >= denied_max and now - last < lock:
+            raise RateLimited(f"{name} 用密码登录连续被拒 {count} 次：{int((lock - (now - last)) // 60) + 1} 分钟后再试。"
+                              f"先确认账号和密码，以及目标主机允许用密码登录（防止触发目标主机的防爆破封禁）")
+        times = [at for at in _install_times.get(name, []) if now - at < window]
+        if len(times) >= limit:
+            raise RateLimited(f"{name} 10 分钟内已经试了 {limit} 次：{int((window - (now - times[0])) // 60) + 1} 分钟后再试")
+        if consume:
+            times.append(now)
+        _install_times[name] = times
+
+
+def _install_denial(name, denied):
+    with _install_guard:
+        if denied:
+            count, _ = _install_denied.get(name, (0, 0.0))
+            _install_denied[name] = (count + 1, time.monotonic())
+        else:
+            _install_denied.pop(name, None)
+
+
+def _install_login_failure(code, err, asked):
+    """ssh、sudo 没走到执行脚本那一步：(失败在哪一步, 原因类别, 给人看的话)。只按固定的词归类，不转述原文。"""
+    text = err or ""
+    if code == 255:
+        if "Host key verification failed" in text or "IDENTIFICATION HAS CHANGED" in text or "host key" in text.lower():
+            return "hostkey", "hostkey", "目标主机报上来的 host key 和登记的不一样：没有发送密码。先查清原因（重装？有人冒充？）"
+        if "Permission denied" in text or "Too many authentication failures" in text:
+            if asked.answered:
+                return "login", "denied", "登录被拒：账号或密码不对，或者目标主机不允许这个账号用密码登录（PasswordAuthentication、PermitRootLogin）"
+            if asked.refused == "prompt":
+                return "login", "unsupported", "目标主机要的不只是密码（动态口令、验证码之类）：密码没有发出去。不支持，照页面上的命令手工执行"
+            return "login", "unsupported", "目标主机不接受密码登录（只允许密钥之类）：密码没有发出去。照页面上的命令手工执行"
+        if "timed out" in text.lower() or "Connection refused" in text or "No route" in text or "resolve" in text.lower():
+            return "connect", "unreachable", "连不上目标主机：地址、端口不通，或者被防火墙挡住了"
+        return "connect", "ssh", "ssh 失败（没法归类，不转述原文）"
+    if code == 96:
+        return "sudo", "sudo", "sudo 那一步没读到密码（远端的 shell 不对劲）"
+    if code == 95:
+        return "sudo", "sudo-denied", "sudo 验证没过：密码不对，或者这个账号不能 sudo（rootpw / targetpw 要的是 root 的密码，不支持）"
+    if code == 94:
+        return "sudo", "sudo-nocache", "sudo 不缓存验证结果（timestamp_timeout=0、requiretty 之类）：不支持，照页面上的命令手工执行"
+    return "", "", ""
+
+
+def page_host_install(payload, caller=""):
+    """用目标主机的账号和密码自动安装（要口令）：登录一次，执行页面上给人手工执行的那几步，然后检查连通。密码用完即丢。"""
+    _page_writable()
+    name = str(payload.get("name") or "").strip()
+    login = str(payload.get("login") or "").strip()
+    password = payload.get("password")
+    if not HOST_USER.match(login):
+        raise ConfigError("登录账号不合法：小写字母或下划线开头，只有小写字母、数字、_ 和 -，最多 32 个字符")
+    if not isinstance(password, str) or not password:
+        raise ConfigError("没有输入登录密码")
+    if len(password) > PAGE_PASSWORD_MAX or any(not ch.isprintable() for ch in password):
+        raise ConfigError(f"密码最多 {PAGE_PASSWORD_MAX} 个字符，不能有换行之类的控制字符")
+    support = host_install_support()
+    if not support["supported"]:
+        raise ConfigError(support["why"])
+    all_tools()
+    host = _page_host(name)
+    if host.get("os") != "linux":
+        raise ConfigError(f"{name} 不是 Linux 主机：密码自动安装只支持 Linux，照页面上的命令手工执行")
+    try:
+        known_hosts = _check_known_hosts(host)
+    except HostError as exc:
+        raise Conflict(f"{exc}：没登记 host key 之前不会把密码发给它") from None
+    install = _page_install(host)
+    if not install["authorized_keys"]:
+        raise ConfigError(f"读不出这台主机的公钥（{install['key_problem']}）：装不了")
+    if "'" in install["authorized_keys"]:
+        raise ConfigError("authorized_keys 那一行里有单引号：拼不出安全的命令，照页面上的命令手工执行")
+    sudo = login != "root"
+    _install_rate(name, consume=False)
+    if not _install_running.acquire(blocking=False):
+        raise RateLimited("另一台主机正在用密码安装：等它做完再试")
+    try:
+        _install_rate(name, consume=False)
+        check_passphrase(payload.get("passphrase"), "用密码安装", name, caller)
+        _install_rate(name, consume=True)
+        installer, bundle = None, None
+        if host["mode"] == "guarded":
+            with _page_lock:
+                bundle = _page_bundle_build(host)
+                _page_bundle_times[name] = time.monotonic()
+            with tarfile.open(bundle["file"], mode="r:gz") as archive:
+                installer = archive.extractfile(f"{name}/install.sh").read().decode("utf-8")
+        result = _install_run(host, login, password, sudo, known_hosts, install, installer, bundle)
+    finally:
+        _install_running.release()
+        password = None
+        payload.pop("password", None)
+    check = None
+    if result["ok"]:
+        check = _page_probe(f"检查主机 {name}", caller, lambda done: (_page_check_checks(host, done), ""))
+        _monitor.wake()
+    who = f"{login}@{host['address']}:{host['port']}（{'sudo' if sudo else 'root'}）"
+    if result["ok"]:
+        done = "成功" + (f"（安装包 sha256 {bundle['sha256'][:16]}…，白名单 {bundle['version'][:19]}…）" if bundle else "（直连模式，只建账号、放公钥）")
+        verdict = ((check or {}).get("checks") or [{}])[0].get("text") if (check or {}).get("state") == "done" else "排队中"
+        done += f"；检查连通：{verdict}"
+    else:
+        done = f"失败于「{result['failed_at']}」（{result['category']}）"
+    _page_change("用密码安装", name, f"{who}，{done}；密码已丢弃", caller)
+    return {"install": {key: value for key, value in result.items() if key != "denied"}, "check": check,
+            "item": _page_host_view(name)}
+
+
+def _install_run(host, login, password, sudo, known_hosts, install, installer, bundle):
+    """真正连主机执行。返回逐步的结果（步骤、哪一步失败、原因类别、密码发没发出去）。"""
+    name = host["name"]
+    nonce = secrets.token_hex(8)
+    mark = f"@@doc2sop-{nonce}"
+    pins = "、".join(key_fingerprint(blob) for _, blob in _pinned_keys(name, known_hosts))
+    steps = [{"key": "connect", "title": f"连接 {host['address']}:{host['port']}，核对 host key（登记的 {pins}）"},
+             {"key": "login", "title": f"用密码登录 {login}"}]
+    if sudo:
+        steps.append({"key": "sudo", "title": "sudo 验证（同一个密码），之后以 root 执行"})
+    steps.append({"key": "account?", "title": f"看账号 {host['user']} 在不在（只读）"})
+    for index, command in enumerate(install["account"], 1):
+        steps.append({"key": str(index), "title": "建账号、放公钥", "command": command})
+    if installer is not None:
+        steps.append({"key": str(len(install["account"]) + 1), "title": "装执行器和白名单",
+                      "command": f"sh {name}/install.sh（安装包 {install['bundle_name']} 里的，sha256 {bundle['sha256']}）"})
+    for step in steps:
+        step["status"] = "pending"
+    result = {"ok": False, "login": f"{login}@{host['address']}:{host['port']}", "sudo": sudo, "steps": steps,
+              "password_sent": False, "failed_at": "", "category": "", "error": "", "denied": False}
+
+    def fail(key, category, text):
+        for step in steps:
+            if step["key"] == key:
+                step.update(status="fail", text=text)
+                result["failed_at"] = step["title"]
+                break
+            if step["status"] == "pending":
+                step["status"] = "ok"
+        result.update(category=category, error=text)
+        return result
+
+    script = _install_script(host, install, nonce, installer).encode("utf-8")
+    data = ((password + "\n").encode("utf-8") if sudo else b"") + script
+    asked = _Askpass(password)
+    try:
+        argv = _install_ssh_argv(shutil.which("ssh"), host, login, known_hosts,
+                                 INSTALL_SUDO_COMMAND if sudo else INSTALL_ROOT_COMMAND)
+        env = {key: os.environ[key] for key in SSH_PASS_ENV if key in os.environ}
+        env.update(SSH_ASKPASS=asked.script, SSH_ASKPASS_REQUIRE="force")
+        try:
+            code, out, err = _communicate(argv, data, INSTALL_TIMEOUT, SSH_OUTPUT_MAX, env, started=asked.started)
+        except HostError:
+            result["password_sent"] = asked.answered
+            return fail("connect" if not asked.answered else ("sudo" if sudo else "account?"), "timeout",
+                        f"超时（{INSTALL_TIMEOUT} 秒）：连接、登录或执行太慢，已中断。目标主机上可能做了一部分，看清楚再重试")
+        except OSError as exc:
+            return fail("connect", "ssh", f"起 ssh 失败（{exc.__class__.__name__}）")
+    finally:
+        result["password_sent"] = asked.answered
+        asked.close()
+        data = None
+    stderr = _decode(err)
+    key, category, text = _install_login_failure(code, stderr, asked)
+    if key:
+        result["denied"] = category == "denied"
+        _install_denial(name, result["denied"])
+        if key == "sudo":
+            shown, _ = _install_shown(stderr, password)
+            if shown and category == "sudo-denied":
+                text += f"。sudo 说：{shown[:300]}"
+        if not result["password_sent"] and key in ("connect", "hostkey"):
+            text += "（密码没有发出去）"
+        return fail("connect" if key == "hostkey" else key, category, text)
+    _install_denial(name, False)
+    for step in steps:
+        if step["key"] in ("connect", "login", "sudo"):
+            step["status"] = "ok"
+    sections, current, account, finished = {}, None, None, False
+    for raw in _decode(out).splitlines():
+        if raw.startswith(mark + " "):
+            words = raw[len(mark) + 1:].split()
+            if words[:1] == ["account"] and len(words) == 2:
+                account = words[1]
+            elif words[:1] == ["begin"] and len(words) == 2:
+                current = words[1]
+                sections[current] = {"lines": [], "code": None}
+            elif words[:1] == ["end"] and len(words) == 3 and current == words[1]:
+                with contextlib.suppress(ValueError):
+                    sections[current]["code"] = int(words[2])
+                current = None
+            elif words == ["done"]:
+                finished = True
+            continue
+        if current is not None:
+            sections[current]["lines"].append(raw)
+    check_step = next(step for step in steps if step["key"] == "account?")
+    if account is None:
+        shown, hidden = _install_shown(_decode(out) + stderr, password)
+        check_step.update(output=shown, hidden=hidden)
+        return fail("account?", "remote", f"远端没有按预期执行（退出码 {code}）：登录账号的 shell 不能用，或者目标主机缺 /bin/sh")
+    if account == "foreign":
+        return fail("account?", "account-exists",
+                    f"账号 {host['user']} 已经存在，而且不是这里建的（authorized_keys 和页面上那一行不一致）：什么都没改。"
+                    f"换一个执行账号名，或者确认它是上次留下的、在目标主机上撤销后重试")
+    check_step.update(status="ok", text="不在，从头建" if account == "absent" else "已经是这台主机要的样子（公钥一致），跳过建账号几步")
+    for step in steps:
+        if not step["key"].isdigit():
+            continue
+        if account == "ours" and int(step["key"]) <= len(install["account"]):
+            step["status"] = "skip"
+            continue
+        section = sections.get(step["key"])
+        if section is None:
+            break
+        shown, hidden = _install_shown("\n".join(section["lines"]), password)
+        step.update(output=shown, hidden=hidden, code=section["code"])
+        if section["code"] != 0:
+            return fail(step["key"], "step", f"这一步失败了（退出码 {section['code']}）：前面做了的留在目标主机上，"
+                                              f"修好原因直接重试（会认出已经建好的账号），或者用撤销命令清掉再来")
+        step["status"] = "ok"
+    if not finished:
+        return fail(next((step["key"] for step in steps if step["status"] == "pending"), "account?"), "remote",
+                    f"远端中途结束了（退出码 {code}）")
+    result["ok"] = True
+    return result
+
+
 # ---- 页面要看的：GET /tools/config、安装包下载、命令行 host-info ----------------------------------------------------
 
 def _page_host_item(name, host, page):
@@ -9250,6 +9724,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/tools/config":
             # 页面「主机与数据源」：主配置的条目只读，页面上加的可以改；凭据只有状态，永远没有值
             return self._send(200, config_view())
+        if self.path == "/tools/config/host-install":
+            # 能不能用密码自动安装（老工具服务回 404）：不碰任何主机
+            return self._send(200, host_install_support())
         if self.path.startswith(self.BUNDLE_PREFIX):
             try:
                 return self._send(200, page_bundle_download(self.path[len(self.BUNDLE_PREFIX):]))
@@ -9261,7 +9738,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # 页面审批的写操作：批准、重新确认脚本、提交并立即批准要审批口令（工具服务核对），拒绝不要；
     # 设置口令：还没设时直接设，已经设了要旧口令；「检查一下」（草稿，不入队）和「重新检查」只试探、不改任何东西，限频
-    # 页面上配置主机与数据源（/tools/config/…）：扩大能力的要口令，关闭对外开放、扫描 host key、检查连通、生成安装包不要
+    # 页面上配置主机与数据源（/tools/config/…）：扩大能力的要口令，关闭对外开放、扫描 host key、检查连通、生成安装包不要；
+    # 用主机密码自动安装（host-install）要口令，应用只转交本机（经 SSH 隧道）来的请求
     # 只核对口令（/tools/approval/verify）：应用自己存的设置（自动执行的邮件、收件组、告警令牌），扩大能力的先来这里核对
     PAGE_ACTIONS = {"/tools/approve": page_approve, "/tools/reject": page_reject,
                     "/tools/trust": page_trust, "/tools/propose-approve": page_propose_approve,
@@ -9274,7 +9752,8 @@ class Handler(BaseHTTPRequestHandler):
                     "/tools/config/mcp-test": page_mcp_test, "/tools/config/export": page_export,
                     "/tools/config/host-save": page_host_save, "/tools/config/host-delete": page_host_delete,
                     "/tools/config/host-trust": page_host_trust, "/tools/config/host-scan": page_host_scan,
-                    "/tools/config/host-check": page_host_check, "/tools/config/host-bundle": page_host_bundle}
+                    "/tools/config/host-check": page_host_check, "/tools/config/host-bundle": page_host_bundle,
+                    "/tools/config/host-install": page_host_install}
 
     def do_POST(self):
         if self.path not in ("/exec", "/tools/override", "/tools/propose") and self.path not in self.PAGE_ACTIONS:

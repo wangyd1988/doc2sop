@@ -260,11 +260,13 @@ check('页面上有「检查一下」和重新检查、撤回的入口', ['/api/
 
 // 工具页「主机与数据源」：页面上加的条目能改，主配置的只读；工具服务给的每一段文字都转义；凭据只有状态，永远不显示值
 const icCode = [/^const esc = .*$/m, /^const unlockIn = .*$/m, /^const TL_CONN_TYPE = .*$/m, /^const IC_SRV = .*$/m,
-  /^const IC_STEP = .*$/m, /^const IC_SECRET = .*$/m, /^const IC_MODE = .*$/m, /^const IC_MODE_SHORT = .*$/m].map(lineOf)
+  /^const IC_STEP = .*$/m, /^const IC_SECRET = .*$/m, /^const IC_MODE = .*$/m, /^const IC_MODE_SHORT = .*$/m,
+  /^const IC_PW_STEP = .*$/m].map(lineOf)
   .concat(['setAtText', 'hostReason', 'icSecretPill', 'icBlocked', 'icUsers', 'icHostRow', 'icConnRow', 'icMcpRow', 'icExportRow',
-    'icChangeRow', 'icImpactHtml', 'icUsersBox', 'icCopy', 'icInstallHtml', 'icToolStates', 'icScanKeys'].map(extract)).join('\n');
+    'icChangeRow', 'icImpactHtml', 'icUsersBox', 'icCopy', 'icInstallHtml', 'icToolStates', 'icScanKeys',
+    'icPwInstallBlocked', 'icPwResultHtml'].map(extract)).join('\n');
 const IC = new Function(`${icCode}\nreturn {icSecretPill, icBlocked, icHostRow, icConnRow, icMcpRow, icExportRow, icChangeRow,
-  icImpactHtml, icUsersBox, icInstallHtml, icToolStates, icScanKeys};`)();
+  icImpactHtml, icUsersBox, icInstallHtml, icToolStates, icScanKeys, icPwInstallBlocked, icPwResultHtml};`)();
 const SECRET = 'page-db-Pass#2026-never-shown';
 const cells = row => (row.match(/<td[\s>]/g) || []).length;
 const labelled = row => (row.match(/<td data-l="/g) || []).length;
@@ -333,9 +335,27 @@ check('旁路文件读不了', IC.icBlocked({...live, readable: false}, ap).incl
 check('没设口令', IC.icBlocked(live, {configured: false}).includes('还没设审批口令'), true);
 check('锁定中', IC.icBlocked(live, {...ap, locked: true, unlock_minutes: 7}).includes('7 分钟后解锁'), true);
 check('页面上的动作都走 /api/tools/config', ['connection-save', 'connection-test', 'mcp-save', 'mcp-test', 'export', 'host-save',
-  'host-trust', 'host-delete', 'host-scan', 'host-check', 'host-bundle'].every(a => html.includes(`'/api/tools/config/${a}'`))
+  'host-trust', 'host-delete', 'host-scan', 'host-check', 'host-bundle', 'host-install'].every(a => html.includes(`'/api/tools/config/${a}'`))
   && html.includes("`/api/tools/config/${kind === 'conn' ? 'connection' : 'mcp'}-delete`"), true);
 check('口令、凭据不进 localStorage', /localStorage\.setItem\([^)]*(secret|token|password)/i.test(html), false);
+// 用密码自动安装：不是本机打开的页面、没核对 host key、工具服务不支持时按钮灰掉并写原因；结果里服务端来的文字一律转义
+const pwHost = {os: 'linux', install: {authorized_keys: 'restrict ssh-ed25519 AAAA'}};
+const pwLive = {password_install: {supported: true, local: true}};
+check('用密码安装：本机打开、已核对时可用', IC.icPwInstallBlocked(pwLive, pwHost, '', true), '');
+check('用密码安装：不是本机打开的页面不能用', IC.icPwInstallBlocked({password_install: {supported: true, local: false, local_why: '请经 SSH 隧道打开页面'}}, pwHost, '', true),
+  '请经 SSH 隧道打开页面');
+check('用密码安装：老工具服务', IC.icPwInstallBlocked({}, pwHost, '', true), '工具服务较旧，没有这个功能');
+check('用密码安装：没核对 host key 不能用', IC.icPwInstallBlocked(pwLive, pwHost, '', false).includes('host key'), true);
+check('用密码安装：只支持 Linux', IC.icPwInstallBlocked(pwLive, {...pwHost, os: 'darwin'}, '', true).includes('Linux'), true);
+check('用密码安装：没设口令时跟着灰掉', IC.icPwInstallBlocked(pwLive, pwHost, '还没设审批口令', true), '还没设审批口令');
+const pwr = IC.icPwResultHtml({ok: false, login: evil, error: evil, password_sent: false, steps: [
+  {status: 'ok', title: evil, command: evil, output: evil, code: 0}, {status: 'fail', title: 'x', text: evil, hidden: true}]});
+check('用密码安装：结果逐步转义', pwr.includes('<img'), false);
+check('用密码安装：密码没发出去要说', pwr.includes('密码没有发出去'), true);
+check('用密码安装：输出可能带密码时不显示', pwr.includes('不显示，只给退出码'), true);
+check('用密码安装：密码框不让浏览器记住，提交时立即取出清空',
+  [html.includes('<input type="password" data-f="password" autocomplete="new-password"'),
+   /const password = icTake\(wrap, '\[data-f="password"\]'\);[\s\S]{0,400}postJson\('\/api\/tools\/config\/host-install'/.test(html)], [true, true]);
 check('不拿「口令一泄露」当理由：审批口令本来就等同 root，页面上照实写', [html.includes('口令一泄露'),
   html.includes('审批口令等同工具服务那台机器的 root')], [false, true]);
 check('MySQL 的 disable 写「不要求加密」（服务器支持时 PyMySQL 会顺带加密），TLS 下面说清 require 不防冒充',

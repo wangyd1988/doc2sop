@@ -991,6 +991,11 @@ table.pt .rx { display: block; font-size: 11px; color: var(--muted); font-family
 .dlg.ic .step h4 .pill { margin-left: auto; }
 .dlg.ic .step .acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .dlg.ic .keys label { display: flex; gap: 8px; align-items: center; font: 12px ui-monospace, Consolas, monospace; margin: 3px 0; }
+.dlg.ic ol.pwsteps { margin: 0; padding-left: 20px; font-size: 12.5px; line-height: 1.6; display: flex; flex-direction: column; gap: 6px;
+  overflow-wrap: anywhere; min-width: 0; }
+.dlg.ic ol.pwsteps pre { font: 11.5px/1.5 ui-monospace, Consolas, monospace; background: var(--panel-2); border-radius: 6px; padding: 4px 8px;
+  margin: 3px 0 0; white-space: pre-wrap; word-break: break-all; max-height: 140px; overflow-y: auto; }
+.dlg.ic ol.pwsteps pre.out { border-left: 3px solid var(--border); }
 .dlg.ic a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .dlg.ic .row { flex-wrap: wrap; }
 .dlg.ic ul.ax { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.7; }
@@ -4351,7 +4356,7 @@ function paintInfra() {
     <p class="lead">工具从哪里取数据、连到哪里、带什么凭据。谁能改什么分三层：</p>
     <ul class="tiers">
       <li><b>网页密码</b>：看，停用工具，关闭对外开放，检查主机连通、重新扫描 host key、生成和下载安装包。</li>
-      <li><b>审批口令</b>（由工具服务核对）：在页面上加、改、删连接、远程 MCP server、远程主机，测试连接，核对 host key，打开对外开放；还有批准工具申请。</li>
+      <li><b>审批口令</b>（由工具服务核对）：在页面上加、改、删连接、远程 MCP server、远程主机，测试连接，核对 host key，用密码自动安装，打开对外开放；还有批准工具申请。</li>
       <li><b>只能在服务器上</b>：主配置里已有的条目（标「在服务器上配置」）、本机 MCP server、脚本、sqlite 和要填服务器文件路径的字段（CA、令牌文件）、引用服务器上的 <code>\${名字}</code> 凭据、把外部改标成内部。</li>
     </ul>
     ${live ? '' : `<div class="banner">${esc(c.error || '工具服务较旧，页面上不能配置')}。下面只能看。</div>`}
@@ -4362,7 +4367,7 @@ function paintInfra() {
       ${hostMode.configured || hosts.length ? table(['名称', '账号与地址', '方式', '状态', '分组', ''], hosts.map(h => icHostRow(h, hostMode.default, live)).join(''), '还没有主机。')
         : '<div class="note">没有配置主机清单：命令型工具都在工具服务所在的这台机器上跑。</div>'}
       <div class="howto"><b>在页面上加一台：</b>填表（要口令；私钥在工具服务这边生成，不经过页面）→ 去目标主机的控制台上核对 host key 指纹、确认（要口令，不会自动信任）→
-        照着在目标主机上以 root 建账号、装执行器（工具服务不持有目标主机的 root 凭据）→ 检查连通。主配置里的主机照旧在宿主机上用
+        照着在目标主机上以 root 建账号、装执行器，或者经 SSH 隧道打开页面后「用密码自动安装」（要口令；密码只用一次、不保存，工具服务不持有目标主机的 root 凭据）→ 检查连通。主配置里的主机照旧在宿主机上用
         <code>ops_readonly.py enroll / push / status</code>。</div></div>
     <div class="card"><h3>连接 <small>接口和数据库的地址、凭据</small>${add('conn', '添加连接')}</h3>
       ${table(['名称', '地址', '凭据', '谁在用', ''], conns.map(x => icConnRow(x, blocked)).join(''), '还没有连接。')}
@@ -4742,11 +4747,16 @@ function icHostDialog(name, notice) {
       <button type="button" class="btn${trusted ? '' : ' warn'}" data-hact="trust"${blocked || !keys.length ? ` disabled title="${esc(blocked || '先扫描')}"` : ''}>${
         trusted ? 'host key 变了，替换…' : '核对后登记…'}</button></div></div>`;
   const bundleOff = c.enabled ? '' : ' disabled title="页面配置在宿主机上关了（OPS_PAGE_CONFIG=off）"';
+  const pwOff = icPwInstallBlocked(c, h, blocked, trusted);
+  const pwButton = `<button type="button" class="btn${pwOff ? '' : ' warn'}" data-hact="pwinstall"${pwOff ? ` disabled title="${esc(pwOff)}"` : ''}>用密码自动安装…</button>`;
   const step2 = `<div class="step${trusted && ['install', 'update'].includes(h.step) ? ' on' : ''}"><h4>② 在目标主机上安装${
       trusted ? `<span class="pill ${step[0]}">${step[1]}</span>` : ''}</h4>
     ${icInstallHtml(h, c.cli)}
     ${h.mode === 'guarded' ? `<div class="acts"><button type="button" class="btn" data-hact="bundle"${bundleOff}>${h.bundle ? '重新生成安装包' : '生成安装包'}</button>${h.bundle
-      ? `<a class="btn" href="/api/tools/config/hosts/${encodeURIComponent(name)}/bundle" download>下载安装包</a>` : ''}</div>` : ''}</div>`;
+      ? `<a class="btn" href="/api/tools/config/hosts/${encodeURIComponent(name)}/bundle" download>下载安装包</a>` : ''}</div>` : ''}
+    <div class="acts">${pwButton}</div>
+    <div class="note">${pwOff ? '用密码自动安装不可用：' + esc(pwOff) + '。照上面的命令手工执行。'
+      : '或者输一次目标主机的账号和密码，由工具服务登录一次、把上面这几步原样执行掉（密码只用这一次，不保存）。'}</div></div>`;
   const check = icChecks[name];
   const step3 = `<div class="step${trusted && h.step === 'check' ? ' on' : ''}"><h4>③ 检查连通</h4>${check ? icProbeHtml(check, '检查连通') + icToolStates(check, name)
       : '<div class="note">装好以后检查一次：连不连得上、执行器版本、白名单版本、每个工具能不能跑（等于命令行的 status）。</div>'}
@@ -4764,6 +4774,7 @@ function icHostDialog(name, notice) {
     if (!b || b.disabled) return;
     const act = b.dataset.hact;
     if (act === 'trust') return icTrustDialog(name);
+    if (act === 'pwinstall') return icPwInstallDialog(name);
     if (act === 'edit') return icHostFormDialog(name);
     if (act === 'delete') return icHostDeleteDialog(name);
     icRun(wrap, b, async () => {
@@ -4776,6 +4787,67 @@ function icHostDialog(name, notice) {
       await icReload();
       icHostDialog(name);
     });
+  });
+}
+/* ---- 用目标主机的账号和密码自动安装 ----
+   只在经 SSH 隧道打开的页面上能用（应用对非本机来的请求直接 403，这里只是先灰掉按钮说清原因）。
+   密码输入框 autocomplete=new-password、没有 name，提交时立刻取出并清空，成功失败都不留；不进 localStorage、不进地址栏。 */
+function icPwInstallBlocked(c, h, blocked, trusted) {
+  const pw = c.password_install || {};
+  if (blocked) return blocked;
+  if (!pw.supported) return pw.why || '工具服务较旧，没有这个功能';
+  if (!pw.local) return pw.local_why || '请经 SSH 隧道打开页面再用';
+  if (!trusted) return '先核对 host key：没登记之前不会把密码发给它';
+  if (h.os !== 'linux') return '只支持 Linux 目标主机';
+  if (!(h.install || {}).authorized_keys) return '读不出这台主机的公钥';
+  return '';
+}
+const IC_PW_STEP = {ok: ['ok', '✓'], fail: ['bad', '✗'], skip: ['off', '跳过'], pending: ['', '没做']};
+function icPwResultHtml(r) {
+  const steps = (r.steps || []).map(s => {
+    const [cls, mark] = IC_PW_STEP[s.status] || IC_PW_STEP.pending;
+    return `<li><span class="pill ${cls}">${mark}</span> <b>${esc(s.title)}</b>${s.code != null ? ` <span class="note">退出码 ${esc(s.code)}</span>` : ''}
+      ${s.command ? `<pre>${esc(s.command)}</pre>` : ''}${s.text ? `<div class="${s.status === 'fail' ? 'err' : 'note'}">${esc(s.text)}</div>` : ''}
+      ${s.output ? `<pre class="out">${esc(s.output)}</pre>` : s.hidden ? '<div class="note">输出里可能带着密码，不显示，只给退出码。</div>' : ''}</li>`;
+  }).join('');
+  return `<div class="icbox${r.ok ? '' : ' warn'}"><h4>${r.ok ? '装好了' : '没装成'}：${esc(r.login || '')}${r.sudo ? '（sudo）' : ''}</h4>
+    <div>${r.password_sent ? '密码用过一次，已经丢弃。' : '密码没有发出去。'}${r.ok ? '' : ' ' + esc(r.error || '')}</div></div>
+    <ol class="pwsteps">${steps}</ol>`;
+}
+function icPwInstallDialog(name) {
+  const h = (infra.c.hosts || []).find(i => i.name === name && i.origin === 'page');
+  if (!h) return toast('页面上没有这台主机了，刷新看看', 'err');
+  const i = h.install || {};
+  const todo = [...(i.account || []), ...(h.mode === 'guarded' ? [`sh ${h.name}/install.sh   # 安装包里的，执行前重新生成`] : [])];
+  const body = `<div class="sum">工具服务用这个账号和密码登录 <code>${esc(`${h.address}:${h.port}`)}</code> 一次（host key 只认登记的 ${(h.trusted || []).map(k => `<code>${esc(k.fingerprint)}</code>`).join('、')}），
+      以 root 执行下面这几步（和手工的命令一字不差，不做别的），然后检查连通。密码只在内存里用这一次：不保存、不进日志。</div>
+    ${icCopy('会执行的', todo.join('\n'))}
+    <div class="grid2">
+      <label class="fld">登录账号<input data-f="login" value="root" autocomplete="off" spellcheck="false" autocapitalize="off">
+        <span class="hint">root，或者能 sudo 的普通账号（sudo 用同一个密码）</span></label>
+      <label class="fld">登录密码<input type="password" data-f="password" autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
+    </div>
+    <details class="note"><summary>不支持的情况（会在对应那一步停下、说明原因，目标主机上不改东西；照上一页的命令手工执行）</summary><ul class="ax">
+      <li>目标主机不许密码登录、不许 root 用密码登录，或者要动态口令、验证码</li>
+      <li>sudo 要 tty（requiretty）、不缓存验证（timestamp_timeout=0）、要的是 root 的密码（rootpw / targetpw），或者这个账号不能 sudo</li>
+      <li>执行账号（${esc(h.user)}）已经存在、又不是这里建的</li>
+      <li>登录连续被拒 2 次，这台主机 15 分钟内不能再试（免得触发目标主机的防爆破封禁）</li></ul></details>
+    ${icPassHtml()}`;
+  const wrap = icDialog(`用密码安装 ${esc(name)}`, body,
+    '<button type="button" class="btn" data-dlgcancel>取消</button><button type="button" class="btn warn" data-act="pwinstall">登录并安装</button>');
+  wrap.querySelector('[data-act="pwinstall"]').onclick = e => icRun(wrap, e.currentTarget, async () => {
+    const password = icTake(wrap, '[data-f="password"]');
+    const passphrase = icTake(wrap, '[data-icpass]');
+    const login = icField(wrap, 'login').value.trim();
+    if (!login) throw new Error('要填登录账号');
+    if (!password) throw new Error('要输登录密码');
+    if (!passphrase) throw new Error('要输审批口令');
+    const r = await postJson('/api/tools/config/host-install', {name, login, password, passphrase});
+    if (r.check) icChecks[name] = r.check;
+    await icReload();
+    icDialog(`用密码安装 ${esc(name)}`, icPwResultHtml(r.install || {}) + (r.check ? `<div class="icbox"><h4>③ 检查连通</h4>${icProbeHtml(r.check, '检查连通')}${icToolStates(r.check, name)}</div>` : ''),
+      `<button type="button" class="btn" data-pwback>回到主机</button><button type="button" class="btn pri" data-dlgcancel>关闭</button>`)
+      .querySelector('[data-pwback]').onclick = () => icHostDialog(name);
   });
 }
 // 核对 host key 后登记；已经登记过的（目标主机重装了、换了 host key）要勾「替换」

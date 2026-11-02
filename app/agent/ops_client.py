@@ -172,9 +172,9 @@ def review(caller: str = "", wait: bool = True) -> dict:
             "approval": data.get("approval") or _no_approval(OLD_SERVICE)}
 
 
-def _action(path, payload, caller, old=OLD_SERVICE):
+def _action(path, payload, caller, old=OLD_SERVICE, timeout=60):
     try:
-        return _request(path, payload, timeout=60, headers=_caller_headers(caller))
+        return _request(path, payload, timeout=timeout, headers=_caller_headers(caller))
     except OpsUnavailable as exc:
         if exc.status == 404 and str(exc) in ("Not found", "接口返回 404"):
             raise OpsUnavailable(old, status=501) from None
@@ -241,8 +241,24 @@ def config_view(caller="") -> dict:
 
 
 def config_action(action: str, payload: dict, caller="") -> dict:
-    """一个页面配置动作（connection-save、host-trust……），由工具服务做；要口令的由它核对。"""
-    return _action(f"/tools/config/{action}", payload, caller, old=OLD_SERVICE_CONFIG)
+    """一个页面配置动作（connection-save、host-trust……），由工具服务做；要口令的由它核对。
+    用密码安装（host-install）要登录目标主机、执行、再检查连通：工具服务那边最多约 70 秒，这里等 90 秒。"""
+    return _action(f"/tools/config/{action}", payload, caller, old=OLD_SERVICE_CONFIG,
+                   timeout=90 if action == "host-install" else 60)
+
+
+OLD_SERVICE_INSTALL = "工具服务较旧，没有密码自动安装：升级宿主机上的 ops_readonly.py（和 ops_exec.py 一起拷），或者照页面上的命令手工执行"
+
+
+def host_install_support(caller="") -> dict:
+    """工具服务能不能用密码自动安装（{supported, why}）；老工具服务回 404 → 不能。"""
+    if not enabled():
+        return {"supported": False, "why": "未配置只读工具接口（OPS_URL / OPS_TOKEN）"}
+    try:
+        data = _request("/tools/config/host-install", timeout=10, headers=_caller_headers(caller))
+    except OpsUnavailable as exc:
+        return {"supported": False, "why": OLD_SERVICE_INSTALL if exc.status == 404 else str(exc)}
+    return {"supported": bool(data.get("supported")), "why": str(data.get("why") or "")}
 
 
 def config_bundle(name: str) -> dict:
