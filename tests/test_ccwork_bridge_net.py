@@ -11,10 +11,12 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
-from tests.ccwork_fakes import (KEY, ROBOT_ID, TOKEN, Clock, FakeBroker, FakePlatform, bridge, chat_message, make_certs,
-                                robot, server_context, text_body, wait_for)
+from tests.ccwork_fakes import (KEY, ROBOT_ID, TOKEN, Clock, FakeBroker, FakePlatform, bridge, chat_message, leaf_cert,
+                                make_certs, robot, server_context, text_body, wait_for)
 
 try:
     import cryptography  # noqa: F401
@@ -123,6 +125,15 @@ class PlatformTests(NetCase):
         with self.assertRaises(bridge.PlatformError):
             bridge.Platform(cfg).token()
         self.assertEqual(self.platform.requests, [])
+
+    def test_a_trusted_certificate_for_another_host_is_refused(self):
+        cert, key = leaf_cert(self.tmp.name, ("open.example.com",), "other-host")
+        stranger = FakePlatform(server_context(cert, key))
+        self.addCleanup(stranger.close)
+        cfg = self.config(CCWORK_BASE_URL=stranger.url)
+        with self.assertRaises(bridge.PlatformError):
+            bridge.Platform(cfg).token()
+        self.assertEqual(stranger.requests, [])
 
     def test_message_shapes(self):
         platform = bridge.Platform(self.config())
@@ -261,6 +272,15 @@ class ApiTests(ApiCase):
         self.assertEqual((status, body["definite"]), (502, False))
         self.assertEqual(self.call("/reply", {"handle": handle, "stream": packet})[0], 200)   # 结果不明的可以重发
 
+    def test_the_same_request_id_in_another_chat_is_not_a_repeat(self):
+        self.start()
+        first = self.deliver(chat_message(text_body("问", at=[ROBOT_ID])))["events"][0]["handle"]
+        other = self.deliver(chat_message(text_body("问", at=[ROBOT_ID]), chat_id=5151, uniq=99))["events"][-1]["handle"]
+        packet = {"request_id": "req-1", "seq": 1, "type": "delta", "message_type": "cover", "content": "正在查"}
+        self.assertEqual(self.call("/reply", {"handle": first, "stream": packet}), (200, {"ok": True}))
+        self.assertEqual(self.call("/reply", {"handle": other, "stream": packet}), (200, {"ok": True}))
+        self.assertEqual([p["chat_id"] for p in self.platform.sent(bridge.STREAM_CHAT_PATH)], [4242, 5151])
+
     def test_pushes_only_by_name(self):
         self.start()
         self.assertEqual(self.call("/push", {"target": "运维值班群", "text": "巡检有异常"})[0], 200)
@@ -342,6 +362,14 @@ class LinkTests(NetCase):
         other = Path(self.tmp.name, "other")
         other.mkdir()
         _, cert, key = make_certs(other)
+        stranger = FakeBroker(server_context(cert, key))
+        self.addCleanup(stranger.close)
+        link = self.bridge_for(broker=f"ssl://127.0.0.1:{stranger.port}")
+        self.assertTrue(wait_for(lambda: "TLS" in " ".join(link.status()["problems"])))
+        self.assertEqual(stranger.connects, [])
+
+    def test_a_trusted_broker_certificate_for_another_host_is_refused(self):
+        cert, key = leaf_cert(self.tmp.name, ("mqtt.example.com",), "other-host")
         stranger = FakeBroker(server_context(cert, key))
         self.addCleanup(stranger.close)
         link = self.bridge_for(broker=f"ssl://127.0.0.1:{stranger.port}")
@@ -432,6 +460,24 @@ class CommandTests(NetCase):
             self.assertNotIn(secret, text)
         self.assertEqual(bridge.check(io.StringIO(), {"CCWORK_ENABLED": "true"}), 1)
 
+    def test_check_reads_the_env_file_when_run_by_hand(self):
+        good = FakeBroker(self.server_tls)
+        self.addCleanup(good.close)
+        path = Path(self.tmp.name, "doc2sop-ccwork.env")
+        lines = [f"{key}={value}" for key, value in self.env.items() if key != "CCWORK_APP_SECRET"]
+        path.write_text("# 注释\n; 也是注释\n\n" + "\n".join(lines) + "\nCCWORK_APP_SECRET='secret-1'\n"
+                        f'CCWORK_BROKER="ssl://127.0.0.1:{good.port}"\n', encoding="utf-8")
+        self.assertEqual(bridge.read_env_file(path)["CCWORK_APP_SECRET"], "secret-1")
+        out = io.StringIO()
+        with patch.dict(os.environ, {"CCWORK_APP_SECRET": "", "CCWORK_BASE_URL": ""}), redirect_stdout(out):
+            self.assertEqual(bridge.main(["check", "--env-file", str(path)]), 0)
+        self.assertIn("换令牌：成功", out.getvalue())
+        self.assertIn(f"127.0.0.1:{good.port}  可以", out.getvalue())
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertEqual(bridge.main(["check", "--env-file", str(path) + ".missing"]), 1)
+        self.assertIn("要用 root 跑", err.getvalue())
+
     def test_set_credentials_writes_a_private_file(self):
         from datetime import datetime
         path = Path(self.tmp.name, "doc2sop-ccwork.env")
@@ -445,11 +491,19 @@ class CommandTests(NetCase):
         self.assertIn("CCWORK_APP_KEY=old", backup.read_text(encoding="utf-8"))
         self.assertIn("…wkey", out.getvalue())
         self.assertNotIn("new-secret", out.getvalue())
+        # 只留最近一份备份：上一版凭据在，更早的旧密钥删掉
         self.assertEqual(bridge.set_credentials(path, io.StringIO("k2\ns2\n"), io.StringIO(), False, now), 0)
-        self.assertTrue(Path(f"{path}.bak-20261102110000-1").exists())
+        out = io.StringIO()
+        self.assertEqual(bridge.set_credentials(path, io.StringIO("k3\ns3\n"), out, False,
+                                                datetime(2026, 11, 3, 9, 0, 0)), 0)
+        backups = sorted(p.name for p in Path(self.tmp.name).glob("doc2sop-ccwork.env.bak-*"))
+        self.assertEqual(backups, ["doc2sop-ccwork.env.bak-20261103090000"])
+        latest = Path(self.tmp.name, backups[0])
+        self.assertIn("CCWORK_APP_KEY=k2", latest.read_text(encoding="utf-8"))
+        self.assertIn("更早的 1 份备份已删除", out.getvalue())
         if os.name == "posix":
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(latest.stat().st_mode & 0o777, 0o600)
         before = path.read_text(encoding="utf-8")
         for bad in ("only-one-line\n", "has space\nsecret\n", 'key\n"quoted"\n'):
             with self.subTest(bad=bad):

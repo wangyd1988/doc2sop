@@ -99,12 +99,13 @@ def robot(**kwargs):
 
 # --- 临时 CA 和证书 --------------------------------------------------------------------------
 
-def make_certs(folder):
-    """测试用的 CA 和 127.0.0.1 的服务器证书：(ca.pem, server.pem, server-key.pem)。"""
+def make_certs(folder, names=("127.0.0.1", "localhost")):
+    """测试用的 CA 和服务器证书：(ca.pem, server.pem, server-key.pem)。names 是证书里的主机名（IP 或域名）；
+    同一个目录再调一次 leaf_cert 可以用同一个 CA 签别的名字（测主机名校验）。"""
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+    from cryptography.x509.oid import NameOID
 
     folder = Path(folder)
     now = datetime.now(timezone.utc)
@@ -119,24 +120,47 @@ def make_certs(folder):
                                             crl_sign=True, encipher_only=False, decipher_only=False), critical=True)
                .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
                .sign(ca_key, hashes.SHA256()))
+    pem = serialization.Encoding.PEM
+    (folder / "ca.pem").write_bytes(ca_cert.public_bytes(pem))
+    (folder / "ca-key.pem").write_bytes(ca_key.private_bytes(pem, serialization.PrivateFormat.PKCS8,
+                                                             serialization.NoEncryption()))
+    cert, key = leaf_cert(folder, names, "server")
+    return folder / "ca.pem", cert, key
+
+
+def leaf_cert(folder, names, stem):
+    """用 folder 里的测试 CA 签一张服务器证书，证书里只有 names 这些主机名：(stem.pem, stem-key.pem)。"""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+    folder = Path(folder)
+    now = datetime.now(timezone.utc)
+    ca_cert = x509.load_pem_x509_certificate((folder / "ca.pem").read_bytes())
+    ca_key = serialization.load_pem_private_key((folder / "ca-key.pem").read_bytes(), password=None)
+    alt = []
+    for name in names:
+        try:
+            alt.append(x509.IPAddress(ipaddress.ip_address(name)))
+        except ValueError:
+            alt.append(x509.DNSName(name))
     key = ec.generate_private_key(ec.SECP256R1())
     cert = (x509.CertificateBuilder()
-            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])).issuer_name(ca_name)
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, names[0])])).issuer_name(ca_cert.subject)
             .public_key(key.public_key()).serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=2))
-            .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
-                                                        x509.DNSName("localhost")]), critical=False)
+            .add_extension(x509.SubjectAlternativeName(alt), critical=False)
             .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
             .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
             .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
             .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
             .sign(ca_key, hashes.SHA256()))
     pem = serialization.Encoding.PEM
-    (folder / "ca.pem").write_bytes(ca_cert.public_bytes(pem))
-    (folder / "server.pem").write_bytes(cert.public_bytes(pem))
-    (folder / "server-key.pem").write_bytes(key.private_bytes(pem, serialization.PrivateFormat.PKCS8,
+    (folder / f"{stem}.pem").write_bytes(cert.public_bytes(pem))
+    (folder / f"{stem}-key.pem").write_bytes(key.private_bytes(pem, serialization.PrivateFormat.PKCS8,
                                                                serialization.NoEncryption()))
-    return folder / "ca.pem", folder / "server.pem", folder / "server-key.pem"
+    return folder / f"{stem}.pem", folder / f"{stem}-key.pem"
 
 
 def server_context(cert, key):

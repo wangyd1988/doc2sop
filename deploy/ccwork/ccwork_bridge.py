@@ -16,15 +16,19 @@
     凭据      只从环境变量读（systemd 从 root 600 的 /etc/doc2sop-ccwork.env 读进来），从不打印；平台请求和
               响应的正文、消息内容一律不进日志；会话 ID、用户 ID、MQTT 主题只记末 4 位；paho 自己的日志不开
     MQTT      只连 ssl://，校验证书和主机名，心跳 60 秒；tcp:// 要 CCWORK_ALLOW_PLAINTEXT=diagnose，而且只诊断：
-              收、计数，不交给 kb-app、不发任何东西（明文时信封可以被改，白名单就不可靠了）
+              收、计数，不交给 kb-app、不发任何东西（明文时信封可以被改，白名单就不可靠了）。注意明文时 MQTT 登录用的
+              jwt 也是明文发出去的：有效期内被人截获就能冒充机器人连 broker。只在 broker 确实没有加密端口时用，
+              用测试机器人，时间尽量短
     平台接口   只接受 https://；不走环境变量里的代理、不跟重定向（令牌在请求头里）
     本地接口   只听 127.0.0.1 / ::1；全部接口都要令牌（X-Chat-Bridge-Token），带协议版本（X-Chat-Bridge-Protocol）
     节制      解密前单条载荷不超过 64 KB；每个发送人每分钟 10 条、每个会话 30 条；队列 200 条 / 1 MB，一个会话
               最多占 50 条；发往平台的调用共用一个限速桶；每个推送目标每小时最多 20 条，多的合并成一条
 
 用法（依赖：python3-paho-mqtt、python3-cryptography、python3-yaml，都从 apt 装）：
-    python3 ccwork_bridge.py serve             # systemd 里跑这个
-    python3 ccwork_bridge.py check             # 只读握手：换令牌、读机器人信息、查组织路由，对 broker 只做 TLS 握手
+    python3 ccwork_bridge.py serve             # systemd 里跑这个，配置是 systemd 从环境文件读进来的环境变量
+    python3 ccwork_bridge.py check --env-file /etc/doc2sop-ccwork.env
+                                               # root 手工跑：只读握手（换令牌、读机器人信息、查组织路由，对 broker
+                                               # 只做 TLS 握手）。服务账号自己读不到环境文件，所以要 root、要带 --env-file
     python3 ccwork_bridge.py set-credentials   # 从标准输入读 app-key、app-secret，写进环境文件（root 600）
 
 本地接口（都要令牌；除 /health 外都要协议版本头）：
@@ -929,7 +933,8 @@ class Outbox:
         return status, body
 
     def reply_stream(self, robot, info, packet):
-        key = (packet["request_id"], packet["seq"])
+        # 键里带上发往哪里：两个会话的 request_id 万一相同，后一个不能被当成前一个的重发
+        key = (robot.robot_id, *sorted(self._where(info).items()), packet["request_id"], packet["seq"])
         now = self.clock()
         with self._lock:
             while self._streams and (len(self._streams) > STREAM_CACHE_MAX
@@ -1536,7 +1541,8 @@ SECRET_VALUE = re.compile(r"^[!#-&(-\[\]-~]{1,256}$")    # 可见 ASCII，不含
 
 
 def set_credentials(path=ENV_FILE, stdin=None, out=None, interactive=None, now=None):
-    """从标准输入读 app-key、app-secret（终端上不回显），写进环境文件：原子写入、权限 600、旧文件留 .bak-时间。"""
+    """从标准输入读 app-key、app-secret（终端上不回显），写进环境文件：原子写入、权限 600；
+    改之前的文件留一份 .bak-时间（只留最近这一份，更早的删掉：旧密钥不在盘上越积越多）。"""
     stdin, out = stdin or sys.stdin, out or sys.stdout
     interactive = stdin.isatty() if interactive is None else interactive
     if interactive:
@@ -1550,6 +1556,7 @@ def set_credentials(path=ENV_FILE, stdin=None, out=None, interactive=None, now=N
             return 1
     target = Path(path)
     lines = []
+    backup = None
     if target.exists():
         original = target.read_text(encoding="utf-8")
         lines = [line for line in original.splitlines() if not re.match(r"^\s*CCWORK_APP_(KEY|SECRET)\s*=", line)]
@@ -1578,21 +1585,54 @@ def set_credentials(path=ENV_FILE, stdin=None, out=None, interactive=None, now=N
     except BaseException:
         temp.unlink(missing_ok=True)
         raise
+    # 备份只留刚才这一份（上一版凭据，回滚用）：更早的旧密钥不在盘上越积越多
+    kept = backup.name if backup is not None else ""
+    removed = 0
+    for old in target.parent.glob(f"{target.name}.bak-*"):
+        if old.name != kept:
+            old.unlink(missing_ok=True)
+            removed += 1
     print(f"已写入 {target}（app-key 末 4 位 {tail(key)}）。重启转接程序生效：systemctl restart doc2sop-ccwork", file=out)
+    if kept:
+        print(f"上一版留在 {kept}" + (f"，更早的 {removed} 份备份已删除" if removed else ""), file=out)
     return 0
+
+
+def read_env_file(path) -> dict:
+    """读 systemd 的 EnvironmentFile（KEY=VALUE，# 和 ; 开头是注释，值可以带一对引号），给手工跑 check 用。"""
+    out = {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line[0] in "#;" or "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        out[key] = value
+    return out
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="doc2sop 的云上协同转接程序（只听 127.0.0.1）")
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("serve", help="运行（systemd 里用这个）")
-    sub.add_parser("check", help="只读握手：换令牌、读机器人信息、查组织路由、TLS 探测")
+    chk = sub.add_parser("check", help="只读握手：换令牌、读机器人信息、查组织路由、TLS 探测")
+    chk.add_argument("--env-file", help=f"从这个文件读配置（root 手工跑时用 {ENV_FILE}；服务账号自己读不到它）")
     creds = sub.add_parser("set-credentials", help="写入 app-key、app-secret")
     creds.add_argument("--env-file", default=ENV_FILE)
     args = parser.parse_args(argv)
     _setup_logging()
     if args.command == "check":
-        return check()
+        env = None
+        if args.env_file:
+            try:
+                env = {**os.environ, **read_env_file(args.env_file)}
+            except (OSError, UnicodeDecodeError) as exc:
+                print(f"错误：读不了 {args.env_file}（{exc.__class__.__name__}），要用 root 跑", file=sys.stderr)
+                return 1
+        return check(env=env)
     if args.command == "set-credentials":
         return set_credentials(args.env_file)
     return serve()
