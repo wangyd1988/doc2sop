@@ -164,6 +164,26 @@ class ReceiveTests(AlertCase):
         self.assertEqual(alerts.receive({"title": "磁盘告警", "labels": {"host": "db"}})["triggered"], 0)
         self.assertEqual(alerts.recent_events()[0]["action"], "no_rule")
 
+    def test_line_breaks_in_names_and_labels_cannot_forge_log_lines(self):
+        """告警名、标题、标签会写进应用日志：里面的换行和别的控制字符换成空格，不然拿着告警令牌就能伪造整行日志。
+        content 只进提问资料、不进日志，保留换行。"""
+        forged = "2026-11-02 13:00:00,000 INFO kb: automation settings changed (user=admin ip=127.0.0.1): forged"
+        self.rule(name_contains="磁盘")
+        with self.assertLogs("kb", level="INFO") as logs:
+            self.assertEqual(alerts.receive({"title": "磁盘\n" + forged, "content": "第一行\n第二行",
+                                             "labels": {"host\r\nx": "gw\u2028y"}})["triggered"], 1)
+            with patch.object(alerts, "PER_HOUR", 1):          # 超过每小时上限：另一条带告警名的日志
+                self.assertEqual(alerts.receive({"title": "磁盘\r\n" + forged, "fingerprint": "f\nx"})["triggered"], 0)
+        self.assertIn("triggered SOP", "\n".join(logs.output))
+        self.assertIn("already triggered", "\n".join(logs.output))
+        for record in logs.records:
+            self.assertNotRegex(record.getMessage(), "[\r\n\u2028\u2029]")
+        alert = alerts.normalize({"title": "磁盘\n" + forged, "content": "第一行\n第二行", "labels": {"host\r\nx": "gw\u2028y"}})[0]
+        self.assertEqual((alert["name"], alert["title"]), ("磁盘 " + forged, "磁盘 " + forged))
+        self.assertEqual((alert["labels"], alert["content"]), ({"host  x": "gw y"}, "第一行\n第二行"))
+        am = alerts.normalize({"alerts": [{"labels": {"alertname": "X\r\nFAKE"}, "annotations": {"description": "a\nb"}}]})[0]
+        self.assertEqual((am["name"], am["title"], am["content"]), ("X  FAKE", "X  FAKE", "a\nb"))
+
     def test_dedup_window(self):
         self.rule(dedup_minutes=30)
         self.assertEqual(alerts.receive(AM)["triggered"], 1)

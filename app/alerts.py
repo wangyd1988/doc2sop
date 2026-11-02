@@ -45,6 +45,8 @@ ACTIONS = {"triggered": "已触发", "deduped": "去重（不久前触发过）"
            "busy": "SOP 上一次还没跑完", "no_rule": "没有对上规则", "resolved": "已恢复，不触发",
            "disabled": "SOP 已停用", "error": "出错"}
 CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# 一行字里不许有的：所有控制字符（含换行、回车、制表符）、C1 控制字符、行分隔符
+NOT_IN_A_LINE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 class InvalidRule(ValueError):
@@ -208,14 +210,22 @@ def _clip(value, limit) -> str:
     return CONTROL.sub("", str(value if value is not None else "")).strip()[:limit]
 
 
-def _str_dict(raw) -> dict:
+def _line(value, limit) -> str:
+    """一行字：告警名、标题、标签、指纹、开始时间。控制字符（含换行）都换成空格——告警名会写进应用日志，
+    带着换行，拿着告警令牌就能伪造整行日志（比如假的「automation settings changed」审计行）。内容（content）保留换行。"""
+    return NOT_IN_A_LINE.sub(" ", str(value if value is not None else "")).strip()[:limit]
+
+
+def _str_dict(raw, multiline=False) -> dict:
+    """标签、注解 → {字符串: 字符串}。键一律是一行；值默认也是一行，注解（multiline）保留换行：里面的 description 是告警内容。"""
     if not isinstance(raw, dict):
         return {}
+    clean = _clip if multiline else _line
     out = {}
     for key, value in list(raw.items())[:LABELS_MAX]:
-        key = _clip(key, 100)
+        key = _line(key, 100)
         if key and value is not None and not isinstance(value, (dict, list)):
-            out[key] = _clip(value, LABEL_CHARS)
+            out[key] = clean(value, LABEL_CHARS)
     return out
 
 
@@ -236,28 +246,28 @@ def normalize(data) -> list:
             if not isinstance(raw, dict):
                 continue
             labels = {**common, **_str_dict(raw.get("labels"))}
-            notes = _str_dict(raw.get("annotations"))
+            notes = _str_dict(raw.get("annotations"), multiline=True)
             name = labels.get("alertname") or notes.get("summary") or "未命名告警"
             title = notes.get("summary") or notes.get("title") or name
             content = notes.get("description") or notes.get("message") or ""
-            given = _clip(raw.get("fingerprint"), 128)
-            out.append({"name": _clip(name, TITLE_CHARS), "title": _clip(title, TITLE_CHARS),
+            given = _line(raw.get("fingerprint"), 128)
+            out.append({"name": _line(name, TITLE_CHARS), "title": _line(title, TITLE_CHARS),
                         "content": _clip(content, CONTENT_CHARS), "labels": labels,
                         "fingerprint": given or _fingerprint(name, labels),
                         "status": str(raw.get("status") or group_status).lower(),
-                        "starts_at": _clip(raw.get("startsAt"), 40)})
+                        "starts_at": _line(raw.get("startsAt"), 40)})
         return out
     title = data.get("title") or data.get("name") or data.get("alertname")
     if not title:
         raise BadPayload("认不出的告警格式：要么是 Alertmanager 的 {\"alerts\": [...]}，要么是 {\"title\", \"content\", \"labels\"}")
     labels = _str_dict(data.get("labels"))
-    title = _clip(title, TITLE_CHARS)
-    name = _clip(data.get("name") or labels.get("alertname") or title, TITLE_CHARS)
-    given = _clip(data.get("fingerprint"), 128)
+    title = _line(title, TITLE_CHARS)
+    name = _line(data.get("name") or labels.get("alertname") or title, TITLE_CHARS)
+    given = _line(data.get("fingerprint"), 128)
     return [{"name": name, "title": title,
              "content": _clip(data.get("content") or data.get("message") or data.get("description"), CONTENT_CHARS),
              "labels": labels, "fingerprint": given or _fingerprint(title, labels),
-             "status": str(data.get("status") or "firing").lower(), "starts_at": _clip(data.get("startsAt"), 40)}]
+             "status": str(data.get("status") or "firing").lower(), "starts_at": _line(data.get("startsAt"), 40)}]
 
 
 def matches(rule, alert) -> bool:
