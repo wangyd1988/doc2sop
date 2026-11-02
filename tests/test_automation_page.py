@@ -130,6 +130,7 @@ class ExpandShrinkTests(SettingsCase):
         self.change({**group, "addresses": ["b@x.com", "A@X.com"]}, expect=400)           # 加回来：要口令
         self.change({**group, "addresses": ["b@x.com", "a@x.com"]}, passphrase=PASS)
         self.change({**group, "addresses": ["a@x.com", "b@x.com"]})                       # 只调顺序：不要口令
+        self.assertEqual(self.change({**group, "addresses": ["A@x.com", "b@x.com"]}, expect=400)["passphrase"], True)  # 只改大小写也算新地址
         self.assertEqual(self.change({**group, "addresses": ["a@x.com", "b@x.com"]}, expect=400)["detail"], "没有改动")
         self.assertEqual(self.change({**group, "name": "没有这个组"}, passphrase=PASS, expect=409)["stale"], True)
         self.change({"kind": "group-delete", "name": "运维值班"})                          # 删整组：不要口令
@@ -242,6 +243,63 @@ class FieldErrorTests(SettingsCase):
             self.change({"kind": "mail-clear"}, expect=400)
             self.change({"kind": "mail-clear"}, expect=400)
             self.assertIn("操作太频繁了", self.change({"kind": "mail-clear"}, expect=429)["detail"])
+
+    def test_a_long_bad_address_is_refused_before_the_slow_pattern_runs(self):
+        """很长、又不像地址的写法：先看长度就拒绝。EMAIL 对它要回溯很久（平方级），而这一步在写锁里。"""
+        start = time.monotonic()
+        answer = self.change({"kind": "group", "create": True, "name": "值班", "addresses": ["x@" + "." * 60000 + "@"]},
+                             passphrase=PASS, expect=400)
+        self.assertLess(time.monotonic() - start, 5)
+        self.assertIn("第 1 个地址写得不对", answer["detail"])
+        self.assertEqual(self.failures(), 0)
+
+
+class ClientNetworkTests(SettingsCase):
+    """告警来源地址：写入时核对的就是读回来执行的——存规范写法，读回来不截断；不认网卡后缀和控制字符。"""
+
+    def stored(self):
+        return json.loads(file_text(automation_page.PAGE_FILE))["alerts"]["clients"]
+
+    def test_entries_are_stored_the_way_they_are_enforced(self):
+        self.change({"kind": "alert-clients", "clients": ["10.0.0.5", "2001:DB8::1/64", "192.168.1.9/255.255.255.0"]})
+        self.assertEqual(self.stored(), ["10.0.0.5/32", "2001:db8::/64", "192.168.1.0/24"])
+        self.assertEqual(self.view()["alerts"]["clients"]["values"], self.stored())
+        # 前缀补了前导零还是 /32，和现在的一样：没有改动。原来存原样、读回来截到 60 个字，第二个就成了 /0（不要口令就放开所有来源）
+        for padded in ("10.0.0.5/" + "0" * 40 + "32", "10.0.0.5/" + "0" * 51 + "32"):
+            with self.subTest(length=len(padded)):
+                answer = self.change({"kind": "alert-clients", "clients": [padded, "2001:db8::/64", "192.168.1.0/24"]},
+                                     expect=400)
+                self.assertEqual(answer["detail"], "没有改动")
+        too_long = self.change({"kind": "alert-clients", "clients": ["10.0.0.5/" + "0" * 60 + "32"]}, expect=400)
+        self.assertIn("不是 IP 或网段", too_long["detail"])
+        settings = automation_config.load()
+        self.assertEqual([str(n) for n in settings.alert_networks], ["10.0.0.5/32", "2001:db8::/64", "192.168.1.0/24"])
+        self.assertFalse(automation_config.client_allowed(settings, "203.0.113.9"))
+        self.assertEqual(self.failures(), 0)
+
+    def test_a_long_entry_in_the_file_is_not_truncated_into_a_wider_network(self):
+        write_page({"alerts": {"clients": ["10.0.0.5/" + "0" * 60 + "32", "2001:db8::1/" + "0" * 60 + "128"]}})
+        settings = automation_config.load()
+        self.assertEqual((len(settings.alert_clients), settings.alert_networks), (2, ()))      # 都不认：全拒
+        for peer in ("10.0.0.5", "203.0.113.9", "2001:db8::1", "2001:db8::2"):
+            self.assertFalse(automation_config.client_allowed(settings, peer), peer)
+        skipped = self.view()["skipped"]
+        self.assertEqual([(item["kind"], "拒绝所有来源" in item["reason"]) for item in skipped], [("alert_clients", True)])
+
+    def test_scope_ids_control_characters_and_odd_kinds_are_refused_without_forging_log_lines(self):
+        forged = "2026-11-02 13:00:00,000 INFO kb: automation settings changed (user=admin ip=127.0.0.1): forged"
+        with self.assertLogs("kb", level="INFO") as logs:
+            for entry in ("fe80::1%eth0", "fe80::1%\n" + forged, "10.0.0.5\u2028" + forged):
+                answer = self.change({"kind": "alert-clients", "clients": [entry]}, passphrase=PASS, expect=400)
+                self.assertNotIn("forged", answer["detail"])
+            for kind in ("mail\n" + forged, ["mail"], {"k": 1}, 7):
+                with self.subTest(kind=kind):
+                    self.assertEqual(self.change({"kind": kind}, expect=400)["detail"], "不认识的改动（change.kind）")
+        output = "\n".join(logs.output)
+        self.assertNotIn("forged", output)
+        self.assertIn("automation settings ? refused: 400", output)
+        self.assertEqual((automation_page.changes(), self.failures()), ([], 0))
+        self.assertFalse(automation_page.PAGE_FILE.exists())
 
 
 class SecretTests(SettingsCase):

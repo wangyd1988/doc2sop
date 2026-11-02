@@ -6058,7 +6058,7 @@ function asTokenShow(token) {
 function asClientsDialog() {
   const S = autoSettings || {}, c = (S.alerts || {}).clients || {}, lim = S.limits || {};
   const body = `<div class="sum">只接受这些来源地址的告警推送：IP 或网段，一行一个，最多 ${esc(lim.clients || 50)} 项；留空就是不限来源（只靠令牌）。
-      加新的地址、删到一个不剩要审批口令；删掉一部分、收窄范围不要。</div>
+      加新的地址、删到一个不剩要审批口令；删掉一部分、收窄范围不要。存的时候换成规范写法（10.0.0.5 存成 10.0.0.5/32），存的就是执行的；不认网卡后缀（%eth0）。</div>
     <label class="fld">来源地址<textarea data-f="clients" rows="4" spellcheck="false" placeholder="10.0.0.0/8">${esc((c.source === 'page' ? c.values || [] : []).join('\n'))}</textarea></label>
     <div data-passbox hidden>${icPassHtml()}</div>`;
   const wrap = icDialog('🛡 告警来源地址', body, AS_CANCEL + asSaveBtn('保存'));

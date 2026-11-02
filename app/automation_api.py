@@ -312,7 +312,8 @@ async def save_settings(request: Request):
     except automation_page.Refused as exc:
         change = data.get("change")
         kind = change.get("kind") if isinstance(change, dict) else None
-        log.info("automation settings %s refused: %s (ip=%s)", str(kind)[:30], exc.status, address)
+        known = kind if isinstance(kind, str) and kind in automation_page.PLANNERS else "?"   # 请求里写的原样不进日志：可能带换行
+        log.info("automation settings %s refused: %s (ip=%s)", known, exc.status, address)
         return JSONResponse({"detail": str(exc), **exc.extra}, status_code=exc.status, headers=NO_STORE)
     return JSONResponse(result, headers=NO_STORE)
 

@@ -39,6 +39,7 @@ PAGE_MAX = 64 * 1024
 TEXT_MAX = 200              # 账号、发件人、授权码、报告链接、地址最长几个字
 HOST_MAX = 253
 CLIENTS_MAX = 50
+CLIENT_TEXT_MAX = 64        # 一项来源地址最长几个字：最长的 IPv6 网段写全了也不到 50 个字
 CHANGES_KEEP, CHANGES_SHOWN = 200, 20
 KNOWN = ("site_url", "mail", "groups", "alerts")
 SECRET_KEYS = ("mail_password", "alert_token")
@@ -185,37 +186,49 @@ def check_addresses(value, name) -> tuple:
     out, seen = [], set()
     for number, item in enumerate(value, 1):
         address = item.strip() if isinstance(item, str) else ""
-        if not EMAIL.match(address) or len(address) > TEXT_MAX or BAD.search(address):
+        # 先查长度再跑正则：EMAIL 对很长、又匹配不上的写法要回溯很久（平方级），而这一步在写锁里
+        if len(address) > TEXT_MAX or BAD.search(address) or not EMAIL.match(address):
             shown = f"：{address[:60]}" if address and not BAD.search(address) else ""
             raise Invalid(f"收件组「{name}」的第 {number} 个地址写得不对{shown}")
         if address.lower() not in seen:
             seen.add(address.lower())
             out.append(address)
+            if len(out) > GROUP_MAX:
+                raise Invalid(f"一个收件组最多 {GROUP_MAX} 个地址")
     if not out:
         raise Invalid(f"收件组「{name}」至少要有一个地址")
-    if len(out) > GROUP_MAX:
-        raise Invalid(f"一个收件组最多 {GROUP_MAX} 个地址")
     return tuple(out)
 
 
+def _client(item):
+    """一项告警来源地址 → 网段；不认的回 None。写入时核对用它，读回来执行也用它，而且存的是它的规范写法（str(网段)）：
+    核对的就是执行的。读回来不截断——截断会把「10.0.0.5/000…032」（核对时是 /32）变成 /0，不要口令就放开了所有来源。
+    不认网卡后缀（fe80::1%eth0：后缀里什么字都能写，包括换行）、控制字符和太长的写法。"""
+    text = item.strip() if isinstance(item, str) else ""
+    if not text or len(text) > CLIENT_TEXT_MAX or "%" in text or BAD.search(text):
+        return None
+    try:
+        return ipaddress.ip_network(text, strict=False)
+    except ValueError:
+        return None
+
+
 def check_clients(value) -> tuple:
-    """告警来源地址 → ((原样, 网段), …)。"""
+    """告警来源地址 → (网段, …)，去掉重复的。存的时候存 str(网段)。"""
     if isinstance(value, str):
         value = [c for c in re.split(r"[,，;；\s]+", value) if c]
     if not isinstance(value, list):
         raise Invalid("来源地址要写成列表")
     out, seen = [], set()
     for number, item in enumerate(value, 1):
-        text = item.strip() if isinstance(item, str) else ""
-        try:
-            network = ipaddress.ip_network(text, strict=False)
-        except ValueError:
-            raise Invalid(f"第 {number} 个来源地址不是 IP 或网段（写成 10.0.0.5 或 10.0.0.0/8）") from None
+        network = _client(item)
+        if network is None:
+            raise Invalid(f"第 {number} 个来源地址不是 IP 或网段（写成 10.0.0.5 或 10.0.0.0/8，不带网卡后缀）")
         if network not in seen:
             seen.add(network)
-            out.append((text, network))
-    if len(out) > CLIENTS_MAX:
-        raise Invalid(f"来源地址最多 {CLIENTS_MAX} 项")
+            out.append(network)
+            if len(out) > CLIENTS_MAX:
+                raise Invalid(f"来源地址最多 {CLIENTS_MAX} 项")
     return tuple(out)
 
 
@@ -303,16 +316,18 @@ def _entries(raw, problems, skipped) -> dict:
         skip("alert_clients", "告警来源地址", "alerts 要写成「键: 值」")
     elif isinstance(alerts, dict) and alerts.get("clients") not in (None, [], ""):
         entries = alerts["clients"] if isinstance(alerts["clients"], list) else [alerts["clients"]]
-        texts, networks = [], []
+        texts, networks, bad = [], [], 0
         for item in entries:
-            text = str(item).strip()[:60]
-            texts.append(text)
-            try:
-                networks.append(ipaddress.ip_network(text, strict=False))
-            except ValueError:
-                pass
-        if len(networks) < len(texts):
-            skip("alert_clients", "告警来源地址", f"有 {len(texts) - len(networks)} 项不是 IP 或网段，没有用"
+            network = _client(item)
+            if network is None:
+                # 不认的照样占一项（配了却一项都不对时全拒）；页面上只显示，截短、去掉控制字符——不拿显示的去解析
+                bad += 1
+                texts.append(BAD.sub("?", str(item)).strip()[:60] or "?")
+            else:
+                texts.append(str(network))
+                networks.append(network)
+        if bad:
+            skip("alert_clients", "告警来源地址", f"有 {bad} 项不是 IP 或网段（或带了网卡后缀、写得太长），没有用"
                  + ("；一项都不对：告警入口拒绝所有来源" if not networks else ""))
         out["clients"], out["networks"] = tuple(texts), tuple(networks)
     return out
@@ -674,9 +689,9 @@ def _plan_group(change, settings, page) -> Plan:
     old = page.groups.get(name, ())
     if not create and addresses == tuple(old):
         raise Invalid("没有改动")
-    known = {address.lower() for address in old}
-    added = [address for address in addresses if address.lower() not in known]
-    removed = len(known - {address.lower() for address in addresses})
+    known = set(old)                       # 逐字比较：只改了大小写也算新地址（要口令）——缩小能力的改动不该改去向
+    added = [address for address in addresses if address not in known]
+    removed = len(known - set(addresses))
     if create:
         groups[name] = list(addresses)
         detail = f"新建收件组「{name}」（{len(addresses)} 个地址）"
@@ -748,23 +763,23 @@ def _plan_token_delete(change, settings, page) -> Plan:
 
 
 def _plan_clients(change, settings, page) -> Plan:
-    entries = check_clients(change.get("clients"))
-    texts, networks = [text for text, _ in entries], [network for _, network in entries]
+    networks = check_clients(change.get("clients"))
+    texts = [str(network) for network in networks]          # 存规范写法：存的就是判断扩大、缩小时用的那个网段
     managed = "alerts.clients" in settings.server_keys
-    if managed and (entries or not page.clients):
+    if managed and (networks or not page.clients):
         _managed(settings, "alerts.clients", "告警来源地址")
     if tuple(texts) == tuple(page.clients):
         raise Invalid("没有改动")
     if managed or not page.clients:
         expand = False                    # 没生效的页面条目；或者原来不限来源，现在加了限制
-    elif not entries:
+    elif not networks:
         expand = True                     # 删到一个不剩 = 不限来源
     else:
         expand = any(not any(new.version == old.version and new.subnet_of(old) for old in page.networks)
                      for new in networks)
     raw = _page_copy(page)
     alerts = dict(raw["alerts"]) if isinstance(raw.get("alerts"), dict) else {}
-    if entries:
+    if networks:
         alerts["clients"] = texts
     else:
         alerts.pop("clients", None)
@@ -773,8 +788,8 @@ def _plan_clients(change, settings, page) -> Plan:
     else:
         raw.pop("alerts", None)
     shown = "、".join(texts)
-    detail = f"告警来源地址改成 {shown}" if entries else "告警来源地址清空：不限来源"
-    target = f"来源地址 {shown}" if entries else "来源地址 不限"
+    detail = f"告警来源地址改成 {shown}" if networks else "告警来源地址清空：不限来源"
+    target = f"来源地址 {shown}" if networks else "来源地址 不限"
     return Plan(expand=expand, detail=detail, action="告警入口", target=target, page=_ordered(raw))
 
 
@@ -859,7 +874,7 @@ def apply(data, caller="", user="", ip="") -> dict:
         raise Refused(400, "请求体必须是 JSON 对象")
     change = data.get("change")
     kind = change.get("kind") if isinstance(change, dict) else None
-    if kind not in PLANNERS:
+    if not isinstance(kind, str) or kind not in PLANNERS:
         raise Refused(400, "不认识的改动（change.kind）")
     passphrase = data.get("passphrase")
     with _write_lock:
