@@ -22,8 +22,9 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from app import catalog, conversations, graph, jobs, models, packs, playbooks, runs, settings, workbench
+from app import approval, catalog, conversations, graph, jobs, models, packs, playbooks, runs, settings, workbench
 from app import automation_api
+from app import categories as category_admin
 from app.agent import grow
 from app.agent import loop as agent_loop
 from app.agent import modes as answer_modes
@@ -329,6 +330,34 @@ def set_category(name: str, payload: CategoryUpdate):
     if not store.set_category(name, category):
         raise HTTPException(404, "文档不存在")
     return {"source": name, "category": category}
+
+
+# 分类的改名、合并、删除（app/categories.py）：先预览影响，再确认。会让某枚令牌或 chat.yaml 里的群多看到文档的，要审批口令。
+# 请求体手动解析（口令不进 422 的回显）；apply 在服务端重新算影响，预览以后有变化就 409。
+
+def _category_refused(exc: category_admin.Refused, ip: str) -> JSONResponse:
+    log.info("category change refused: %s (ip=%s)", exc.status, ip)
+    return JSONResponse({"detail": str(exc), **exc.extra}, status_code=exc.status, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/categories/preview")
+async def category_preview(request: Request):
+    data = await approval.json_body(request)
+    try:
+        return await run_in_threadpool(category_admin.preview, data)
+    except category_admin.Refused as exc:
+        return _category_refused(exc, approval.address(request))
+
+
+@app.post("/api/categories/apply")
+async def category_apply(request: Request):
+    data = await approval.json_body(request)
+    ip = approval.address(request)
+    approval.throttle("category", ip)
+    try:
+        return await run_in_threadpool(category_admin.apply, data, approval.caller(request), WEB_USER, ip)
+    except category_admin.Refused as exc:
+        return _category_refused(exc, ip)
 
 
 @app.get("/api/documents/{name}/download")
@@ -655,6 +684,22 @@ def tools_override(body: ToolOverride):
     except ops_client.OpsUnavailable as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"tool": tool}
+
+
+@app.post("/api/tools/group")
+async def tools_group(request: Request):
+    """改工具的分组（只影响页面显示，不要口令）：{action: set, name, group} / {action: reset, name} / {action: rename, from, to}。
+    写进工具服务的覆盖层，主配置不动；老工具服务回 501。"""
+    data = await approval.json_body(request)
+    if data.get("action") not in ("set", "reset", "rename"):
+        raise HTTPException(400, "action 只能是 set、reset、rename")
+    payload = {key: data[key] for key in ("action", "name", "group", "from", "to") if isinstance(data.get(key), str)}
+    try:
+        result = await run_in_threadpool(ops_client.group_change, payload, approval.caller(request))
+    except ops_client.OpsUnavailable as exc:
+        status = exc.status if exc.status in (400, 501) else 502
+        raise HTTPException(status, str(exc)) from None
+    return result
 
 
 @app.get("/api/tools/pending")

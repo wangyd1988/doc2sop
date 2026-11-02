@@ -547,6 +547,13 @@ body.nogroups #mgroups, body.nogroups .msplit[data-split="mgroups"] { display: n
 #mdetail .pb-panel[hidden] { display: none; }
 #mdetail .pb { margin: 0 0 10px; }
 #mdetail .pb-pick, #mdetail .pb-edit { margin: 0; }
+/* SOP 页右栏：原来正文 12.5px、检查点和依据用浅灰（#7a8094，对白底只有约 3.9:1），依据只有 11.5px，细笔画的汉字在普通屏上发虚。
+   右栏够宽：正文放大、检查点用正文色、适用场景和依据原句保持次要但对比度够（明暗两套主题都按正文色调出来） */
+#mdetail #pbPanel .pb-body { font-size: 14px; line-height: 1.65; }
+#mdetail #pbPanel .pb-trig, #mdetail #pbPanel .pb-step .ev { color: color-mix(in srgb, var(--text) 74%, var(--panel)); }
+#mdetail #pbPanel .pb-step .ck { color: var(--text); }
+#mdetail #pbPanel .pb-step .ev { font-size: 13px; }
+#mdetail #pbPanel .pb-step .ev.bad { color: var(--danger); }
 .md-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 60px 10px; line-height: 1.8; }
 /* 分栏拖拽条：细线，悬停/拖动时变粗变色 */
 .msplit { width: 5px; margin: 0 -2px; flex-shrink: 0; cursor: col-resize; position: relative; z-index: 5; background: transparent;
@@ -999,6 +1006,11 @@ table.pt .rx { display: block; font-size: 11px; color: var(--muted); font-family
 .dlg.ic a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .dlg.ic .row { flex-wrap: wrap; }
 .dlg.ic ul.ax { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.7; }
+.dlg.ic .bad, .sf span.bad { color: var(--danger); }
+.dlg.ic .catlist { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 10px; max-height: 260px; overflow-y: auto; }
+.dlg.ic .catrow { display: flex; align-items: center; gap: 8px; padding: 7px 10px; font-size: 13px; }
+.dlg.ic .catrow + .catrow { border-top: 1px solid var(--border); }
+.dlg.ic .catrow .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 820px) {
   .dlg.ic { max-height: 92vh; }
   .dlg.ic .grid2 { grid-template-columns: 1fr; }
@@ -2028,11 +2040,6 @@ const LAZY = {
 };
 // 分组的展开状态只在当前页面内记住（刷新归零），不然像是缓存没清
 const opened = new Set();
-function searchBox(id, value, placeholder) {
-  return `<div class="pb-search"><input type="search" id="${id}" data-search-box
-            placeholder="${placeholder}" value="${esc(value)}" autocomplete="off">
-          <span class="n" id="${id}N"></span></div>`;
-}
 function groupHtml(panel, g) {
   const key = panel + ':' + g.name;
   return `<details class="grp" data-panel="${panel}" data-grp="${esc(key)}" data-name="${esc(g.name)}" ${opened.has(key) ? 'open' : ''}>
@@ -2061,18 +2068,6 @@ async function loadGroup(el) {
   const d = await fetchPage(panel, params, 0);
   body.innerHTML = LAZY[panel].items(d) + moreHtml(panel, params, LAZY[panel].count(d), d.total);
 }
-async function loadSearch(panel, q) {
-  const root = $(panel + 'Panel'), results = root.querySelector('.results'), groups = root.querySelector('.groups');
-  const n = $(panel + 'SearchN');
-  if (!q.trim()) { results.hidden = true; groups.hidden = false; if (n) n.textContent = ''; return; }
-  groups.hidden = true; results.hidden = false;
-  results.innerHTML = '<div class="pb-nomatch">搜索中…</div>';
-  const d = await fetchPage(panel, {q}, 0);
-  if (root.querySelector('[data-search-box]')?.value !== q) return;  // 输入已经变了，丢掉这次结果
-  if (n) n.textContent = `匹配 ${d.total} 条`;
-  results.innerHTML = (d.total ? LAZY[panel].items(d) : `<div class="pb-nomatch">没有包含「${esc(q.trim())}」的${LAZY[panel].label}</div>`)
-                    + moreHtml(panel, {q}, LAZY[panel].count(d), d.total);
-}
 document.addEventListener('toggle', e => {
   const g = e.target.closest?.('.grp'); if (!g) return;
   if (g.open) { opened.add(g.dataset.grp); if (LAZY[g.dataset.panel]) loadGroup(g); } else opened.delete(g.dataset.grp);
@@ -2086,16 +2081,22 @@ document.addEventListener('click', async e => {
   btn.insertAdjacentHTML('beforebegin', LAZY[panel][render](d));
   btn.outerHTML = moreHtml(panel, params, next + LAZY[panel].count(d), d.total, render);
 });
-/* 面板重绘后把之前展开的组重新装回第一页；搜索框有字就重跑搜索 */
-function restorePanel(panel, q) {
-  const root = $(panel + 'Panel');
-  root.querySelectorAll('.grp[open]').forEach(loadGroup);
-  if (q && q.trim()) loadSearch(panel, q);
-}
-let searchTimer;
-function onSearchInput(panel, value) {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => loadSearch(panel, value), 250);
+/* 搜索、筛选框共用：输入法组字期间（拼音还没选成汉字）不搜，组字结束（compositionend）后再按防抖搜；回车立即搜。
+   Chrome 先发最后一个 input（isComposing 为 true）再发 compositionend，Firefox 反过来——两种顺序都只搜一次。
+   组字中途输入框被拿走（失焦）没收到 compositionend 的，失焦时清掉标记，免得以后再也不搜。
+   页面上所有搜索框都要经它接（tests/page.test.js 静态检查：新加的搜索框漏接会被发现）。 */
+function searchInput(root, match, run, ms = 250) {
+  let timer = null, composing = false;
+  const fire = el => { clearTimeout(timer); timer = setTimeout(() => { timer = null; if (!composing) run(el); }, ms); };
+  root.addEventListener('compositionstart', e => { if (match(e.target)) { composing = true; clearTimeout(timer); timer = null; } });
+  root.addEventListener('compositionend', e => { if (match(e.target)) { composing = false; fire(e.target); } });
+  root.addEventListener('input', e => { if (match(e.target) && !composing && !e.isComposing) fire(e.target); });
+  root.addEventListener('keydown', e => {
+    if (!match(e.target) || e.key !== 'Enter' || composing || e.isComposing) return;
+    clearTimeout(timer); timer = null; run(e.target);
+  });
+  root.addEventListener('focusout', e => { if (match(e.target)) composing = false; });
+  return {composing: () => composing, pending: () => timer !== null};
 }
 function searchable(...parts) {
   return esc(parts.flat().filter(Boolean).join(' ').toLowerCase());
@@ -2354,10 +2355,9 @@ $('pbPanel').addEventListener('click', async e => {
   }
 });
 
-$('pbPanel').addEventListener('input', e => {
-  if (e.target.id !== 'pbDocFilter') return;
+searchInput($('pbPanel'), el => el.id === 'pbDocFilter', el => {
   // 只重画选项，不重画整个面板，否则输入框会失焦。
-  pbDocFilter = e.target.value;
+  pbDocFilter = el.value;
   const f = pbDocFilter.trim().toLowerCase();
   const matched = allDocs.filter(d => !f || d.source.toLowerCase().includes(f)
                                         || (d.category || '').toLowerCase().includes(f));
@@ -2365,14 +2365,14 @@ $('pbPanel').addEventListener('input', e => {
   select.innerHTML = matched.map(d =>
     `<option value="${esc(d.source)}">${esc(d.source)}　[${esc(d.category || '未分类')}]</option>`
   ).join('') || '<option disabled>没有匹配的文档</option>';
-  const panel = e.target.closest('.pb-pick');
+  const panel = el.closest('.pb-pick');
   panel.querySelector('.cnt').textContent =
     `共 ${allDocs.length} 个文档${f ? `，匹配 ${matched.length} 个` : ''}`;
   panel.querySelector('#pbDoExtract').disabled = !matched.length;
-});
+}, 150);
 
 $('pbPanel').addEventListener('keydown', e => {
-  if (e.target.id === 'pbDocFilter' && e.key === 'Enter') {
+  if (e.target.id === 'pbDocFilter' && e.key === 'Enter' && !e.isComposing) {
     e.preventDefault();
     $('pbDoExtract')?.click();
   }
@@ -2387,7 +2387,7 @@ $('pbPanel').addEventListener('dblclick', e => {
      启停、改描述 -> 直接生效，因为它们都不改变实际执行的命令；
      新增工具     -> 只能提交申请，必须有人在宿主机上批准。
    命令模板只在宿主机那份手写配置里定义，这个界面碰不到。            */
-let tlEditing = null, tlProposing = false, tlProposeKind = 'command', tlSearch = '';
+let tlEditing = null, tlProposing = false, tlProposeKind = 'command', tlSearch = '', tlGroupNames = [], tlGroupStats = [];
 let tlScripts = [], tlScriptSel = '', tlScriptDir = '';
 // 申请表单用：工具服务跑在什么系统上（默认勾它）、管理员建好的连接（只有名字和地址模板，没有凭据）
 let tlHost = {}, tlConns = {};
@@ -2472,7 +2472,7 @@ function tlCard(name, t) {
       ${mcp && !t.schema_locked ? '<span class="src" title="手写条目没有 schema 指纹，server 改了参数形状也不会自动停用">未锁定 schema</span>' : ''}
       ${(t.overridden || []).length ? '<span class="src">已在页面改过</span>' : ''}
       <span class="tl-acts">${t.enabled && t.runnable ? `<button class="run" data-tluse="${esc(name)}" title="把「用这个工具查…」填进对话框">💬 用它提问</button>` : ''}
-      <button data-tledit="${esc(name)}">${editing ? '收起' : '改名/说明'}</button>
+      <button data-tledit="${esc(name)}">${editing ? '收起' : '改名/说明/分组'}</button>
       <button data-tltoggle="${esc(name)}">${t.enabled ? '停用' : '启用'}</button></span>
     </div>
     <div class="pb-body">
@@ -2481,6 +2481,11 @@ function tlCard(name, t) {
                      value="${esc(t.label || '')}">
           <textarea id="tlDesc" maxlength="300" style="${field};min-height:62px;resize:vertical"
                      placeholder="这个工具能回答什么问题？写清楚，模型靠它判断要不要调用">${esc(t.desc)}</textarea>
+          <input id="tlGroup" maxlength="20" list="tlGroupList" autocomplete="off" style="${field};margin-top:5px"
+                 placeholder="分组（只影响页面上怎么归类）" value="${esc(t.group || '')}">
+          <datalist id="tlGroupList">${tlGroupNames.map(g => `<option value="${esc(g)}">`).join('')}</datalist>
+          ${'group_base' in t ? `<div class="tl-note">分组是在页面上改的；主配置里是「${esc(t.group_base || '其他')}」
+            <button class="cancel" data-tlgroupreset="${esc(name)}">恢复主配置的分组</button></div>` : ''}
           <div class="pb-edit"><div class="row">
             <button class="ok" data-tlsave="${esc(name)}">保存</button>
             ${(t.overridden || []).length
@@ -2747,11 +2752,20 @@ $('tlPanel').addEventListener('click', async e => {
   if (save) {
     const desc = $('tlDesc').value.trim();
     if (!desc) return toast('说明不能为空', 'err');
+    const group = $('tlGroup').value.trim(), before = (mCache['tl:' + save]?.t || {}).group || '';
     try {
       await tlSend('/api/tools/override',
                    {name: save, desc, label: $('tlLabel').value.trim()});
+      if (group && group !== before) { await tlSend('/api/tools/group', {action: 'set', name: save, group}); mGroup = group; }
       tlEditing = null;
     } catch (err) { toast('保存失败：' + err.message, 'err'); }
+    return loadTools();
+  }
+
+  const groupReset = pick('tlgroupreset');
+  if (groupReset) {
+    try { await tlSend('/api/tools/group', {action: 'reset', name: groupReset}); mGroup = (mCache['tl:' + groupReset]?.t || {}).group_base || '其他'; }
+    catch (err) { toast('恢复失败：' + err.message, 'err'); }
     return loadTools();
   }
 
@@ -3142,7 +3156,8 @@ function paintNav() {
   nb('nbTools', c.tools, 'alert', `${(p.tools || []).length} 条工具申请待审批` + ((p.scripts || []).length ? `，${p.scripts.length} 个脚本要重新确认` : ''));
   nb('nbSop', c.sops, 'purple', `${c.sops} 条 SOP 提议待确认`);
   nb('nbDocs', o.knowledge.documents, '', `${o.knowledge.documents} 个文档`);
-  nb('nbAccess', o.access.enabled ? '开' : '关', o.access.enabled ? 'on' : '', o.access.enabled ? '对外 MCP 已开启' : '对外 MCP 没有打开');
+  const axOn = o.access.enabled && o.access.open !== false;
+  nb('nbAccess', axOn ? '开' : '关', axOn ? 'on' : '', axOn ? '对外 MCP 已开启' : o.access.enabled ? '对外 MCP 已在页面上关闭' : '对外 MCP 没有打开');
   const t = o.tools;
   $('sideFoot').innerHTML = `<span class="dot ${t.error ? 'bad' : ''}"></span>${t.error ? '工具服务连不上' : `工具服务在线 · ${t.live} 个工具`}<br>`
     + `${o.knowledge.documents} 个文档 · ${o.knowledge.chunks} 个片段`;
@@ -3199,7 +3214,7 @@ function paintTop() {
     sub = o ? `${o.knowledge.documents} 个文档 · ${o.knowledge.chunks} 个片段` : '';
     tabs = tabBtn('doc', 'all', '全部文档') + tabBtn('doc', 'gaps', '知识库缺口', o?.gaps?.total, '');
   }
-  if (page === 'access') sub = o ? (o.access.enabled ? '已开启' : '没有打开') : '';
+  if (page === 'access') sub = o ? (!o.access.enabled ? '没有打开' : o.access.open === false ? '已在页面上关闭' : '已开启') : '';
   $('topTitle').textContent = PAGES[page][1];
   $('topSub').textContent = sub;
   $('topTabs').innerHTML = tabs;
@@ -3425,7 +3440,7 @@ function paintHome() {
       </div>
       <div class="sc" data-go="access" role="link" tabindex="0">
         <div class="hd"><span class="ic ax">🔌</span>对外接入<span class="go">对外接入 →</span></div>
-        ${a.enabled ? `<div class="big"><b>${a.active}</b>枚令牌有效<span class="pill ok">已开启</span></div>
+        ${a.enabled ? `<div class="big"><b>${a.active}</b>枚令牌有效${a.open === false ? '<span class="pill off">已关闭</span>' : '<span class="pill ok">已开启</span>'}</div>
           <div class="line">最近调用：${a.last_call ? esc(ago(a.last_call)) : '还没有'}</div>`
         : `<div class="big"><span class="pill off">没有打开</span></div>
           <div class="line">打开后，同事的 Claude Code、Copilot、Cursor 能查知识库、按 SOP 排查</div>`}
@@ -3548,7 +3563,7 @@ async function renderManage() {
     const [d] = await Promise.all([fetch(LAZY[cfg.panel].url).then(r => r.json()), mTab === 'sop' ? loadRunSummary() : null]);
     groups = d.groups || []; live = d.live || 0; count = d.count || 0;
     if (mTab === 'sop') { pbTools = d.tools || {}; pbOrigins = d.origins || null; paintTop(); }
-    if (mTab === 'tools') { tlHost = d.host || {}; tlConns = d.connections || {}; tlHosts = d.hosts || {configured: false}; tlPrereview = !!d.prereview; }
+    if (mTab === 'tools') { tlHost = d.host || {}; tlConns = d.connections || {}; tlHosts = d.hosts || {configured: false}; tlPrereview = !!d.prereview; tlGroupNames = groups.map(g => g.name); tlGroupStats = groups; }
     if (d.error) toast('工具接口不可用：' + d.error, 'err');
   }
   // 从工作台、对话里点过来的条目：先选中它所在的组
@@ -3557,6 +3572,8 @@ async function renderManage() {
   if (!groups.some(g => g.name === mGroup)) mGroup = groups[0]?.name || null;
   $('mgroups').innerHTML = `<div class="mg-head">${mTab === 'docs' ? '分类' : mTab === 'tools' ? '分组' : '来源文档'}</div>`
     + groups.map(g => mgHtml(g.name, g.live, g.total)).join('')
+    + (mTab === 'docs' && groups.length ? '<div class="mg" data-catmanage><span class="n">⚙ 管理分类</span><span class="c">→</span></div>' : '')
+    + (mTab === 'tools' && groups.length ? '<div class="mg" data-grpmanage><span class="n">⚙ 管理分组</span><span class="c">→</span></div>' : '')
     + (mTab === 'tools' ? `<div class="mg-head" style="margin-top:10px">数据从哪里来</div>
         <div class="mg" data-infra><span class="n">主机、连接、MCP server</span><span class="c">→</span></div>` : '')
     + (!groups.length ? '<div class="empty">空</div>' : '');
@@ -3564,9 +3581,14 @@ async function renderManage() {
   // 2. 列表栏：工具栏 + 行（总数在顶栏，这里只写这一组有几个）
   const inGroup = groups.find(g => g.name === mGroup);
   const stat = inGroup ? (inGroup.live == null ? `${inGroup.total} 个` : `${inGroup.live} / ${inGroup.total} ${cfg.unit.slice(1)}`) : '';
-  $('mtool').innerHTML =
-    `<span class="ttl">${esc(mSearch ? '搜索结果' : mGroup || cfg.title)}<small>${stat}</small></span>
-     <input type="search" id="mSearch" placeholder="搜索${cfg.title}…" value="${esc(mSearch)}" autocomplete="off">
+  // 搜索框本身不重建：输入法正在组字、光标位置都留在原来的框里（重建会打断组字），只换标题和计数
+  const ttl = `<span class="ttl">${esc(mSearch ? '搜索结果' : mGroup || cfg.title)}<small>${stat}</small></span>`;
+  const kept = $('mtool').querySelector('#mSearch');
+  if (kept && kept.dataset.tab === mTab) {
+    $('mtool').querySelector('.ttl').outerHTML = ttl;
+    if (kept.value !== mSearch) kept.value = mSearch;
+  } else $('mtool').innerHTML = ttl
+    + `<input type="search" id="mSearch" data-tab="${mTab}" placeholder="搜索${cfg.title}…" value="${esc(mSearch)}" autocomplete="off">
      ${mTab === 'docs' ? '<input id="newCat" class="cat" list="catList" placeholder="上传到哪个分类（留空自动识别）" maxlength="12"><button class="act" id="mUpload">＋ 上传文档</button>'
        : mTab === 'sop' ? '<button class="act ghost" id="mNewSop">＋ 新建</button><button class="act" id="mExtract">从文档抽取</button>'
        : `<button class="act" id="mNewTool">${cfg.newLabel}</button>`}`;
@@ -5145,7 +5167,56 @@ $('msettings').addEventListener('click', async e => {
 const SCOPE_NAMES = {knowledge: '知识库', sop: 'SOP', data: '数据工具'};
 const TOKEN_STATE = {active: ['', '有效'], revoked: ['bad', '已吊销'], expired: ['bad', '已过期']};
 let axIssued = null;   // 刚签发的令牌：明文只在这里出现一次，离开这一页就清掉
+let axState = {tokens: [], reopen: '', total: 0};
 const axTime = s => s ? new Date(s).toLocaleString('zh-CN', {hour12: false}) : '—';
+// 令牌的分类白名单：null 是全部；分类改名、删除后可能被去空——那就一篇都看不到
+function axCats(list) {
+  if (!list) return '全部';
+  return list.length ? esc(list.join('、')) : '<span class="bad">无（分类已删除）</span>';
+}
+// 总开关：关不要口令（马上断开所有连接）；重新打开要审批口令，工具服务较旧或页面配置关了时打不开
+function axSwitchHtml(sw) {
+  const when = sw.at ? `${axTime(sw.at)}${sw.ip ? `，来自 ${esc(sw.ip)}` : ''}${sw.user === 'cli' ? '，在宿主机上' : ''}` : '';
+  if (sw.on) return `<div class="card"><h3>总开关 <span class="pill ok">开着</span>${when ? `<small>${when} 打开的</small>` : ''}</h3>
+      <div class="row"><button id="axOff" class="danger">关闭对外接入</button><span class="note">关掉后 <code>/mcp</code> 对所有令牌都回 403，连着的客户端马上断开；令牌和记录照常管理。
+        关不要口令，重新打开要输审批口令。</span></div></div>`;
+  return `<div class="card"><h3>总开关 <span class="pill off">已关闭</span>${when ? `<small>${when} 关的</small>` : ''}</h3>
+      <div class="row"><button id="axOn" class="pri" ${sw.reopen ? 'disabled' : ''}>重新打开…</button>
+        <span class="note">${sw.reopen ? esc(sw.reopen) : '要输审批口令（和批准工具共用输错计数）。'}</span></div>
+      <div class="howto">工具服务坏了打不开时，在宿主机上执行 <code>docker exec kb-app python -m app.access open</code>（不要口令：能登宿主机就等于有 root）。</div></div>`;
+}
+const AX_CHANGE = {'switch-on': '打开', 'switch-off': '关闭', 'token-delete': '删令牌', 'calls-purge': '清除调用记录', 'token-categories': '令牌分类'};
+function axChangesHtml(list) {
+  return `<div class="card"><h3>操作记录 <small>开关、删令牌、清除调用记录、分类改动带来的令牌白名单变化；只增不删，页面上删不掉</small></h3>
+    ${list.length ? `<table class="ax stack"><tr><th>时间</th><th>操作</th><th>内容</th><th>谁、从哪里</th></tr>${list.map(c =>
+      `<tr><td data-l="时间">${axTime(c.at)}</td><td data-l="操作">${esc(AX_CHANGE[c.kind] || c.kind)}</td><td data-l="内容">${esc(c.detail)}${c.count != null ? `（${c.count} 条）` : ''}</td>
+        <td data-l="谁、从哪里">${esc(c.user || '-')} · ${esc(c.ip || '-')}</td></tr>`).join('')}</table>` : '<div class="note">还没有。</div>'}</div>`;
+}
+function axPurgeDialog() {
+  const tokens = axState.tokens;
+  const body = `<div class="sum">清除的记录找不回来。不能挑单条删：只能按时间或按令牌整批清；每次清除都在「操作记录」里留一条（谁、什么时候、从哪里、清了多少条）。</div>
+    <label class="fld">范围<select data-axp="scope"><option value="before">清掉 N 天以前的</option><option value="token">某枚令牌的全部</option><option value="all">全部（共 ${axState.total} 条）</option></select></label>
+    <label class="fld" data-axpf="before">天数<input data-axp="days" inputmode="numeric" value="30"></label>
+    <label class="fld" data-axpf="token" hidden>令牌<select data-axp="token">${tokens.map(t =>
+      `<option value="${esc(t.id)}">${esc(t.name)}（${esc(t.id)}）</option>`).join('') || '<option value="">（没有令牌）</option>'}</select></label>
+    ${icPassHtml()}`;
+  const wrap = icDialog('🔐 清除调用记录', body, '<button type="button" class="btn" data-dlgcancel>取消</button><button type="button" class="btn warn" data-axpgo>清除</button>');
+  const field = name => wrap.querySelector(`[data-axp="${name}"]`);
+  field('scope').addEventListener('change', () => wrap.querySelectorAll('[data-axpf]').forEach(x => { x.hidden = x.dataset.axpf !== field('scope').value; }));
+  wrap.querySelector('[data-axpgo]').onclick = async e => {
+    const btn = e.currentTarget, pass = wrap.querySelector('[data-icpass]'), scope = field('scope').value;
+    const req = {scope};
+    if (scope === 'before') req.days = parseInt(field('days').value, 10);
+    if (scope === 'token') req.token_id = field('token').value;
+    if (!pass.value) { pass.focus(); return; }
+    req.passphrase = pass.value; pass.value = '';
+    btn.disabled = true; $('dlgErr').textContent = '';
+    try {
+      const d = await postJson('/api/mcp/calls/purge', req);
+      closeDialog(); toast(`已清除 ${d.purged} 条调用记录`, 'ok'); renderAccess();
+    } catch (err) { $('dlgErr').textContent = err.message; btn.disabled = err.status === 423; pass.focus(); }
+  };
+}
 function axSnippets(url, secret) {
   const headers = {Authorization: 'Bearer ' + secret};
   return `<div class="note" style="margin-top:10px"><b>Claude Code</b></div>
@@ -5168,7 +5239,7 @@ async function renderAccess() {
         <li><b>接入片段</b>：Claude Code、VS Code、Cursor 的配置直接复制</li>
         <li><b>调用记录</b>：每次调用记客户端、工具、参数、返回大小、耗时、成败</li>
         <li><b>导出 SKILL.md</b>：每个启用的 SOP 一个目录，放进客户端离线使用</li></ul></div>
-      <div class="card"><h3>在宿主机上打开</h3>
+      <div class="card"><h3>在宿主机上打开 <small>页面上的开关只在服务器打开以后才能用</small></h3>
         <ol class="off-steps">
           <li>编辑 <code>/opt/kb-app/.env</code>，加上 <code>MCP_ENABLED=true</code></li>
           <li>只让经 SSH 隧道的本机连接进来（推荐）：<code>MCP_CLIENTS=127.0.0.1,::1</code>、<code>MCP_ALLOWED_HOSTS=127.0.0.1,localhost</code></li>
@@ -5182,15 +5253,19 @@ async function renderAccess() {
     return;
   }
   const s = await r.json();
-  const [tokens, calls] = await Promise.all([
+  const [tokens, callData, changes] = await Promise.all([
     fetch('/api/mcp/tokens').then(x => x.json()).then(x => x.tokens || []).catch(() => []),
-    fetch('/api/mcp/calls?limit=30').then(x => x.json()).then(x => x.calls || []).catch(() => [])]);
+    fetch('/api/mcp/calls?limit=30').then(x => x.json()).catch(() => ({})),
+    fetch('/api/mcp/changes').then(x => x.json()).then(x => x.changes || []).catch(() => [])]);
+  const calls = callData.calls || [];
+  axState = {tokens, reopen: (s.switch || {}).reopen || '', total: callData.total ?? s.calls_total ?? calls.length};
   const url = location.origin + s.path;
   const byScope = sc => s.tools.filter(t => t.scope === sc).map(t => `<code>${esc(t.name)}</code>`).join('、') || '无';
   $('msettings').innerHTML = `<div class="sf">
     <h2>对外接入</h2>
     <p class="lead">外部智能体（Claude Code、GitHub Copilot、Cursor…）经 MCP 接入：查知识库、按 SOP 排查、调宿主机开放的只读工具。
       每个客户端一枚令牌，库里只存哈希；<code>/mcp</code> 只认令牌，不认这个页面的密码。</p>
+    ${axSwitchHtml(s.switch || {on: true})}
     <div class="card"><h3>接入地址 <small>对内网开放时前面放反向代理和 TLS，换成 https 的地址（docs/正式部署.md「对外接入」）</small></h3>
       <dl><dt>地址</dt><dd><code>${esc(url)}</code></dd>
         ${(s.clients || []).length ? `<dt>来源</dt><dd>只接受来自 ${s.clients.map(c => `<code>${esc(c)}</code>`).join('、')} 的连接</dd>` : ''}
@@ -5215,21 +5290,24 @@ async function renderAccess() {
       ${axIssued ? `<div class="result ok"><b>令牌「${esc(axIssued.token.name)}」已签发。</b>明文只显示这一次，离开这一页就看不到了，请现在交给使用的人：
         <pre class="ax">${esc(axIssued.secret)}</pre><button id="axCopy">复制令牌</button>${axSnippets(url, axIssued.secret)}</div>` : ''}
     </div>
-    <div class="card"><h3>令牌 <small>吊销后下一个请求就失效</small></h3>
-      ${tokens.length ? `<table class="ax"><tr><th>名字</th><th>范围</th><th>分类</th><th>有效期至</th><th>最近使用</th><th>状态</th><th></th></tr>
-        ${tokens.map(t => { const st = TOKEN_STATE[t.status] || ['', t.status]; return `<tr><td>${esc(t.name)}<div class="note"><code>${esc(t.id)}</code></div></td>
-          <td>${t.scopes.map(sc => esc(SCOPE_NAMES[sc] || sc)).join('、')}</td><td>${t.categories ? esc(t.categories.join('、')) : '全部'}</td>
-          <td>${t.expires_at ? axTime(t.expires_at) : '永不过期'}</td><td>${axTime(t.last_used_at)}</td><td class="${st[0]}">${st[1]}</td>
-          <td>${t.status === 'active' ? `<button data-axrevoke="${esc(t.id)}">吊销</button>` : ''}</td></tr>`; }).join('')}</table>`
+    <div class="card"><h3>令牌 <small>吊销后下一个请求就失效；已吊销、已过期的可以删掉记录（调用记录照样留着）</small></h3>
+      ${tokens.length ? `<table class="ax stack"><tr><th>名字</th><th>范围</th><th>分类</th><th>有效期至</th><th>最近使用</th><th>状态</th><th></th></tr>
+        ${tokens.map(t => { const st = TOKEN_STATE[t.status] || ['', t.status]; return `<tr><td data-l="名字">${esc(t.name)}<div class="note"><code>${esc(t.id)}</code></div></td>
+          <td data-l="范围">${t.scopes.map(sc => esc(SCOPE_NAMES[sc] || sc)).join('、')}</td><td data-l="分类">${axCats(t.categories)}</td>
+          <td data-l="有效期至">${t.expires_at ? axTime(t.expires_at) : '永不过期'}</td><td data-l="最近使用">${axTime(t.last_used_at)}</td><td data-l="状态" class="${st[0]}">${st[1]}</td>
+          <td>${t.status === 'active' ? `<button data-axrevoke="${esc(t.id)}">吊销</button>` : `<button data-axremove="${esc(t.id)}">删除</button>`}</td></tr>`; }).join('')}</table>`
         : '<div class="note">还没有令牌。</div>'}
     </div>
     <div class="card"><h3>最近调用 <small>每次工具、提示词调用都记：客户端、参数、返回大小、耗时、成败</small></h3>
-      ${calls.length ? `<table class="ax"><tr><th>时间</th><th>客户端</th><th>调用</th><th>参数</th><th>结果</th><th>耗时</th></tr>
-        ${calls.map(c => `<tr><td>${axTime(c.at)}</td><td>${esc(c.client)}</td><td>${c.kind === 'prompt' ? '提示词 ' : ''}<code>${esc(c.name)}</code></td>
-          <td><code>${esc((typeof c.args === 'string' ? c.args : JSON.stringify(c.args)).slice(0, 160))}</code></td>
-          <td class="${c.ok ? '' : 'bad'}">${c.ok ? c.result_chars + ' 字' : esc(c.error || '失败')}</td><td>${c.duration_ms} ms</td></tr>`).join('')}</table>`
+      <div class="row"><span class="note">共 ${axState.total} 条，显示最近 ${calls.length} 条；自动保留 ${esc(String(s.audit_days || 180))} 天。</span>
+        <button id="axPurge" ${axState.total ? '' : 'disabled'}>清除…</button></div>
+      ${calls.length ? `<table class="ax stack"><tr><th>时间</th><th>客户端</th><th>调用</th><th>参数</th><th>结果</th><th>耗时</th></tr>
+        ${calls.map(c => `<tr><td data-l="时间">${axTime(c.at)}</td><td data-l="客户端">${esc(c.client)}</td><td data-l="调用">${c.kind === 'prompt' ? '提示词 ' : ''}<code>${esc(c.name)}</code></td>
+          <td data-l="参数"><code>${esc((typeof c.args === 'string' ? c.args : JSON.stringify(c.args)).slice(0, 160))}</code></td>
+          <td data-l="结果" class="${c.ok ? '' : 'bad'}">${c.ok ? c.result_chars + ' 字' : esc(c.error || '失败')}</td><td data-l="耗时">${c.duration_ms} ms</td></tr>`).join('')}</table>`
         : '<div class="note">还没有外部调用。</div>'}
     </div>
+    ${axChangesHtml(changes)}
     <div class="card"><h3>接入须知</h3><ul class="ax">
       <li><b>外部客户端对写操作要保持人工确认。</b>这里的工具全部只读，但外部智能体通常能执行命令、改文件；知识库文档和工具输出都可能夹带指令，诱导它做坏事。</li>
       <li><b>能上传文档的人，也就能影响外部智能体。</b>上传权限要和对外开放一起考虑。</li>
@@ -5310,6 +5388,25 @@ $('msettings').addEventListener('click', async e => {
     return;
   }
   if (id === 'axSkills') { location.href = '/api/mcp/skills.zip'; return; }
+  if (id === 'axOff') {
+    if (!confirm('关闭对外接入？所有令牌的 /mcp 请求马上都回 403，连着的客户端会断开。重新打开要输审批口令。')) return;
+    try { await postJson('/api/mcp/switch', {on: false}); toast('对外接入已关闭', 'ok'); }
+    catch (err) { toast(err.message, 'err', 8000); }
+    refreshBadges(); return renderAccess();
+  }
+  if (id === 'axOn') {
+    return askPassphrase({title: '重新打开对外接入', summary: '打开后，有效的令牌马上又能经 <code>/mcp</code> 查知识库、SOP 和开放的数据工具。',
+                          confirm: '打开', run: pass => postJson('/api/mcp/switch', {on: true, passphrase: pass}),
+                          done: () => { toast('对外接入已打开', 'ok'); refreshBadges(); renderAccess(); }});
+  }
+  if (id === 'axPurge') return axPurgeDialog();
+  const removeId = e.target.dataset.axremove;
+  if (removeId) {
+    if (!confirm('删掉这枚令牌的记录？它的调用记录留着（照样显示令牌名），删了不能恢复。')) return;
+    try { await postJson('/api/mcp/tokens/' + encodeURIComponent(removeId) + '/remove', {}); toast('已删除', 'ok'); }
+    catch (err) { toast(err.message, 'err', 8000); }
+    return renderAccess();
+  }
   const revoke = e.target.dataset.axrevoke;
   if (revoke) {
     if (!confirm('吊销这枚令牌？用它的客户端下一个请求就会失败，不能恢复。')) return;
@@ -5337,10 +5434,127 @@ $('msettings').addEventListener('click', async e => {
 });
 
 $('mgroups').addEventListener('click', e => {
+  if (e.target.closest('[data-catmanage]')) return catDialog();
+  if (e.target.closest('[data-grpmanage]')) return grpDialog();
   if (e.target.closest('[data-infra]')) { tlTab = 'infra'; syncUrl(true); return renderManage(); }
   const g = e.target.closest('[data-mgroup]'); if (!g) return;
   mGroup = g.dataset.mgroup; mSearch = ''; mItem = null; tlProposing = false; pbEditing = null; pbPicking = false; renderManage();
 });
+
+/* ---------- 文档分类的维护（app/categories.py）：改名、合并、删除 ----------
+   先预览影响（服务端算），再确认；确认时带上预览的版本号，服务端重新算，变了就回 409 和新的影响，在这里换上重看。
+   会让某枚令牌或 chat.yaml 里的群多看到文档的，要审批口令。 */
+const CAT_NOTE = '网络补充', CAT_DEFAULT = '未分类';
+function catCounts() {
+  const by = {};
+  for (const d of allDocs) { const k = d.category || CAT_DEFAULT; by[k] = (by[k] || 0) + 1; }
+  return Object.entries(by).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+function catListHtml(counts) {
+  return counts.map(([name, n]) => `<div class="catrow"><span class="n">${esc(name)}</span><span class="note">${n} 篇</span>
+    ${name === CAT_NOTE ? '<span class="note">联网补充、未核实的资料，不能改</span>'
+      : `<button type="button" class="btn sm" data-catren="${esc(name)}">改名 / 合并…</button>${name === CAT_DEFAULT ? ''
+        : `<button type="button" class="btn sm danger" data-catdel="${esc(name)}">删除…</button>`}`}</div>`).join('');
+}
+function catImpactHtml(p) {
+  const head = p.action === 'delete' ? `删除分类「${esc(p.from)}」：${p.documents.length} 篇文档改到「${esc(p.to)}」`
+    : `「${esc(p.from)}」${p.merge ? '合并到已有的' : '改名为'}「${esc(p.to)}」：${p.documents.length} 篇文档`;
+  const delta = x => [x.gained ? `<b class="bad">多看到 ${x.gained} 篇</b>` : '', x.lost ? `少看到 ${x.lost} 篇` : ''].filter(Boolean).join('，') || '看到的不变';
+  const tokens = (p.tokens || []).map(t => `<li>令牌「${esc(t.name)}」${t.status === 'active' ? '' : `（${esc((TOKEN_STATE[t.status] || ['', t.status])[1])}）`}：
+    分类 ${esc(t.before.join('、') || '无')} → ${t.after.length ? esc(t.after.join('、')) : '<b>无（一篇都看不到）</b>'}；${delta(t)}</li>`).join('');
+  const chat = (p.chat || []).map(c => `<li>${esc(c.name)}（分类 ${esc(c.categories.join('、'))}）：${delta(c)}</li>`).join('');
+  return `<div class="icbox"><h4>${head}</h4>${(p.documents || []).length ? `<div class="note">${p.documents.slice(0, 8).map(esc).join('、')}${p.documents.length > 8 ? ` 等 ${p.documents.length} 篇` : ''}</div>` : ''}</div>
+    ${tokens ? `<div class="icbox"><h4>对外接入的令牌 <small>白名单跟着改：改名换成新名字，合并、删除只去掉原来的分类</small></h4><ul>${tokens}</ul></div>` : ''}
+    ${chat ? `<div class="icbox warn"><h4>云上协同 chat.yaml <small>在服务器上，页面改不了</small></h4><ul>${chat}</ul>
+      <div class="note">改完要到服务器上手工改 <code>${esc(p.chat_file || 'chat.yaml')}</code>。</div></div>` : ''}
+    ${p.needs_passphrase ? '<div class="icbox warn"><b>有令牌或群会多看到文档</b>（上面标红的），这次改动要输审批口令。</div>' : ''}`;
+}
+function catDialog() {
+  const body = `<div class="sum">分类是按文档聚合的：没有空分类，新建分类就是上传或「改分类」时写一个新名字。改名到已有的名字就是合并；
+      删除就是这类文档改到「${CAT_DEFAULT}」。对外令牌限定了分类的，白名单跟着改，只缩不放；会让谁多看到文档的，要审批口令。</div>
+    <div class="catlist">${catListHtml(catCounts())}</div><div data-catstep></div>`;
+  const wrap = icDialog('🗂 管理分类', body, '<button type="button" class="btn" data-dlgcancel>关闭</button>');
+  wrap.addEventListener('click', e => {
+    const ren = e.target.closest('[data-catren]'), del = e.target.closest('[data-catdel]');
+    if (ren) catRename(wrap, ren.dataset.catren);
+    if (del) catPreview(wrap, {action: 'delete', from: del.dataset.catdel});
+  });
+}
+function catRename(wrap, from) {
+  const box = wrap.querySelector('[data-catstep]');
+  const names = catCounts().map(([n]) => n).filter(n => n !== from && n !== CAT_NOTE);
+  box.innerHTML = `<div class="icbox"><h4>「${esc(from)}」改名或合并</h4>
+    <label class="fld">新名字<input data-catto maxlength="12" list="catMergeList" autocomplete="off" placeholder="写新名字；选已有的分类就是合并"></label>
+    <datalist id="catMergeList">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+    <div class="row"><button type="button" class="btn pri" data-catgo>看影响</button></div></div>`;
+  const input = box.querySelector('[data-catto]');
+  input.focus();
+  const go = () => { const to = input.value.trim(); if (!to) return input.focus(); catPreview(wrap, {action: 'rename', from, to}); };
+  box.querySelector('[data-catgo]').onclick = go;
+  input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); go(); } });
+}
+async function catPreview(wrap, req) {
+  const box = wrap.querySelector('[data-catstep]');
+  box.innerHTML = '<div class="note">正在算影响…</div>';
+  try { catConfirm(wrap, req, await postJson('/api/categories/preview', req), ''); }
+  catch (err) { box.innerHTML = `<div class="icbox warn">${esc(err.message)}</div>`; }
+}
+function catConfirm(wrap, req, p, note) {
+  const box = wrap.querySelector('[data-catstep]');
+  box.innerHTML = (note ? `<div class="icbox warn">${esc(note)}</div>` : '') + catImpactHtml(p)
+    + (p.needs_passphrase ? icPassHtml() : '')
+    + `<div class="row"><button type="button" class="btn warn" data-catapply>${p.action === 'delete' ? '删除' : p.merge ? '合并' : '改名'}</button></div>`;
+  box.querySelector('[data-catapply]').onclick = async e => {
+    const btn = e.currentTarget, pass = box.querySelector('[data-icpass]');
+    const body = {...req, version: p.version};
+    if (pass) { if (!pass.value) return pass.focus(); body.passphrase = pass.value; pass.value = ''; }
+    btn.disabled = true; $('dlgErr').textContent = '';
+    try {
+      const d = await postJson('/api/categories/apply', body);
+      closeDialog();
+      toast(`已${p.action === 'delete' ? '删除' : p.merge ? '合并' : '改名'}：${d.done.documents.length} 篇文档${(d.done.tokens || []).length ? '，令牌白名单已同步' : ''}`, 'ok', 6000);
+      if (mGroup === p.from) mGroup = p.to;
+      await loadDocs(); renderManage();
+    } catch (err) {
+      if (err.status === 409 && err.data && err.data.preview) return catConfirm(wrap, req, err.data.preview, err.message);
+      $('dlgErr').textContent = err.message; btn.disabled = err.status === 423;
+      if (pass) pass.focus();
+    }
+  };
+}
+
+/* ---------- 工具分组：只影响页面上怎么归类（不影响权限、对外开放、SOP），不要口令。写进工具服务的覆盖层，主配置不动 ---------- */
+function grpListHtml(groups) {
+  return groups.map(g => `<div class="catrow"><span class="n">${esc(g.name)}</span><span class="note">${g.total} 个工具</span>
+    <button type="button" class="btn sm" data-grpren="${esc(g.name)}">改名…</button></div>`).join('');
+}
+function grpDialog() {
+  const body = `<div class="sum">分组只影响这个页面上怎么归类：权限、对外开放、SOP 都不看它，所以不要口令。改名改的是此刻这一组里每个工具的分组
+      （写进工具服务的覆盖层，主配置不动，单个工具可以「恢复主配置的分组」）；以后主配置新加、写着旧组名的工具仍在旧组。
+      单个工具换组：在工具详情里点「改名/说明/分组」。</div>
+    <div class="catlist">${grpListHtml(tlGroupStats)}</div><div data-grpstep></div>`;
+  const wrap = icDialog('🗂 管理分组', body, '<button type="button" class="btn" data-dlgcancel>关闭</button>');
+  wrap.addEventListener('click', e => {
+    const ren = e.target.closest('[data-grpren]'); if (!ren) return;
+    const from = ren.dataset.grpren, box = wrap.querySelector('[data-grpstep]');
+    box.innerHTML = `<div class="icbox"><h4>分组「${esc(from)}」改名</h4>
+      <label class="fld">新名字<input data-grpto maxlength="20" list="grpMergeList" autocomplete="off" placeholder="写新名字；选已有的分组就是并过去"></label>
+      <datalist id="grpMergeList">${tlGroupNames.filter(n => n !== from).map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+      <div class="row"><button type="button" class="btn pri" data-grpgo>改名</button></div></div>`;
+    const input = box.querySelector('[data-grpto]');
+    input.focus();
+    box.querySelector('[data-grpgo]').onclick = async () => {
+      const to = input.value.trim(); if (!to) return input.focus();
+      $('dlgErr').textContent = '';
+      try {
+        const d = await postJson('/api/tools/group', {action: 'rename', from, to});
+        closeDialog(); toast(`已把 ${d.changed.length} 个工具改到「${to}」`, 'ok');
+        if (mGroup === from) mGroup = to;
+        loadTools();
+      } catch (err) { $('dlgErr').textContent = err.message; }
+    };
+  });
+}
 $('mlist').addEventListener('click', e => {
   const row = e.target.closest('[data-mitem]');
   if (row) {
@@ -5380,10 +5594,9 @@ $('mlist').addEventListener('click', e => {
   if (e.target.id === 'mNewSop') return open(() => { pbEditing = {steps: []}; pbPicking = false; });
   if (e.target.id === 'mExtract') return open(() => { pbPicking = true; pbEditing = null; pbDocFilter = ''; });
 });
-$('mlist').addEventListener('input', e => {
-  if (e.target.id !== 'mSearch') return;
-  mSearch = e.target.value; mSearchFocus = true;
-  clearTimeout(searchTimer); searchTimer = setTimeout(renderManage, 250);
+searchInput($('mlist'), el => el.id === 'mSearch', el => {
+  mSearch = el.value; mSearchFocus = true;
+  renderManage();
 });
 // 执行记录的筛选：只看一个 SOP、只看一种触发方式
 $('mlist').addEventListener('change', e => {

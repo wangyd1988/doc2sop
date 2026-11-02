@@ -396,5 +396,104 @@ check('群聊的对话网页上只读：不显示输入框和「重新回答」�
 check('执行记录：触发方式有「💬 群聊」', lineOf(/^const TRIGGER = .*$/m).includes("chat: ['💬', '群聊']"), true);
 check('云上协同的卡片和下拉不用全局的 .box、.ex', /class="(box|ex)"/.test(chatCard + chatRows), false);
 
+// ---------- 搜索框：输入法组字期间不搜，组字结束后防抖搜一次；所有搜索框都经 searchInput 接 ----------
+{
+  const {searchInput} = load('searchInput');
+  // 假的事件源 + 假的定时器：按顺序派发事件，手动推进时间
+  const makeRoot = () => { const ls = {}; return {ls, addEventListener: (type, fn) => (ls[type] ||= []).push(fn),
+    fire(type, ev) { (ls[type] || []).forEach(fn => fn({type, ...ev})); }}; };
+  let now = 0, timers = [];
+  const realSet = global.setTimeout, realClear = global.clearTimeout;
+  global.setTimeout = (fn, ms) => { const t = {fn, at: now + ms}; timers.push(t); return t; };
+  global.clearTimeout = t => { timers = timers.filter(x => x !== t); };
+  const tick = ms => { now += ms; const due = timers.filter(t => t.at <= now); timers = timers.filter(t => t.at > now); due.forEach(t => t.fn()); };
+  const el = {id: 'mSearch', value: ''};
+  const setup = () => { const root = makeRoot(), runs = []; now = 0; timers = [];
+    searchInput(root, x => x.id === 'mSearch', x => runs.push(x.value), 250); return {root, runs}; };
+  const typePinyin = (root, finalValue, chromeOrder) => {
+    root.fire('compositionstart', {target: el});
+    for (const v of ['n', 'ni', 'nih', 'niha', 'nihao']) { el.value = v; root.fire('input', {target: el, isComposing: true}); tick(300); }
+    el.value = finalValue;
+    if (chromeOrder) { root.fire('input', {target: el, isComposing: true}); root.fire('compositionend', {target: el}); }
+    else { root.fire('compositionend', {target: el}); root.fire('input', {target: el, isComposing: false}); }
+  };
+  for (const [label, chrome] of [['Chrome 顺序（input 在 compositionend 之前）', true], ['Firefox 顺序（compositionend 在 input 之前）', false]]) {
+    const {root, runs} = setup();
+    typePinyin(root, '你好', chrome);
+    check(`${label}：组字期间一次都不搜`, runs, []);
+    tick(300);
+    check(`${label}：组字结束后只搜一次，搜的是选好的汉字`, runs, ['你好']);
+  }
+  {
+    const {root, runs} = setup();
+    el.value = 'disk'; root.fire('input', {target: el}); tick(100);
+    root.fire('compositionstart', {target: el});               // 防抖还没到，开始打中文：取消这一次
+    tick(500);
+    check('开始组字时取消还没跑的那次搜索', runs, []);
+    el.value = 'disk 磁盘'; root.fire('compositionend', {target: el}); tick(300);
+    check('组字结束后搜完整的内容', runs, ['disk 磁盘']);
+  }
+  {
+    const {root, runs} = setup();
+    for (const v of ['d', 'di', 'dis', 'disk']) { el.value = v; root.fire('input', {target: el}); tick(100); }
+    tick(300);
+    check('英文照常防抖：连着打只搜最后一次', runs, ['disk']);
+    root.fire('compositionstart', {target: el}); el.value = 'diskc';
+    root.fire('keydown', {target: el, key: 'Enter', isComposing: true});
+    check('组字时按回车（选字）不搜', runs, ['disk']);
+    root.fire('focusout', {target: el});                       // 组字中途输入框没了：不会从此再也不搜
+    el.value = 'cpu'; root.fire('keydown', {target: el, key: 'Enter'});
+    check('回车立即搜；失焦清掉组字标记', runs, ['disk', 'cpu']);
+    root.fire('input', {target: {id: 'other', value: 'x'}}); tick(300);
+    check('别的输入框不触发', runs, ['disk', 'cpu']);
+  }
+  global.setTimeout = realSet; global.clearTimeout = realClear;
+
+  // 静态检查：页面上每个搜索 / 筛选框都经 searchInput 接上，没有直接挂 input 监听去搜的
+  const code = scripts.join('\n');
+  const boxes = [...html.matchAll(/<input\b[^>]*>/g)].map(m => m[0])
+    .filter(tag => /type="search"|placeholder="[^"]*(搜索|筛选|过滤|查找)/.test(tag))
+    .map(tag => (tag.match(/id="([^"]+)"/) || [])[1]);
+  check('页面上的搜索框都有 id', boxes.every(Boolean) && boxes.length >= 2, true);
+  for (const id of boxes) {
+    check(`搜索框 #${id} 经 searchInput 接上`, new RegExp(`searchInput\\([^;]*el\\.id === '${id}'`).test(code), true);
+    check(`搜索框 #${id} 没有另挂 input 监听`, new RegExp(`addEventListener\\('input'[^]{0,120}${id}`).test(code), false);
+  }
+  check('文档 / SOP / 工具的搜索不再重建输入框', code.includes("kept.dataset.tab === mTab"), true);
+  check('选文档的筛选框按回车时不在组字', code.includes("e.target.id === 'pbDocFilter' && e.key === 'Enter' && !e.isComposing"), true);
+}
+
+// ---------- 对外接入：总开关、删令牌、清除调用记录、操作记录；分类维护的影响预览 ----------
+{
+  const AX = new Function([/^const esc = .*$/m, /^const axTime = .*$/m, /^const AX_CHANGE = .*$/m, /^const TOKEN_STATE = .*$/m].map(lineOf)
+    .concat(['axCats', 'axSwitchHtml', 'axChangesHtml', 'catImpactHtml', 'catListHtml'].map(extract)).join('\n')
+    + `\nconst CAT_NOTE = '网络补充', CAT_DEFAULT = '未分类';\nreturn {axCats, axSwitchHtml, axChangesHtml, catImpactHtml, catListHtml};`)();
+  check('白名单：null 是全部、空的是一篇都看不到', [AX.axCats(null), AX.axCats([]).includes('无（分类已删除）'), AX.axCats([evil]).includes('<img')],
+    ['全部', true, false]);
+  const on = AX.axSwitchHtml({on: true, at: null});
+  check('开着：有「关闭」按钮，不要口令', [on.includes('id="axOff"'), on.includes('axOn')], [true, false]);
+  const off = AX.axSwitchHtml({on: false, at: '2026-11-02T08:00:00+00:00', ip: evil, user: 'tester', reopen: ''});
+  check('关着：「重新打开…」可点，来源地址转义，写了宿主机上的逃生口',
+    [/id="axOn" class="pri" >/.test(off), off.includes('<img'), off.includes('python -m app.access open')], [true, false, true]);
+  const oldSvc = AX.axSwitchHtml({on: false, at: null, reopen: evil});
+  check('工具服务较旧：「重新打开」灰掉、原因转义', [/id="axOn" class="pri" disabled>/.test(oldSvc), oldSvc.includes('<img')], [true, false]);
+  const changes = AX.axChangesHtml([{at: '2026-11-02T08:00:00+00:00', kind: 'calls-purge', detail: evil, count: 3, user: evil, ip: evil}]);
+  check('操作记录：内容、人、地址都转义；写着页面上删不掉', [changes.includes('<img'), changes.includes('清除调用记录'), changes.includes('删不掉'),
+    /data-\w*del|删除<\/button>/.test(changes)], [false, true, true, false]);
+  const impact = AX.catImpactHtml({action: 'rename', from: evil, to: evil, merge: true, documents: [evil], needs_passphrase: true, chat_file: evil,
+    tokens: [{name: evil, status: 'revoked', before: [evil], after: [], gained: 2, lost: 0}],
+    chat: [{name: evil, categories: [evil], gained: 1, lost: 0}]});
+  check('分类预览：名字、文档、令牌、群都转义', impact.includes('<img'), false);
+  check('分类预览：多看到的标红、白名单去空写明、要口令时说清楚', [impact.includes('多看到 2 篇'), impact.includes('一篇都看不到'),
+    impact.includes('要输审批口令'), impact.includes('合并到已有的')], [true, true, true, true]);
+  const list = AX.catListHtml([['网络补充', 2], ['未分类', 1], [evil, 3]]);
+  check('分类列表：网络补充不能改、未分类不能删、名字转义', [/data-catren="网络补充"/.test(list), /data-catdel="未分类"/.test(list),
+    list.includes('<img')], [false, false, false]);
+  const GRP = new Function(`${lineOf(/^const esc = .*$/m)}\n${extract('grpListHtml')}\nreturn grpListHtml;`)();
+  check('工具分组列表：分组名转义', GRP([{name: evil, total: 2}]).includes('<img'), false);
+  check('工具卡片：分组的输入框和下拉提示都转义', /value="\$\{esc\(t\.group \|\| ''\)\}"/.test(html) && html.includes('`<option value="${esc(g)}">`'), true);
+  check('工具卡片：主配置里的分组转义', html.includes("主配置里是「${esc(t.group_base || '其他')}」"), true);
+}
+
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

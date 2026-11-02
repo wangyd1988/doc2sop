@@ -82,6 +82,20 @@ def set_category(source: str, category: str) -> bool:
     return True
 
 
+def retag_locked(sources, category: str) -> int:
+    """把这几篇文档的全部片段改到 category，返回改了几个片段。调用方必须已经拿着 write_lock
+    （分类改名、合并、删除要把核对、改令牌白名单、改片段放在同一把锁里，和上传、改单篇分类不交错）。"""
+    changed = 0
+    for source in sorted(sources):
+        got = collection.get(where={"source": source}, include=["metadatas"])
+        for start in range(0, len(got["ids"]), BATCH):
+            ids, metas = got["ids"][start:start + BATCH], got["metadatas"][start:start + BATCH]
+            collection.update(ids=ids, metadatas=[{**m, "category": category} for m in metas])
+            changed += len(ids)
+    _bump()
+    return changed
+
+
 def list_documents():
     """One row per source file, with its chunk count and category."""
     records = collection.get(include=["metadatas"])

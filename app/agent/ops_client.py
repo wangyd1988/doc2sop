@@ -119,6 +119,19 @@ def override(name: str, enabled_flag=None, desc=None, label=None, reset=False) -
     return _request("/tools/override", payload).get("tool", {})
 
 
+OLD_SERVICE_GROUP = "工具服务较旧：升级 ops_readonly.py（和 ops_exec.py 一起拷）后才能在页面上改分组"
+
+
+def group_change(payload: dict, caller: str = "") -> dict:
+    """改工具的分组（set / reset / rename），写进工具服务的覆盖层。老工具服务 404 → status 501。"""
+    try:
+        return _request("/tools/group", payload, timeout=15, headers=_caller_headers(caller))
+    except OpsUnavailable as exc:
+        if exc.status == 404:
+            raise OpsUnavailable(OLD_SERVICE_GROUP, status=501) from None
+        raise
+
+
 def propose(tool: dict, author: str = "web", caller: str = "") -> dict:
     """Queue a new tool for host-side review. It is inert until approved."""
     return _request("/tools/propose", {"tool": tool, "author": author}, headers=_caller_headers(caller))

@@ -1890,10 +1890,22 @@ def _entry_export(entry, name, in_main, origin, problems):
     return True
 
 
-# 覆盖层只允许改这几个字段：一个是开关（缩权方向），两个是给人和模型看的文字。
-# 它们都不改变实际执行的命令，所以覆盖层即使被完全写坏也无法提权。
-OVERRIDABLE = ("enabled", "desc", "label")
+# 覆盖层只允许改这几个字段：一个是开关（缩权方向），两个是给人和模型看的文字，一个是页面上的分组。
+# 它们都不改变实际执行的命令，所以覆盖层即使被完全写坏也无法提权。分组只影响显示（页面分组、契约里的 _meta.doc2sop.group），
+# 权限、对外开放（export 只认主配置）、SOP（按工具名）、主机分组（groups，另一个字段）都不看它。
+OVERRIDABLE = ("enabled", "desc", "label", "group")
 MAX_DESC = 300
+_GROUP_BAD = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def _clean_group(value):
+    """分组的覆盖值：去掉首尾空白后 1..GROUP_MAX 个字、没有控制字符（和显示名一样的要求）；不合规返回 None。"""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not 1 <= len(text) <= GROUP_MAX or _GROUP_BAD.search(text):
+        return None
+    return text
 
 
 def load_overrides():
@@ -1911,6 +1923,8 @@ def load_overrides():
             kept["desc"] = str(patch["desc"]).strip()[:MAX_DESC]
         if "label" in patch:
             kept["label"] = str(patch["label"]).strip()[:MAX_LABEL]
+        if "group" in patch and _clean_group(patch["group"]) is not None:
+            kept["group"] = _clean_group(patch["group"])
         if kept:
             clean[str(name)] = kept
     return clean
@@ -1921,6 +1935,8 @@ def _apply_overrides(tools, overrides):
         spec = tools.get(name)
         if spec is None:
             continue
+        if "group" in patch:
+            spec["group_base"] = spec.get("group", "")
         spec.update(patch)
         spec["overridden"] = sorted(patch)
     return tools
@@ -2335,6 +2351,8 @@ def describe_tools():
             item["external_why"] = spec.get("external_why", "")
         if spec.get("replaces"):
             item["replaces"] = {"pack": spec["replaces"]["pack"], "impl": spec["replaces"]["impl"]}
+        if "group_base" in spec:
+            item["group_base"] = spec["group_base"]   # 页面改了分组：主配置里原来的（只在改过的工具上出现）
         if spec.get("type") == "mcp":
             runnable, reason, live = _mcp_state(spec)
             item.update(mcp=spec["mcp"], reason=reason, readonly=_mcp_readonly(spec, live),
@@ -2421,6 +2439,74 @@ def reset_override(name):
         _write_yaml(_sibling("overrides"), {"overrides": entries})
         refresh(force=True)
     return describe_tools().get(name)
+
+
+_group_lock = threading.Lock()
+
+
+def _base_group(name):
+    """主配置（含场景包、MCP 批准文件）里这个工具的分组，不算页面覆盖。"""
+    spec = all_tools().get(name) or {}
+    return spec.get("group_base", spec.get("group", ""))
+
+
+def group_change(payload):
+    """页面上改工具的分组（只影响显示，不要口令）：写进覆盖层的 group 键，主配置一个字节都不动。
+        {action: set, name, group}      改一个工具；改回主配置里的那个分组就等于恢复
+        {action: reset, name}           只去掉分组的覆盖（显示名、说明、启停的覆盖不动）
+        {action: rename, from, to}      把此刻分组是 from 的工具一次性写成 to（一次写文件）
+    返回 {changed: [工具名…]}。不合规抛 ConfigError，什么都不写。"""
+    action = payload.get("action")
+    tools = all_tools()
+    if action == "rename":
+        old = _clean_group(payload.get("from"))
+        new = _clean_group(payload.get("to"))
+        if old is None or new is None:
+            raise ConfigError(f"分组名要 1..{GROUP_MAX} 个字，不能有换行之类的控制字符")
+        if old == new:
+            raise ConfigError("新名字和原来的一样")
+        # 没写分组的工具在页面上显示在「其他」里（app/catalog.py）：改「其他」的名字就是给它们写上分组
+        names = sorted(n for n, spec in tools.items() if (spec.get("group") or "其他") == old)
+        if not names:
+            raise ConfigError(f"没有分组「{old}」了（可能刚被改过）：刷新后再试")
+        targets = {n: new for n in names}
+    elif action in ("set", "reset"):
+        name = str(payload.get("name") or "")
+        if name not in tools:
+            raise ConfigError(f"未知工具：{name[:64]}")
+        if action == "set":
+            group = _clean_group(payload.get("group"))
+            if group is None:
+                raise ConfigError(f"分组名要 1..{GROUP_MAX} 个字，不能有换行之类的控制字符")
+            targets = {name: group}
+        else:
+            targets = {name: None}
+    else:
+        raise ConfigError("action 只能是 set、reset、rename")
+    with _group_lock:
+        entries = _read_yaml(_sibling("overrides")).get("overrides")
+        entries = entries if isinstance(entries, dict) else {}
+        changed = []
+        for name, group in targets.items():
+            patch = dict(entries.get(name) or {}) if isinstance(entries.get(name), dict) else {}
+            if group is None or group == _base_group(name):
+                if "group" not in patch:
+                    continue
+                patch.pop("group")
+            else:
+                if patch.get("group") == group:
+                    continue
+                patch["group"] = group
+            kept = {key: patch[key] for key in OVERRIDABLE if key in patch}
+            if kept:
+                entries[name] = kept
+            else:
+                entries.pop(name, None)
+            changed.append(name)
+        if changed:
+            _write_yaml(_sibling("overrides"), {"overrides": entries})
+            refresh(force=True)
+    return {"changed": changed}
 
 
 def list_pending():
@@ -9716,6 +9802,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/tools/approval/verify":
             # 应用探测有没有「只核对口令」的接口（老工具服务回 404）、页面配置开没开。不碰口令，不记日志
             return self._send(200, {"page_config": page_config_enabled()})
+        if self.path == "/tools/group":
+            # 应用探测能不能在页面上改工具的分组（老工具服务回 404）
+            return self._send(200, {"supported": True})
         if self.path in ("/tools/review", "/tools/review?wait=0"):
             # 页面审批要看的全部：待审申请（带完整内容、风险提示、自动检查）、要重新确认的脚本、审批口令的状态。
             # 「待审批」页最多等 3 秒；?wait=0 是工作台和导航徽标用的：没做完的检查不等，照样交给后台去做
@@ -9756,7 +9845,7 @@ class Handler(BaseHTTPRequestHandler):
                     "/tools/config/host-install": page_host_install}
 
     def do_POST(self):
-        if self.path not in ("/exec", "/tools/override", "/tools/propose") and self.path not in self.PAGE_ACTIONS:
+        if self.path not in ("/exec", "/tools/override", "/tools/propose", "/tools/group") and self.path not in self.PAGE_ACTIONS:
             self._discard_body()
             return self._send(404, {"error": "Not found"})
         if not self._authorised():
@@ -9772,6 +9861,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/tools/override":
             return self._override(payload)
+        if self.path == "/tools/group":
+            return self._group(payload)
         if self.path == "/tools/propose":
             return self._propose(payload)
         if self.path in self.PAGE_ACTIONS:
@@ -9804,6 +9895,18 @@ class Handler(BaseHTTPRequestHandler):
         except ConfigError as exc:
             return self._send(400, {"error": str(exc)})
         return self._send(200, {"tool": tool})
+
+    def _group(self, payload):
+        """页面上改工具的分组：只影响显示，不要口令；写进覆盖层（group_change）。"""
+        try:
+            result = group_change(payload)
+        except ConfigError as exc:
+            return self._send(400, {"error": str(exc)})
+        caller = _caller(self.headers.get(CALLER_HEADER, ""))
+        if result["changed"]:
+            what = {"set": "改了分组", "reset": "恢复了主配置的分组", "rename": "分组改名"}.get(payload.get("action"), "")
+            print(f"[override] {what}：{'、'.join(result['changed'])} caller={caller or '-'}", flush=True)
+        return self._send(200, result)
 
     def _propose(self, payload):
         """Queue a proposal. It stays inert until approved: in the page (approval passphrase) or on the host."""

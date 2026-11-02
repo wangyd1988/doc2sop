@@ -121,7 +121,7 @@ flowchart LR
 外部智能体（Claude Code、Copilot、Cursor…）
  │  Streamable HTTP + 令牌（Authorization: Bearer）；生产上前面放反向代理和 TLS
  ▼
-/mcp  TokenGate：先看来源地址（MCP_CLIENTS）· 只认令牌（不认 Basic）· 按令牌限流、限会话数 → 官方 MCP SDK 的会话管理器
+/mcp  TokenGate：先看来源地址（MCP_CLIENTS）· 页面上的总开关（关着一律 403，不碰令牌库）· 只认令牌（不认 Basic）· 按令牌限流、限会话数 → 官方 MCP SDK 的会话管理器
  │  工具：知识类 kb_* / sop_*、宿主机标了 export 的数据工具（照样转给工具服务 /exec，带 X-Ops-Caller）
  │  提示词：每个启用的 SOP 一条；变了发 list_changed
  ▼
@@ -268,8 +268,10 @@ SOP 不只在有人问的时候跑（用法见 [`自动执行.md`](自动执行.
 ```
 app/
 ├── main.py            HTTP API 与鉴权
-├── mcp_server.py      对外 MCP 出口 /mcp（MCP_ENABLED）：令牌校验、类别 × 出口、提示词、变化通知、「对外接入」接口
-├── access.py          对外接入的令牌（只存哈希）、调用审计、按令牌限流（SQLite access.db）
+├── mcp_server.py      对外 MCP 出口 /mcp（MCP_ENABLED）：令牌校验、类别 × 出口、提示词、变化通知、「对外接入」接口（总开关、删令牌、清除审计）
+├── access.py          对外接入的令牌（只存哈希）、调用审计、按令牌限流、页面上的总开关和只增不删的操作记录（SQLite access.db）
+├── approval.py        应用自己把关的改动共用：请求体手动解析、按来源限频、请工具服务核对审批口令（只有 200 + ok 才算通过）
+├── categories.py      文档分类的改名、合并、删除：令牌白名单只缩不放、会多看到的要口令、预览后有变化回 409
 ├── config.py          环境变量配置
 ├── clients.py         模型客户端（经网关）
 ├── conversations.py   会话列表与界面回放（SQLite）

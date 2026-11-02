@@ -71,6 +71,7 @@ def reset_access():
     with access.lock:
         access.db.execute("DELETE FROM mcp_tokens")
         access.db.execute("DELETE FROM mcp_calls")
+        access.db.execute("DELETE FROM mcp_state")       # 总开关回到「没改过 = 开」
         access.db.commit()
     access._limiter._hits.clear()
     access._touched.clear()

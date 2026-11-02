@@ -77,7 +77,7 @@ def _access():
         tokens = access.list_tokens()
         calls = access.recent_calls(1)
         out.update(tokens=len(tokens), active=sum(1 for token in tokens if token["status"] == "active"),
-                   last_call=calls[0]["at"] if calls else None)
+                   last_call=calls[0]["at"] if calls else None, open=access.is_open())
     return out
 
 
