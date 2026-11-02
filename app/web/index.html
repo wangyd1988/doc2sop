@@ -152,6 +152,19 @@ body[data-page="chat"] .top-acts [data-for~="chat"]:not([hidden]) { display: inl
 .conv .del { opacity: 0; color: var(--muted); padding: 4px 6px; border-radius: 6px; }
 .conv:hover .del { opacity: 1; }
 .conv .del:hover { color: var(--danger); background: var(--panel); }
+/* 云上协同打开时：历史对话按来源筛选，群聊的对话带来源、网页上只读 */
+.conv-filter { display: flex; gap: 4px; padding: 2px 4px 6px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.conv-filter button { padding: 3px 10px; border-radius: 999px; font-size: 12.5px; color: var(--muted); }
+.conv-filter button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.conv .src { color: var(--accent); }
+.ro-note { margin: 0 0 16px; padding: 10px 14px; border-radius: 10px; background: var(--panel-2); color: var(--muted); font-size: 13px; }
+#pg-chat.readonly .composer, #pg-chat.readonly [data-retry] { display: none; }
+.chatcard pre.cfg { margin: 4px 0 0; }
+.chatcard td pre { margin: 0; white-space: pre; font-size: 12px; }
+.chatcard .scopes { margin: 0; padding-left: 18px; }
+.chatcard h4 { font-size: 13.5px; margin: 18px 0 8px; }
+.chatcard h4 small { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 6px; }
+.chatcard .row select { width: auto; min-width: 180px; }
 #chat { flex: 1; overflow-y: auto; padding: 24px 20px 12px; scroll-behavior: smooth; }
 .wrap { max-width: 820px; margin: 0 auto; }
 
@@ -1893,16 +1906,27 @@ const toBottom = () => { $('chat').scrollTop = $('chat').scrollHeight; };
 
 /* ---------- Conversations ---------- */
 let convList = [];
+let convSource = '';      // 云上协同打开时的筛选：'' 全部 / web 网页 / chat 云上协同
+const CONV_SOURCES = [['', '全部'], ['web', '网页'], ['chat', '云上协同']];
 async function loadConvs() {
-  const d = await (await fetch('/api/conversations')).json();
-  convList = d.conversations || [];
+  const d = await (await fetch('/api/conversations' + (convSource ? '?source=' + convSource : ''))).json();
+  if (!convSource) convList = d.conversations || [];      // 左侧导航的「最近」不跟着筛选变
   const when = t => new Date(t).toLocaleString('zh-CN', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'});
-  $('histPanel').innerHTML = d.conversations.length ? d.conversations.map(c =>
+  const filter = d.chat ? `<div class="conv-filter">${CONV_SOURCES.map(([k, v]) =>
+    `<button data-src="${k}" class="${convSource === k ? 'on' : ''}">${v}</button>`).join('')}</div>` : '';
+  $('histPanel').innerHTML = filter + (d.conversations.length ? d.conversations.map(c =>
     `<div class="conv${c.id === convId ? ' on' : ''}" data-id="${c.id}">
-       <div class="meta"><div class="title">${esc(c.title)}</div><div class="sub">${when(c.updated_at)} · ${c.messages} 条</div></div>
+       <div class="meta"><div class="title">${esc(c.title)}</div><div class="sub">${c.source
+         ? `<span class="src" title="云上协同里的对话，网页上只能查看">💬 ${esc(c.source.chat_name)}</span> · ` : ''}${when(c.updated_at)} · ${c.messages} 条</div></div>
        <button class="del" data-del="${c.id}" title="删除">✕</button></div>`).join('')
-    : '<div class="empty">还没有历史对话</div>';
+    : `<div class="empty">${convSource ? '这一类还没有对话' : '还没有历史对话'}</div>`);
   paintNavRecent();
+}
+// 群聊的对话在网页上只读：不显示输入框，顶上写明来源（/api/ask 也会回 409）
+function setReadonly(source) {
+  $('pg-chat').classList.toggle('readonly', !!source);
+  if (source) $('thread').insertAdjacentHTML('afterbegin', `<div class="ro-note">💬 这是云上协同里的对话（${esc(source.chat_name)}${source.sender_name
+    ? ' · ' + esc(source.sender_name) : ''}），网页上只能查看；要接着问请点「新对话」。</div>`);
 }
 // 左侧导航「对话」下面的最近 5 条：点了直接打开那条对话
 function paintNavRecent() {
@@ -1911,7 +1935,7 @@ function paintNavRecent() {
 }
 async function openConv(id) {
   const r = await fetch('/api/conversations/' + encodeURIComponent(id));
-  if (!r.ok) { convId = null; welcome(); return; }
+  if (!r.ok) { convId = null; welcome(); setReadonly(null); return; }
   const d = await r.json();
   convId = id;
   hideNudge();
@@ -1938,13 +1962,16 @@ async function openConv(id) {
     if (m.proposal) showProposal(bot, m.proposal);
   }
   if (!d.messages.length) welcome();
+  setReadonly(d.readonly ? d.source : null);
   toBottom();
   paintNavRecent();
 }
-function newConv() { convId = null; hideNudge(); welcome(); $('question').focus(); paintNavRecent(); if (page === 'chat') syncUrl(false); }
+function newConv() { convId = null; hideNudge(); welcome(); setReadonly(null); $('question').focus(); paintNavRecent(); if (page === 'chat') syncUrl(false); }
 // 品牌区当主页按钮：回到工作台
 document.querySelector('#side .brand').addEventListener('click', () => go('home'));
 $('histPanel').addEventListener('click', async e => {
+  const src = e.target.closest('[data-src]');
+  if (src) { e.stopPropagation(); convSource = src.dataset.src; loadConvs(); return; }
   const del = e.target.closest('[data-del]');
   if (del) {
     e.stopPropagation();
@@ -2888,7 +2915,7 @@ $('tlPanel').addEventListener('change', e => {
 
 async function ask() {
   const q = $('question').value.trim();
-  if (!q || $('askBtn').disabled) return;
+  if (!q || $('askBtn').disabled || $('pg-chat').classList.contains('readonly')) return;
   const book = pendingPlaybook && q.startsWith(pendingPlaybook.prefix) ? pendingPlaybook : null;
   const playbookId = book ? book.id : undefined;
   pendingPlaybook = null;
@@ -5063,6 +5090,7 @@ async function renderAccess() {
           知识库片段和工具返回会进入外部智能体用的模型服务商；外部智能体通常能执行命令、改文件，要对写操作保持人工确认。</div></div>
       <div class="card ghost"><h3>令牌 <small>打开后显示</small></h3><table class="ax"><tr><th>名字</th><th>范围</th><th>有效期至</th><th>最近使用</th><th>状态</th></tr>
         <tr><td>张三的 Claude Code</td><td>知识库、SOP</td><td>—</td><td>—</td><td>—</td></tr></table></div></div>`;
+    paintChat();
     return;
   }
   const s = await r.json();
@@ -5120,9 +5148,69 @@ async function renderAccess() {
       <li>知识库片段和工具返回会进入外部智能体所用的模型服务商，不再只经过自己的模型网关；只开放不涉及个人的数据。</li>
       <li>令牌只存哈希：丢了就吊销重签，找不回来。</li></ul></div>
   </div>`;
+  paintChat();
+}
+
+/* ---------- 云上协同（docs/正式部署.md「云上协同」）：对外接入页最下面一张卡片 ----------
+   没打开时（/api/chat/status 是 404）什么都不加。谁能用、能查什么、推到哪都在服务器上配，这里只看、只发测试消息。 */
+const CHAT_STATE = {connected: ['ok', '已连接'], connecting: ['warn', '正在连接'], starting: ['off', '没有连'], disconnected: ['bad', '断开了'], problem: ['bad', '有问题']};
+const CHAT_TYPE = {single: '私聊', group: '群', org: '组织', dept: '部门'};
+const PUSH_STATUS = {sent: '已发', held: '超过每小时上限，合并发', skipped: '没发', failed: '没发出去'};
+function chatScopes(list, none) {
+  if (!list.length) return none;
+  return `<ul class="scopes">${list.map(s => `<li><b>${esc(s.name)}</b>：${s.tools.length ? '数据工具 ' + s.tools.map(t => `<code>${esc(t)}</code>`).join('、') : '只查文档'}`
+    + `${s.categories ? '；只查分类 ' + s.categories.map(esc).join('、') : ''}${s.mode === 'smart' ? '；智能模式' : ''}${s.web ? '；联网' : ''}</li>`).join('')}</ul>`;
+}
+function chatCardHtml(s) {
+  const b = s.bridge || {}, cfg = s.config || {}, ch = s.channel || {};
+  const st = !b.reachable ? ['bad', '连不上转接程序'] : b.enabled === false ? ['off', '关着（CCWORK_ENABLED=false）'] : (CHAT_STATE[b.state] || ['off', b.state || '—']);
+  const kinds = b.target_kinds || {};
+  const targets = b.targets || [];
+  const problems = [s.problem, b.error, ...(b.problems || []), ...(s.problems || [])].filter(Boolean);
+  return `<div class="card chatcard"><h3>云上协同 <small>群里 @ 机器人、私聊提问；计划和告警的结果推到群里</small></h3>
+    <dl><dt>转接程序</dt><dd><span class="pill ${st[0]}">${esc(st[1])}</span>${b.since ? ` 自 ${esc(shortTime(b.since))}` : ''}
+        ${b.reachable ? ` · ${b.tls ? '加密连接' : b.diagnose ? '明文连接，只诊断' : '—'} · ${b.send ? '能发消息' : '只收不发'}${b.robot ? ` · 机器人 ${esc(b.robot)}` : ''}` : ''}
+        ${b.conflict ? '<div class="note" style="color:var(--danger)">疑似另一处在用同一个机器人</div>' : ''}</dd>
+      <dt>kb-app</dt><dd>${ch.state === 'ok' ? `正在取消息${ch.last_poll ? '（' + esc(shortTime(ch.last_poll)) + '）' : ''}` : ch.state ? esc(ch.error || ch.state) : '聊天线程没有起来'}${ch.inflight ? ` · 正在答 ${ch.inflight} 个` : ''}</dd>
+      <dt>推送目标</dt><dd>${targets.map(t => `<span class="pill">${esc(t)} · ${kinds[t] === 'user' ? '个人' : '群'}</span>`).join(' ') || '还没有（在转接程序的 targets.yaml 里配）'}</dd>
+      <dt>开通的群</dt><dd>${chatScopes(cfg.groups || [], '还没有')}</dd>
+      <dt>开通私聊的人</dt><dd>${chatScopes(cfg.people || [], '还没有')}</dd>
+      <dt>其他</dt><dd>${cfg.paused ? '<b>暂停服务中</b> · ' : ''}没开通的 @ 它时${cfg.unknown_reply === 'silent' ? '不回' : '每个会话 24 小时回一句'}${cfg.contact ? `（联系人：${esc(cfg.contact)}）` : ''}
+        ${cfg.limits ? ` · 每人每小时 ${cfg.limits.person_per_hour} 个问题` : ''} · 群聊记录暂不自动删${(cfg.digest || []).length ? ` · 每周缺口摘要发给 ${cfg.digest.map(d => esc(d.target)).join('、')}` : ''}</dd></dl>
+    ${problems.length ? `<div class="warn" style="margin:0 0 12px"><b>要处理的：</b><ul class="ax">${problems.map(p => `<li>${esc(p)}</li>`).join('')}</ul></div>` : ''}
+    <div class="row"><select id="chatTarget" ${targets.length ? '' : 'disabled'}>${targets.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('') || '<option>（没有推送目标）</option>'}</select>
+      <button data-chattest ${targets.length && b.send ? '' : 'disabled'}>发一条测试消息</button><span class="note">同一个目标每分钟最多一条，每次都记日志</span></div>
+    <h4>最近 @ 过、还没开通的 <small>保留 30 天，不记内容；开通时把右边几行粘进服务器上的配置</small></h4>
+    ${(s.unknown || []).length ? `<table class="ax stack"><tr><th>最近</th><th>类型</th><th>名字</th><th>次数</th><th>chat.yaml</th><th>targets.yaml（要推送时）</th></tr>${s.unknown.map(u =>
+      `<tr><td data-l="最近">${esc(shortTime(u.last_at))}</td><td data-l="类型">${esc(CHAT_TYPE[u.chat_type] || u.chat_type)}</td>
+        <td data-l="名字">${esc(u.chat_type === 'single' ? u.sender_name : u.chat_name)}${u.chat_type !== 'single' && u.sender_name ? `<div class="note">${esc(u.sender_name)} @ 的</div>` : ''}</td>
+        <td data-l="次数">${u.count}</td><td data-l="chat.yaml"><pre>${esc(u.paste.chat_yaml)}</pre></td><td data-l="targets.yaml"><pre>${esc(u.paste.targets_yaml)}</pre></td></tr>`).join('')}</table>`
+      : '<div class="note">还没有。</div>'}
+    ${(s.pushes || []).length ? `<h4>最近的推送</h4><table class="ax stack"><tr><th>时间</th><th>内容</th><th>目标</th><th>结果</th></tr>${s.pushes.map(p =>
+      `<tr><td data-l="时间">${esc(shortTime(p.created_at))}</td><td data-l="内容">${{run: '执行结果', test: '测试消息', digest: '缺口摘要'}[p.kind] || esc(p.kind)}</td>
+        <td data-l="目标">${esc(p.target)}</td><td data-l="结果" class="${p.status === 'failed' ? 'bad' : ''}">${esc(PUSH_STATUS[p.status] || p.status)}${p.detail ? '：' + esc(p.detail) : ''}</td></tr>`).join('')}</table>` : ''}
+    <div class="howto">谁能用、能查什么写在服务器上的 <code>${esc(cfg.file || 'chat.yaml')}</code>${cfg.exists ? '' : '（还没有：谁也没开通）'}，改了不用重启；推送目标在转接程序的
+      <code>/etc/doc2sop-ccwork/targets.yaml</code>。群里的回答默认只查文档、不联网、不开数据工具，按群逐个打开。说明见 docs/正式部署.md「云上协同」。</div></div>`;
+}
+async function paintChat() {
+  const r = await fetch('/api/chat/status').catch(() => null);
+  if (!r || !r.ok || mTab !== 'access') return;
+  const s = await r.json();
+  const sf = $('msettings').querySelector('.sf');
+  if (!sf) return;
+  sf.querySelector('.chatcard')?.remove();
+  sf.insertAdjacentHTML('beforeend', chatCardHtml(s));
 }
 $('msettings').addEventListener('click', async e => {
   if (mTab !== 'access') return;
+  if (e.target.closest('[data-chattest]')) {
+    const target = $('chatTarget').value;
+    try {
+      const d = await sendJson('POST', '/api/chat/test-push', {target});
+      toast(d.held ? `「${target}」这一小时的推送已到上限，测试消息会合并发出` : `测试消息已发给「${target}」，去云上协同里看看`, 'ok', 6000);
+    } catch (err) { toast(err.message, 'err', 8000); }
+    return paintChat();
+  }
   const id = e.target.id;
   if (id === 'axAllCats') {
     document.querySelectorAll('[data-axcat]').forEach(x => { x.disabled = e.target.checked; if (e.target.checked) x.checked = false; });
@@ -5277,7 +5365,7 @@ $('mdetail').addEventListener('click', async e => {
    知识库缺口：大家常问、文档里没写的问题，按次数排；「忽略」后相似的问题不再出现。 */
 const LEVEL = {ok: ['ok', '✅', '正常'], anomaly: ['warn', '⚠️', '有异常'], failed: ['bad', '❌', '没跑成'], unknown: ['unk', '❓', '没法判断']};
 const RUN_STATUS = {queued: '排队中', running: '执行中', missed: '错过', skipped: '跳过'};
-const TRIGGER = {web: ['▶', '页面'], schedule: ['⏰', '定时'], alert: ['🚨', '告警']};
+const TRIGGER = {web: ['▶', '页面'], schedule: ['⏰', '定时'], alert: ['🚨', '告警'], chat: ['💬', '群聊']};
 const MARK = {ok: '✅', warn: '⚠️', bad: '❌', unknown: '❓'};
 const FEEDBACK = {correct: '判断正确', false_alarm: '误报', wrong_threshold: '阈值不对', missing_step: '漏了一步', unhelpful: '没答好'};
 const WEEKDAY = ['一', '二', '三', '四', '五', '六', '日'];
@@ -5545,6 +5633,29 @@ function notifyRows(n) {
       `<option value="${k}"${(n.repeat || 'daily') === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
     ${groups.length ? '' : '<div class="note" style="margin:-4px 0 10px">服务器上还没有配收件组，现在只能选「不发邮件」（见下面「服务器上的配置文件」）。</div>'}`;
 }
+/* 云上协同的推送（打开了才有）：目标只能选转接程序 targets.yaml 里配好的名字；设置存在旁表里，和邮件各管各的 */
+function chatNotifyRows(kind, id) {
+  const c = autoState.chat;
+  if (!c) return '';
+  const cur = (c.items || []).find(i => i.kind === kind && i.id === id) || {};
+  const targets = [...(c.targets || [])];
+  if (cur.target && !targets.includes(cur.target)) targets.push(cur.target);     // 目标从配置里删了：照样显示出来
+  return `<div class="frow"><span>推送到云上协同<i>转接程序里配好的目标</i></span><select id="afChat"><option value="">不推送</option>${targets.map(t =>
+      `<option value="${esc(t)}"${cur.target === t ? ' selected' : ''}>${esc(t)}${(c.target_kinds || {})[t] === 'user' ? '（个人）' : ''}</option>`).join('')}</select></div>
+    <div class="frow"><span>什么时候推</span><select id="afChatWhen">${Object.entries(NOTIFY_WHEN).map(([k, v]) =>
+      `<option value="${k}"${(cur.when || 'problems') === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
+    <div class="frow"><span>同一个问题<i>连续出现时</i></span><select id="afChatRepeat">${Object.entries(NOTIFY_REPEAT).map(([k, v]) =>
+      `<option value="${k}"${(cur.repeat || 'daily') === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
+    ${c.error ? `<div class="note" style="margin:-4px 0 10px">转接程序连不上（${esc(c.error)}），推送目标可能不全，保存推送设置会失败。</div>` : ''}`;
+}
+// 计划、规则先存好再存推送：推送没存上不影响计划本身，单独提示
+async function saveChatNotify(kind, id) {
+  if (!autoState.chat || !id || !$('afChat')) return;
+  try {
+    await sendJson('PUT', `/api/chat/notify/${kind}/${encodeURIComponent(id)}`,
+                   {target: $('afChat').value, when: $('afChatWhen').value, repeat: $('afChatRepeat').value});
+  } catch (ex) { toast('推送设置没存上：' + ex.message, 'err', 8000); }
+}
 function scheduleForm(s) {
   s = s || {kind: 'daily', at: '09:00', weekdays: [1, 2, 3, 4, 5], every: 60, params: {}, notify: {}, enabled: true, playbook_id: autoSop};
   const book = s.playbook_id || autoSop || enabledBooks()[0]?.id || '';
@@ -5556,7 +5667,7 @@ function scheduleForm(s) {
     <div class="frow" data-for="weekly"><span>星期</span><div class="checks">${WEEKDAY.map((d, i) =>
       `<label><input type="checkbox" data-wd="${i + 1}"${(s.weekdays || []).includes(i + 1) ? ' checked' : ''}>周${d}</label>`).join('')}</div></div>
     <div class="frow" data-for="interval"><span>间隔（分钟）<i>最少 15</i></span><input id="afEvery" type="number" min="15" step="5" value="${s.every || 60}"></div>
-    <div id="afParams">${paramRows(book, s.params)}</div>${notifyRows(s.notify)}
+    <div id="afParams">${paramRows(book, s.params)}</div>${notifyRows(s.notify)}${chatNotifyRows('schedule', s.id)}
     <div class="frow"><span>启用</span><div class="checks"><label><input type="checkbox" id="afEnabled"${s.enabled ? ' checked' : ''}>到点自动执行</label></div></div>
     <div class="pb-err" id="afErr" hidden></div>
     <div class="row"><button class="pri" data-afsave>保存</button><button data-afcancel>取消</button></div></div>`;
@@ -5569,7 +5680,7 @@ function ruleForm(r) {
     <div class="frow"><span>告警名包含<i>告警名或标题，不分大小写</i></span><input id="afName" maxlength="100" value="${esc(r.name_contains)}" placeholder="如 DiskFull、磁盘"></div>
     <div class="frow"><span>标签等于<i>一行一个 名字=值，都要对上</i></span><textarea id="afLabels" placeholder="severity=critical">${esc(Object.entries(r.labels || {}).map(([k, v]) => `${k}=${v}`).join('\n'))}</textarea></div>
     <div class="frow"><span>去重（分钟）<i>同一条告警多久内只触发一次</i></span><input id="afDedup" type="number" min="1" max="1440" value="${r.dedup_minutes || 30}"></div>
-    <div id="afParams">${paramRows(book, r.params)}</div>${notifyRows(r.notify)}
+    <div id="afParams">${paramRows(book, r.params)}</div>${notifyRows(r.notify)}${chatNotifyRows('rule', r.id)}
     <div class="frow"><span>启用</span><div class="checks"><label><input type="checkbox" id="afEnabled"${r.enabled ? ' checked' : ''}>收到对得上的告警就执行</label></div></div>
     <div class="pb-err" id="afErr" hidden></div>
     <div class="row"><button class="pri" data-afsave>保存</button><button data-afcancel>取消</button></div></div>`;
@@ -5581,14 +5692,15 @@ function showKindRows() {
 async function renderAuto() {
   if (!$('msettings').querySelector('.sf.auto')) $('msettings').innerHTML = '<div class="sf"><div class="empty">加载中…</div></div>';
   const qs = autoSop ? '?playbook_id=' + encodeURIComponent(autoSop) : '';
-  const [st, sc, rl, ev, books] = await Promise.all([
+  const [st, sc, rl, ev, books, chat] = await Promise.all([
     fetch('/api/automation').then(r => r.json()).catch(() => ({})),
     fetch('/api/schedules' + qs).then(r => r.json()).catch(() => ({schedules: []})),
     fetch('/api/alert-rules' + qs).then(r => r.json()).catch(() => ({rules: []})),
     fetch('/api/alerts/events?limit=20').then(r => r.json()).catch(() => ({events: []})),
-    pbAllList(true)]);
+    pbAllList(true),
+    fetch('/api/chat/notify').then(r => r.ok ? r.json() : null).catch(() => null)]);    // 云上协同没打开时是 null
   if (page !== 'sop' || pbTab !== 'auto') return;
-  autoState = {groups: st.groups || [], books, schedules: sc.schedules || [], rules: rl.rules || []};
+  autoState = {groups: st.groups || [], books, schedules: sc.schedules || [], rules: rl.rules || [], chat};
   const lim = st.limits || {}, mail = st.mail || {}, alerts = st.alerts || {};
   const hook = location.origin + (st.hook_path || '/api/alerts/hook');
   const problems = [...(st.problems || []), st.loose].filter(Boolean);
@@ -5734,7 +5846,8 @@ $('msettings').addEventListener('click', async e => {
     try {
       const body = autoFormBody(), base = form.dataset.form === 'schedule' ? '/api/schedules' : '/api/alert-rules';
       t.disabled = true;
-      await sendJson(form.dataset.id ? 'PUT' : 'POST', form.dataset.id ? `${base}/${encodeURIComponent(form.dataset.id)}` : base, body);
+      const saved = await sendJson(form.dataset.id ? 'PUT' : 'POST', form.dataset.id ? `${base}/${encodeURIComponent(form.dataset.id)}` : base, body);
+      await saveChatNotify(form.dataset.form, (saved.schedule || saved.rule || {}).id || form.dataset.id);
     } catch (ex) { err.textContent = ex.message; err.hidden = false; t.disabled = false; return; }
     toast(form.dataset.form === 'schedule' ? '计划已保存' : '告警规则已保存', 'ok');
     autoForm = null;

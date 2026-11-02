@@ -303,5 +303,39 @@ check('MySQL 的 disable 写「不要求加密」（服务器支持时 PyMySQL �
   [html.includes("['disable', 'disable（不要求加密）'], ['require'"), html.includes('require 只防窃听，不防冒充；跨公网请用 verify')],
   [true, true]);
 
+// 云上协同：对外接入页的卡片、计划和告警规则表单里的推送下拉、对话列表的来源。服务端来的名字、粘贴行、问题一律转义；
+// 没打开时（/api/chat/notify 是 404）表单里没有推送这一项，对话列表没有筛选（由 /api/conversations 带不带 chat 决定）
+const chatCode = [/^const esc = .*$/m, /^const shortTime = .*$/m, /^const NOTIFY_WHEN = .*$/m, /^const NOTIFY_REPEAT = .*$/m,
+  /^const CHAT_STATE = .*$/m, /^const CHAT_TYPE = .*$/m, /^const PUSH_STATUS = .*$/m].map(lineOf)
+  .concat(['chatScopes', 'chatCardHtml', 'chatNotifyRows'].map(extract)).join('\n');
+const CH = state => new Function('autoState', `${chatCode}\nreturn {chatCardHtml, chatNotifyRows};`)(state);
+const at = '2026-11-02T01:00:00Z';
+const chatCard = CH({}).chatCardHtml({problem: '', problems: [evil],
+  bridge: {reachable: true, state: 'connected', since: at, tls: true, send: true, robot: '…8765', targets: [evil],
+           target_kinds: {[evil]: 'chat'}, problems: [evil]},
+  channel: {state: 'ok', last_poll: at, inflight: 0},
+  config: {groups: [{name: evil, tools: [evil], categories: [evil], mode: 'kb', web: false}], people: [], contact: evil,
+           limits: {person_per_hour: 20}, digest: [{target: evil}], file: evil, exists: true},
+  unknown: [{last_at: at, chat_type: 'group', chat_name: evil, sender_name: evil, count: 2, paste: {chat_yaml: evil, targets_yaml: evil}}],
+  pushes: [{created_at: at, kind: 'run', target: evil, status: 'failed', detail: evil}]});
+check('云上协同卡片：名字、工具、问题、粘贴行、推送结果都转义', chatCard.includes('<img'), false);
+check('云上协同卡片：连着、能发时测试按钮可点', [chatCard.includes('已连接'), /data-chattest\s*>/.test(chatCard)], [true, true]);
+const chatDown = CH({}).chatCardHtml({bridge: {reachable: false, error: '连不上转接程序：ConnectionRefusedError'}, config: {},
+  unknown: [], pushes: []});
+check('转接程序连不上：写明原因，测试按钮灰掉', [chatDown.includes('ConnectionRefusedError'), /data-chattest disabled>/.test(chatDown)],
+  [true, true]);
+check('没打开云上协同：表单里没有推送这一项', CH({chat: null}).chatNotifyRows('schedule', 's1'), '');
+const chatRows = CH({chat: {targets: [evil, '王某某'], target_kinds: {'王某某': 'user'}, error: evil,
+  items: [{kind: 'schedule', id: 's1', target: '已删的目标', when: 'always', repeat: 'never'}]}}).chatNotifyRows('schedule', 's1');
+check('推送下拉：目标名转义、配置里删掉的目标照样显示、个人标出来',
+  [chatRows.includes('<img'), chatRows.includes('value="已删的目标" selected'), chatRows.includes('王某某（个人）')], [false, true, true]);
+check('推送下拉：沿用邮件那一套 when / repeat', [chatRows.includes('value="always" selected'), chatRows.includes('value="never" selected')],
+  [true, true]);
+check('对话列表：群聊对话的来源名转义', html.includes('💬 ${esc(c.source.chat_name)}'), true);
+check('群聊的对话网页上只读：不显示输入框和「重新回答」，发送也挡住', [html.includes('#pg-chat.readonly .composer, #pg-chat.readonly [data-retry] { display: none; }'),
+  html.includes("$('askBtn').disabled || $('pg-chat').classList.contains('readonly')")], [true, true]);
+check('执行记录：触发方式有「💬 群聊」', lineOf(/^const TRIGGER = .*$/m).includes("chat: ['💬', '群聊']"), true);
+check('云上协同的卡片和下拉不用全局的 .box、.ex', /class="(box|ex)"/.test(chatCard + chatRows), false);
+
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
