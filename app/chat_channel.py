@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 
-from app import chat_config, chat_format, chat_push, chat_store, conversations, graph, playbooks, runs, settings
+from app import chat_config, chat_format, chat_push, chat_store, conversations, graph, runs, settings
 from app.agent import registry, sop_tools, web_search
 from app.chat_bridge import BridgeError, EpochChanged
 from app.config import BOT_NAME, log, why
@@ -29,8 +29,8 @@ WORKERS = 2                 # 同时答几个问题（和自动执行的 2 个�
 QUEUE_MAX = 10              # 再多排几个
 POLL_WAIT = 25.0
 BACKOFF = (2, 5, 15, 30, 60)
-ASK_TIMEOUT = 180.0         # 一次回答最多等多久（模型慢、工具慢）；到了就放弃，回「没答出来」
-EXECUTE_TIMEOUT = 600.0     # 按 SOP 执行要调好几次工具
+ASK_TIMEOUT = 180.0         # 一次回答大约等多久（只在两个事件之间看；模型单次调用最长 120 秒、失败重试一次，
+EXECUTE_TIMEOUT = 600.0     # 最坏会超出一两分钟）；到了就放弃，回「没答出来」。按 SOP 执行要调好几次工具，等得久些
 NOTICE_GAP = 600            # 「太频繁」「上一个还在答」「暂停服务中」：每人 10 分钟最多回一次
 QUEUE_GAP = 300             # 「排队太多」：每个会话 5 分钟最多一次
 DAILY_GAP = 86400           # 「只能看文字」「解不开」：每个会话一天一次
@@ -177,6 +177,12 @@ def _titles() -> dict:
         return {}
 
 
+def visible_books(scope) -> list:
+    """这个群、这个人看得到的启用的 SOP。限定了文档分类时，来源文档在别的分类里的去掉，手工创建的照常可见
+    （和对外令牌同一个规矩：sop_tools.visible）；没限定时就是全部启用的。"""
+    return sop_tools.visible(registry.Turn(categories=scope.categories))
+
+
 def _reason(failure) -> str:
     text = str(failure or "")
     if "超时" in text or "Timeout" in text or "timed out" in text:
@@ -319,6 +325,7 @@ class Channel:
         self._notices = {}
         self._stop = threading.Event()
         self._thread = None
+        self._maintained = None
         self.counters = {}
         self.link = {"state": "starting", "since": chat_store.now_iso(), "error": "", "last_poll": None}
 
@@ -330,9 +337,24 @@ class Channel:
             self._quick.submit(self._say, event, "刚才服务重启，这个问题没答完，请再问一次。")
         for event in resume:
             self._route(event)
+        self.maintain()
         self._thread = threading.Thread(target=self._poll, name="chat-poll", daemon=True)
         self._thread.start()
         log.info("chat: started (resumed %d, interrupted %d)", len(resume), len(interrupted))
+
+    def maintain(self, now=None):
+        """每天一次（启动时、之后轮询线程里顺带）：清掉处理完的收件记录（只留几天，够去重用）、30 天没动静的「没开通」记录。"""
+        day = (now or datetime.now(timezone.utc)).date()
+        if self._maintained == day:
+            return
+        self._maintained = day          # 先记下：出错了也是明天再试，不在每一轮轮询里反复报
+        try:
+            inbox, unknown = chat_store.inbox_prune(now=now), chat_store.unknown_prune(now=now)
+        except Exception:
+            log.warning("chat: daily cleanup failed", exc_info=True)
+            return
+        if inbox or unknown:
+            log.info("chat: daily cleanup removed %d inbox record(s) and %d unknown chat(s)", inbox, unknown)
 
     def stop(self, timeout=5.0):
         self._stop.set()
@@ -377,6 +399,7 @@ class Channel:
         after = int(chat_store.state_get("after", "0") or 0)
         failures = 0
         while not self._stop.is_set():
+            self.maintain()
             try:
                 epoch_now, events = self.bridge.events(epoch, after, POLL_WAIT)
             except EpochChanged as exc:
@@ -573,14 +596,14 @@ class Channel:
         return thread
 
     def _candidates(self, answer, question, scope) -> list:
-        """回答末尾列的「相关 SOP」：回答里《》提到的、启用的、每一步工具都开通了的，再按字面相似补到最多 3 个。"""
+        """回答末尾列的「相关 SOP」：回答里《》提到的、这里看得到的、每一步工具都开通了的，再按字面相似补到最多 3 个。"""
         if not scope.tools:
             return []
         try:
             live = set(registry.sop_tools())
         except Exception:
             return []
-        usable = [p for p in playbooks.list_all(only_enabled=True)
+        usable = [p for p in visible_books(scope)
                   if p["steps"] and all(s["tool"] in scope.tools and s["tool"] in live for s in p["steps"])]
         picked = []
         for name in re.findall(r"《([^》]{1,60})》", str(answer or "")):
@@ -736,11 +759,12 @@ class Channel:
             self._say(event, "还有一部分太长没发，完整内容在网页「对话」里" + (f"，标题：{title}" if title else "") + "。")
         chat_store.thread_update(thread["id"], remainder="")
 
-    def _resolve(self, selector, thread) -> tuple:
+    def _resolve(self, selector, thread, scope) -> tuple:
         """「执行」后面写的是哪个 SOP：("one", SOP) / ("pick", [SOP…]) / ("none", 说明) / ("question", None)。
 
+        只在这里看得到的 SOP 里找（限定了文档分类时，来源文档在别的分类里的不算）。
         写的是名字却一个都对不上时当成普通问题（「执行 SOP 时报错怎么办」这种）。"""
-        enabled = playbooks.list_all(only_enabled=True)
+        enabled = visible_books(scope)
         by_id = {book["id"]: book for book in enabled}
         offered = [i for i in ((thread or {}).get("candidates") or []) if i in by_id]
         if not selector:
@@ -769,7 +793,7 @@ class Channel:
     def _execute(self, event, cfg, scope, spec, text):
         thread = chat_store.thread_current(event["platform"], event["chat_type"], event["chat_id"],
                                            event["sender_id"])
-        found, book = self._resolve(spec["selector"], thread)
+        found, book = self._resolve(spec["selector"], thread, scope)
         if found == "question":
             return self._answer(event, cfg, scope, text)
         if not scope.tools:

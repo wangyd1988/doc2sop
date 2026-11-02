@@ -16,8 +16,8 @@ from datetime import datetime, timedelta, timezone
 
 from app import conversations
 
-_ready = {"done": False}
 INBOX_TTL_MINUTES = 10          # 重启后多久以内的消息还接着处理
+INBOX_KEEP_DAYS = 7             # 处理完的收件记录（正文已清掉）留几天：只为去重，转接程序那边超过 10 分钟的消息就丢了
 UNKNOWN_KEEP_DAYS = 30
 PUSH_LOG_KEEP = 2000
 
@@ -113,11 +113,6 @@ CREATE TABLE IF NOT EXISTS chat_state (
 );
 """)
         _db().commit()
-    _ready["done"] = True
-
-
-def ready() -> bool:
-    return _ready["done"]
 
 
 # --- 小状态 ---------------------------------------------------------------------------------
@@ -196,8 +191,8 @@ def inbox_recover(now=None) -> tuple:
     return resume, interrupted
 
 
-def inbox_prune(days=7, now=None) -> int:
-    """处理完的收件记录（正文早已清掉）只留几天，够去重用。"""
+def inbox_prune(days=INBOX_KEEP_DAYS, now=None) -> int:
+    """处理完的收件记录（正文早已清掉）只留几天，够去重用。聊天线程启动时和之后每天一次。"""
     cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=days)).isoformat(timespec="seconds")
     with conversations.lock:
         cur = _db().execute("DELETE FROM chat_inbox WHERE status IN ('done', 'interrupted', 'expired')"
@@ -368,21 +363,21 @@ def unknown_record(event, now=None) -> bool:
     return due
 
 
-def unknown_list(limit=50, now=None) -> list:
+def unknown_prune(now=None) -> int:
+    """30 天没动静的「没开通」记录删掉（聊天线程每天一次；页面列出来之前也清一遍）。"""
     cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=UNKNOWN_KEEP_DAYS)).isoformat(timespec="seconds")
     with conversations.lock:
-        _db().execute("DELETE FROM chat_unknown WHERE last_at < ?", (cutoff,))
+        cur = _db().execute("DELETE FROM chat_unknown WHERE last_at < ?", (cutoff,))
         _db().commit()
+    return cur.rowcount
+
+
+def unknown_list(limit=50, now=None) -> list:
+    unknown_prune(now)
+    with conversations.lock:
         rows = _db().execute("SELECT * FROM chat_unknown ORDER BY last_at DESC LIMIT ?", (limit,)).fetchall()
     return [{k: row[k] for k in ("platform", "chat_type", "ident", "chat_name", "sender_id", "sender_name", "count",
                                  "first_at", "last_at")} for row in rows]
-
-
-def unknown_forget(platform, chat_type, ident):
-    with conversations.lock:
-        _db().execute("DELETE FROM chat_unknown WHERE platform = ? AND chat_type = ? AND ident = ?",
-                      (platform, chat_type, ident))
-        _db().commit()
 
 
 # --- 推送设置和结果 ----------------------------------------------------------------------------

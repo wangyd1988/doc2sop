@@ -255,9 +255,12 @@ def delete_by_source(source):
     return len(ids)
 
 
-def usable(known_tools):
-    """启用、且步骤引用的工具此刻都可用的 SOP——工具没了的 SOP 照着做必然失败。"""
-    return [p for p in list_all(only_enabled=True) if all(step["tool"] in known_tools for step in p["steps"])]
+def usable(known_tools, keep=None):
+    """启用、且步骤引用的工具此刻都可用的 SOP——工具没了的 SOP 照着做必然失败。
+
+    keep 是 SOP id 的集合时只留这些（群聊限定了文档分类：来源文档在别的分类里的 SOP 不给，见 sop_tools.visible）。"""
+    return [p for p in list_all(only_enabled=True) if all(step["tool"] in known_tools for step in p["steps"])
+            and (keep is None or p["id"] in keep)]
 
 
 def short_names(items=None):
@@ -294,13 +297,13 @@ def short_names(items=None):
     return out
 
 
-def as_prompt(known_tools, brief=False):
+def as_prompt(known_tools, brief=False, keep=None):
     """把启用的 SOP 压成一段紧凑文本，供模型判断是否套用。
 
     只列出步骤引用的工具当前仍然可用的 SOP——工具没了的 SOP 照着做必然失败。
-    brief=True（SOP 太多时）只列名称、短名和适用场景，步骤让模型用 sop_get 现取。
+    brief=True（SOP 太多时）只列名称、短名和适用场景，步骤让模型用 sop_get 现取。keep 同 usable。
     """
-    usable_ = usable(known_tools)
+    usable_ = usable(known_tools, keep)
     if not usable_:
         return ""
 

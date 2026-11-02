@@ -712,9 +712,11 @@ def _build_graph(bound, system, current_prompt, by_name, allow_web=False, record
         for call in call_msg.tool_calls:
             name, args = call["name"], call.get("args") or {}
             binding = by_name.get(name)
-            if (binding is not None and binding.category == "data" and setup.allowed is not None
-                    and name not in setup.allowed):
-                binding = None      # 第二道：名单外的数据类工具本来就没绑，执行前再按名单核一遍
+            # 第二道：群聊只许用开通了的数据类工具。名单外的本来就没绑，执行前再按名单核一遍（认不出的名字也算数据类）
+            refused = (setup.allowed is not None and name not in setup.allowed
+                       and (binding.category if binding else registry.category_of(name)) == "data")
+            if refused:
+                binding = None
             category = binding.category if binding else registry.category_of(name)
             policy = registry.POLICIES.get(category, registry.POLICIES["data"])
             emit(("tool_call", {"tool": name, "args": args, "category": category}))
@@ -722,7 +724,7 @@ def _build_graph(bound, system, current_prompt, by_name, allow_web=False, record
             artifact = None
             executed = False
             if binding is None:
-                output = f"[执行失败] 未知工具 {name}"
+                output = f"[未执行] {name} 在这里不可用（没有开通）" if refused else f"[执行失败] 未知工具 {name}"
             else:
                 # 按类别限次（外网类：搜索、读网页每轮各 2 次……）：到了上限不执行，把原因告诉模型
                 output = turn.admit(category, name, binding.limit_note)
@@ -877,9 +879,12 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
     if len(available) > TOOL_LIMIT:
         available = select_tools(available, question, playbooks.referenced_tools())
     tools = build_tools(available)
+    # 群聊限定了文档分类：知识类工具的说明、SOP 都只看这几个分类（来源文档在别的分类里的 SOP 不给，和对外令牌一样）
+    scope = None if categories is None else registry.Turn(categories=categories)
+    keep = {} if scope is None else {"keep": {book["id"] for book in sop_tools.visible(scope)}}
     # 能执行的 SOP 太多（超过 SOP_PROMPT_MAX）时提示词里只放名称和适用场景，绑上 sop_list / sop_get 让模型现取步骤
     data_names = {tool.name for tool in tools}
-    sop_count = len(playbooks.usable(data_names)) if data_names else 0
+    sop_count = len(playbooks.usable(data_names, **keep)) if data_names else 0
     brief = sop_count > SOP_PROMPT_MAX
     if brief:
         options = replace(options, sop_tools=True)
@@ -888,7 +893,6 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
         extra = [tool for tool in extra if tool.name != sandbox.NAME]
     by_name = {tool.name: registry.bind_data(tool, available.get(tool.name)) for tool in tools}
     by_name.update({tool.name: registry.bind_app(tool) for tool in extra})
-    scope = None if categories is None else registry.Turn(categories=categories)
     bindable = tools + [schema_tool(tool.current(scope) if scope is not None and tool.category == "knowledge"
                                     else tool.current()) for tool in extra]
     if not bindable:
@@ -918,7 +922,7 @@ def run(question: str, context: str | None, history, allow_web: bool = False,
               + (note or ""))
     # SOP 只在确实有能进 SOP 的工具时注入，否则模型会照着 SOP 去调不存在的工具。
     steps = {name for name, binding in by_name.items() if registry.POLICIES[binding.category].sop}
-    book = playbooks.as_prompt(steps, brief=brief) if steps else ""
+    book = playbooks.as_prompt(steps, brief=brief, **keep) if steps else ""
     titles = {name: entry.get("title") or name for name, entry in available.items() if isinstance(entry, dict)}
     plan_items = None
     if plan_on and playbook:

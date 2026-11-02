@@ -2,7 +2,7 @@
 
 写在服务器上的 chat.yaml（CHAT_FILE，默认 DATA_DIR/chat.yaml）里。页面上只看得到名字、开了哪些工具、哪里写得不对，
 拿到网页密码的人不能给自己开通群、开数据工具。文件不在 = 谁也没开通。里面没有密钥（推送目标的 ID 在转接程序的
-targets.yaml 里），进备份。改了不用重启：每次用到时看一眼修改时间和大小，变了就重新读；写错的部分按「没开通」处理。
+targets.yaml 里），进备份。改了不用重启：每次用到时看一眼修改时间和大小，变了就重新读。
 
     robot_name: doc2sop        # 群里 @ 它的名字：从问题里去掉「@doc2sop」
     contact: 王某某             # 没开通时告诉对方找谁（可不填）
@@ -20,7 +20,16 @@ targets.yaml 里），进备份。改了不用重启：每次用到时看一眼�
       - {target: 运维值班群, weekday: 1, hour: 9, group: "1234567890123"}   # 发到群：只汇总这个群自己的问题
 
 每个群、每个人：tools 是能用的数据工具，逐个写名字，默认一个都没有（工具服务以后批准的新工具不会自动进群）；
-categories 只查这几个文档分类，不写是全部；mode 是 kb（默认）或 smart（要部署本身打开了智能模式）；web 是联网搜索，默认关。
+categories 只查这几个文档分类，不写是全部——知识库、SOP 都按它收窄（来源文档在别的分类里的 SOP 看不到、执行不了，
+手工创建的照常）；mode 是 kb（默认）或 smart（要部署本身打开了智能模式）；web 是联网搜索，默认关。
+digest 写了 group 时，target 必须就是这个群（kb-app 只知道目标的名字，核对不了），不然这个群的问题会发到别处。
+
+写错时一律往紧里算，页面上列出哪里不对（日志里只记一行，不带 ID 和人名）：
+    一个群或一个人的设置    有不认识的键（拼错的可能本来是一条限制，比如 category）、categories 写了却一个能用的都没有、
+                            整段写得不对 → 这个群或这个人不开通；tools、mode、web 里写错的那几项不开
+    顶层                    有不认识的配置项（可能是拼错的 paused 或 limits）、paused 或 limits 写得不对 → 整个暂停，
+                            开通的群和人只收到「暂停服务中」；unknown_reply 写错按 silent；digest 写错的那一项不发
+    整个文件                读不了、YAML 写错、太大 → 谁也没开通，也不回「还没有开通」
 """
 import os
 import re
@@ -141,32 +150,49 @@ def _parse(path, st) -> Settings:
         # 里面没有密钥，但谁能改它谁就能给自己开通群、开数据工具
         loose = f"文件权限 {oct(st.st_mode & 0o777)[2:]} 太宽：别的账号能改它（等于能给自己开通），请 chmod 644 或 600"
     if st.st_size > FILE_MAX:
-        return Settings(path=str(path), exists=True, problems=(f"文件超过 {FILE_MAX // 1024} KB，没有读",), loose=loose)
+        return _unreadable(path, f"文件超过 {FILE_MAX // 1024} KB，没有读", loose)
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
-        return Settings(path=str(path), exists=True, problems=(f"YAML 写错了，{_where(exc)}",), loose=loose)
+        return _unreadable(path, f"YAML 写错了，{_where(exc)}", loose)
     except (OSError, UnicodeDecodeError) as exc:
-        return Settings(path=str(path), exists=True, problems=(f"读不了这个文件：{exc.__class__.__name__}",), loose=loose)
+        return _unreadable(path, f"读不了这个文件：{exc.__class__.__name__}", loose)
     data = data or {}
     if not isinstance(data, dict):
-        return Settings(path=str(path), exists=True, problems=("最外层要写成「键: 值」",), loose=loose)
+        return _unreadable(path, "最外层要写成「键: 值」", loose)
     problems = []
+    halt = False                    # 顶层写错：可能是拼错的 paused、limits，按暂停处理
     unknown = [str(k) for k in data if k not in KNOWN]
     if unknown:
-        problems.append(f"不认识的配置项：{'、'.join(unknown[:5])}（只认 {'、'.join(KNOWN)}）")
+        problems.append(f"不认识的配置项：{'、'.join(unknown[:5])}（只认 {'、'.join(KNOWN)}），先按暂停处理")
+        halt = True
+    paused = data.get("paused")
+    if paused in (None, ""):
+        paused = False
+    elif not isinstance(paused, bool):
+        problems.append("paused 只能写 true 或 false，先按暂停处理")
+        paused = True
+    limits, limits_ok = _limits(data.get("limits"), problems)
+    if not limits_ok:
+        problems.append("limits 写得不对，先按暂停处理")
+        halt = True
     unknown_reply = _text(data.get("unknown_reply")) or "once"
     if unknown_reply not in UNKNOWN_REPLIES:
-        problems.append("unknown_reply 只能是 once 或 silent")
-        unknown_reply = "once"
+        problems.append("unknown_reply 只能是 once 或 silent，先按 silent（不回）")
+        unknown_reply = "silent"
     groups = _scopes(data.get("groups"), "group", problems)
     return Settings(path=str(path), exists=True, robot_name=_name(data.get("robot_name"), "robot_name", problems),
                     contact=_name(data.get("contact"), "contact", problems), unknown_reply=unknown_reply,
-                    markdown=_flag(data.get("markdown"), "markdown", problems),
-                    paused=_flag(data.get("paused"), "paused", problems),
-                    keep_days=_keep_days(data.get("keep_days"), problems), limits=_limits(data.get("limits"), problems),
+                    markdown=_flag(data.get("markdown"), "markdown", problems), paused=paused or halt,
+                    keep_days=_keep_days(data.get("keep_days"), problems), limits=limits,
                     groups=groups, people=_scopes(data.get("people"), "person", problems),
                     digest=_digest(data.get("digest"), groups, problems), problems=tuple(problems), loose=loose)
+
+
+def _unreadable(path, problem, loose) -> Settings:
+    """整个文件用不了：谁也没开通，也不回「还没有开通」（之前开通了的群会莫名其妙收到这句）。"""
+    return Settings(path=str(path), exists=True, unknown_reply="silent", paused=True,
+                    problems=(problem + "，谁也没开通",), loose=loose)
 
 
 def _text(value) -> str:
@@ -199,22 +225,26 @@ def _keep_days(raw, problems):
     return raw
 
 
-def _limits(raw, problems) -> dict:
+def _limits(raw, problems) -> tuple:
+    """(各项限频, 有没有写对)。写错的项先按默认值填上，但调用方会因此整个暂停。"""
     out = {name: spec[0] for name, spec in LIMITS.items()}
     if raw in (None, "", {}):
-        return out
+        return out, True
     if not isinstance(raw, dict):
         problems.append("limits 要写成「名字: 数」")
-        return out
+        return out, False
+    ok = True
     for key, value in raw.items():
         spec = LIMITS.get(str(key))
         if spec is None:
             problems.append(f"limits 里不认识 {str(key)[:30]}（只认 {'、'.join(LIMITS)}）")
+            ok = False
         elif isinstance(value, bool) or not isinstance(value, int) or not spec[1] <= value <= spec[2]:
-            problems.append(f"limits.{key} 要是 {spec[1]}–{spec[2]} 的整数，先按 {spec[0]}")
+            problems.append(f"limits.{key} 要是 {spec[1]}–{spec[2]} 的整数")
+            ok = False
         else:
             out[str(key)] = value
-    return out
+    return out, ok
 
 
 def _scopes(raw, kind, problems) -> dict:
@@ -247,16 +277,19 @@ def _scope(kind, ident, spec, where, problems) -> Scope | None:
         return None
     extra = [str(k) for k in spec if k not in SCOPE_KEYS]
     if extra:
-        problems.append(f"{where} 里不认识 {'、'.join(extra[:3])}（只认 {'、'.join(SCOPE_KEYS)}）")
+        # 拼错的键可能本来是一条限制（比如把 categories 写成 category）：猜不出意思就不开通
+        problems.append(f"{where} 里不认识 {'、'.join(extra[:3])}（只认 {'、'.join(SCOPE_KEYS)}），没有开通")
+        return None
+    categories = None
+    if "categories" in spec:
+        categories = _names(spec.get("categories"), f"{where}.categories", None, CATEGORIES_MAX, problems)
+        if not categories:
+            # 写了分类却一个能用的都没有（空的、全写错了）：不能当成「全部分类」
+            problems.append(f"{where}.categories 写了，可一个能用的分类都没有（不写才是全部分类），没有开通")
+            return None
     name = _name(spec.get("name"), f"{where}.name", problems) or (
         f"群…{ident[-4:]}" if kind == "group" else f"用户…{ident[-4:]}")
     tools = _names(spec.get("tools"), f"{where}.tools", TOOL_NAME, TOOLS_MAX, problems)
-    categories = None
-    if spec.get("categories") is not None:
-        categories = _names(spec.get("categories"), f"{where}.categories", None, CATEGORIES_MAX, problems)
-        if not categories:
-            problems.append(f"{where}.categories 写了空的：不写才是全部分类，先按全部")
-            categories = None
     mode = _text(spec.get("mode")) or "kb"
     if mode not in MODES:
         problems.append(f"{where}.mode 只能是 kb 或 smart，先按 kb")
@@ -276,8 +309,9 @@ def _names(raw, where, pattern, limit, problems) -> tuple:
     out = []
     for item in raw[:limit]:
         text = _text(item)
-        bad = not text or CONTROL.search(text) or (pattern.match(text) is None if pattern
-                                                   else len(text) > CATEGORY_MAX)
+        scalar = isinstance(item, (str, int, float)) and not isinstance(item, bool)
+        bad = not scalar or not text or CONTROL.search(text) or (pattern.match(text) is None if pattern
+                                                                 else len(text) > CATEGORY_MAX)
         if bad:
             problems.append(f"{where} 里有一项写得不对：{text[:30]}")
         elif text not in out:

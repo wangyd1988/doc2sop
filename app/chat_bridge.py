@@ -109,9 +109,6 @@ class Bridge:
                               data=payload)
         return payload
 
-    def health(self) -> dict:
-        return self._call("GET", "/health", timeout=5)
-
     def status(self) -> dict:
         return self._call("GET", "/status", timeout=5)
 

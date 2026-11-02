@@ -11,21 +11,25 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
+from langchain_core.messages import HumanMessage
 
 import tests.support  # noqa: F401  隔离 DATA_DIR 和环境变量
 from tests import test_route_auth as route_auth
 from tests.support import clear_graph
-from tests.test_ask_golden import SOP_TABLE, TOOLS, Scenario, call
+from tests.test_ask_golden import SOP_TABLE, TOOLS, Scenario, ScriptedModel, call
 
 from app import autorun, chat_api, chat_channel, chat_config, chat_format, chat_store, conversations, graph, playbooks
 from app import runs
 from app import main as app_main
+from app.agent import loop as agent_loop
+from app.agent import registry
 from app.chat_bridge import BridgeError
 from app.config import CHAT_FILE, WEB_PASSWORD, WEB_USER
 
@@ -215,6 +219,18 @@ class AnswerTests(ChatTestCase):
             self.assertEqual(len(s.record["agent_model"]), 2)
             self.assertEqual(len(s.record["plain_model"]), 1)
 
+    def test_a_tool_outside_the_list_is_refused_even_if_the_model_calls_it(self):
+        self.write(CONFIG.replace("tools: [host_disk, container_stats]", "tools: [host_disk]"))
+        script = [([call("container_stats", name="kb-app")], ""), ([], "这里查不了容器。")]
+        with Scenario(self, script=script, ops=True) as s:
+            event = message("kb-app 用了多少内存")
+            self.send(event)
+        self.assertEqual(s.record["agent_model"][0]["tools"], ["host_disk"])    # 第一道：没绑
+        self.assertEqual(s.record["exec"], [])                                   # 工具服务一次都没被调到
+        replies = [m["content"] for m in s.record["agent_model"][1]["messages"] if m.get("type") == "tool"]
+        self.assertEqual(replies, ["[未执行] container_stats 在这里不可用（没有开通）"])
+        self.assertIn("这里查不了容器。", self.final(event))
+
     def test_categories_narrow_the_prefetch(self):
         self.write(CONFIG.replace("{name: 研发交流群}", "{name: 研发交流群, categories: [运维]}"))
         with Scenario(self) as s:
@@ -326,7 +342,117 @@ class StreamTests(ChatTestCase):
         self.assertEqual([(p["seq"], p["type"], p["content"]) for p in sent[3:]],
                          [(4, "delta", "全文"), (5, "done", "全文")])
 
+class CategoryTests(ChatTestCase):
+    """限定了文档分类的群：SOP 和知识库一样收窄。来源文档在别的分类里的 SOP，名称、步骤、阈值都不进提示词、
+    不进「相关 SOP」、「执行」找不到；手工创建的照常可见（和对外令牌同一个规矩）。"""
+
+    def setUp(self):
+        super().setUp()
+        mode = patch.object(autorun, "AGENT_MODE", "auto")
+        mode.start()
+        self.addCleanup(mode.stop)
+        self.write(CONFIG.replace("tools: [host_disk, container_stats]}",
+                                  "tools: [host_disk, container_stats], categories: [运维]}"))
+
+    def books(self):
+        steps = [{"tool": "host_disk", "args": {}, "checkpoint": "超过 85% 告警"}]
+        for name, trigger, source in (("值班巡检", "值班的时候", "值班手册.pdf"), ("退款核对", "处理退款的时候", "退款制度.md"),
+                                      ("手工巡检", "随时", "")):
+            playbooks.save(None, name, trigger, steps, set(TOOLS), source=source)
+
+    def test_sops_from_other_categories_stay_out(self):
+        script = [([], "可以按《退款核对》或《值班巡检》查一遍。"), ([], "知识库里没有这个。")]
+        with Scenario(self, script=script, ops=True) as s:
+            self.books()
+            asked = message("怎么巡检")
+            self.send(asked)
+            thread = chat_store.thread_current("ccwork", "group", "1001", "u_zhang")
+            scope = chat_config.load().groups["1001"]
+            self.assertEqual(self.channel._resolve("1", thread, scope)[1]["name"], "值班巡检")
+            self.assertEqual(self.channel._resolve("退款核对", thread, scope), ("question", None))
+            self.assertEqual(sorted(b["name"] for b in self.channel._resolve("巡检", thread, scope)[1]),
+                             ["值班巡检", "手工巡检"])
+            # 没限定分类的地方照常找得到
+            self.assertEqual(self.channel._resolve("退款核对", None, chat_config.Scope("group", "x", "x"))[1]["name"],
+                             "退款核对")
+            other = message("执行 退款核对")
+            self.send(other)
+        for call_ in s.record["agent_model"]:
+            prompt = json.dumps(call_["messages"], ensure_ascii=False)
+            self.assertIn("SOP《值班巡检》", prompt)
+            self.assertIn("SOP《手工巡检》", prompt)
+            self.assertNotIn("SOP《退款核对》", prompt)
+            self.assertNotIn("处理退款的时候", prompt)
+        line = next(x for x in self.final(asked).splitlines() if x.startswith("相关 SOP："))
+        self.assertIn("值班巡检", line)
+        self.assertNotIn("退款核对", line)
+        # 「执行 退款核对」当普通问题答，没有执行记录
+        self.assertIn("知识库里没有这个。", self.final(other))
+        self.assertEqual(runs.listing()[1], 0)
+
+
+class SecondCheckTests(unittest.TestCase):
+    def test_a_bound_data_tool_outside_the_list_is_not_run(self):
+        """第二道检查本身：就算名单外的数据类工具绑上了，执行前也按名单拦下，模型拿到的是「不可用」。"""
+        ran, seen = [], []
+        binding = registry.Binding("container_stats", "data", {}, lambda args, turn: ran.append(args) or "不该执行到这里")
+        model = ScriptedModel([([call("container_stats", name="kb-app")], ""), ([], "好的")], seen)
+        setup = agent_loop.TurnSetup(allowed=frozenset({"host_disk"}))
+        flow = agent_loop._build_graph(model.bind_tools([]), "system", "问题", {"container_stats": binding}, setup=setup)
+        thread = "second-check-" + uuid.uuid4().hex
+        self.addCleanup(agent_loop.forget, thread)
+        events = list(flow.stream({"messages": [HumanMessage(content="问题")], "rounds": 0, "usage": {}},
+                                  {"configurable": {"thread_id": thread}, "recursion_limit": 12}, stream_mode="custom"))
+        self.assertEqual(ran, [])
+        results = [payload for kind, payload in events if kind == "tool_result"]
+        self.assertEqual([r["preview"] for r in results], ["[未执行] container_stats 在这里不可用（没有开通）"])
+        replies = [m["content"] for m in seen[1]["messages"] if m.get("type") == "tool"]
+        self.assertEqual(replies, ["[未执行] container_stats 在这里不可用（没有开通）"])
+
+    def test_without_a_list_unknown_tools_read_as_before(self):
+        seen = []
+        model = ScriptedModel([([call("no_such_tool")], ""), ([], "好的")], seen)
+        flow = agent_loop._build_graph(model.bind_tools([]), "system", "问题", {})
+        thread = "second-check-" + uuid.uuid4().hex
+        self.addCleanup(agent_loop.forget, thread)
+        list(flow.stream({"messages": [HumanMessage(content="问题")], "rounds": 0, "usage": {}},
+                         {"configurable": {"thread_id": thread}, "recursion_limit": 12}, stream_mode="custom"))
+        self.assertEqual([m["content"] for m in seen[1]["messages"] if m.get("type") == "tool"],
+                         ["[执行失败] 未知工具 no_such_tool"])
+
+
 class GateTests(ChatTestCase):
+    def test_processed_inbox_records_and_stale_unknown_chats_are_cleaned_daily(self):
+        now = datetime.now(timezone.utc)
+
+        def ago(days):
+            return (now - timedelta(days=days)).isoformat(timespec="seconds")
+
+        def inbox(key, status, at):
+            with conversations.lock:
+                conversations.db.execute("INSERT INTO chat_inbox (msg_key, platform, event, status, received_at,"
+                                         " updated_at) VALUES (?, 'ccwork', '{}', ?, ?, ?)", (key, status, at, at))
+                conversations.db.commit()
+
+        for key, status, at in (("old-done", "done", ago(8)), ("old-expired", "expired", ago(8)),
+                                ("fresh-done", "done", ago(1))):
+            inbox(key, status, at)
+        with conversations.lock:
+            for ident, at in (("9001", ago(40)), ("9002", ago(2))):
+                conversations.db.execute("INSERT INTO chat_unknown (platform, chat_type, ident, count, first_at, last_at)"
+                                         " VALUES ('ccwork', 'group', ?, 1, ?, ?)", (ident, at, at))
+            conversations.db.commit()
+        self.channel.start()                        # 启动时先清一次
+        self.assertEqual([k for k in ("old-done", "old-expired", "fresh-done") if chat_store.inbox_get(k)], ["fresh-done"])
+        with conversations.lock:
+            left = [row[0] for row in conversations.db.execute("SELECT ident FROM chat_unknown").fetchall()]
+        self.assertEqual(left, ["9002"])
+        inbox("old-again", "done", ago(8))
+        self.channel.maintain()                     # 同一天不再清
+        self.assertIsNotNone(chat_store.inbox_get("old-again"))
+        self.channel.maintain(now=now + timedelta(days=1))
+        self.assertIsNone(chat_store.inbox_get("old-again"))
+        self.assertIsNotNone(chat_store.inbox_get("fresh-done"))
     def test_unknown_chats_are_counted_without_content_and_told_once(self):
         with Scenario(self) as s:
             first, second = message("机密问题一", chat_id="9999"), message("机密问题二", chat_id="9999")
