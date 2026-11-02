@@ -132,6 +132,35 @@ flowchart LR
 所以对外出口不经过出网规则。令牌在管理页「对外接入」签发，只存哈希；每次调用审计（access.db）、记进图谱（`channel=mcp`）。
 详见 [`工具.md`](工具.md) 的「对外 MCP 出口」。
 
+## 云上协同（`CHAT_BRIDGE_URL`，默认关）
+
+```
+群成员 @ 机器人、私聊                          计划、告警规则的执行结果；每周缺口摘要
+ │                                                ▲
+ ▼                                                │ POST /push（只能按 targets.yaml 里的名字）
+云上协同服务器 ── MQTT（TLS）──▶ doc2sop-ccwork 转接程序（宿主机 systemd，127.0.0.1:8796，令牌）
+                ◀── HTTPS 发文字、流式包 ──┘  解密前限 64 KB、protobuf 限长度和嵌套、按发送人和会话限速、内存队列
+                                               ▲ GET /events 长轮询（落库后下一次轮询才确认）· POST /reply（只能拿 handle）
+                                               │
+kb-app 聊天线程（chat_channel）── 白名单（chat.yaml）→ 收件表（chat_inbox）→ 暂停、限频、排队 → 命令或问题
+                                   └─ 问题、「执行」：main.start_chat_turn / turn_events（和 /api/ask 同一个公共核心）
+                                      渠道 chat；只绑这个群开通的数据工具（第二道：执行前再按名单核一遍）、只查开通的文档分类；
+                                      系统提示词末尾多一段「回答会发到群里」；事件流在聊天线程里关掉，收尾照常
+```
+
+- **转接程序只搬运**：不懂谁能用、能查什么，从不自己回话；kb-app 拿不到原始会话 ID 去发消息（回复用 handle、推送用名字）。
+  本地接口和平台无关，以后接别的聊天工具只要再写一个说同样接口的转接程序。
+- **对话对应**：每个人在每个群一条对话（`chat_threads`），30 分钟没说话或回「新话题」就另开；接着用之前核对对话的最后一条消息还是记下的那条，
+  对不上就另开。群聊的对话在网页上只读（`/api/ask` 回 409），对话列表按来源筛选。
+- **回复**：流式 cover 包带到目前为止的全文，间隔 1.5 → 3 → 6 秒、每次回答最多 40 包；seq 只在成功后加，结果不明时同一包重发，
+  平台明确拒了才换成普通文字发一次（这时真 @）。转成纯文本（SOP 的逐步表格一步一行）、只列引用了的出处、超过 3000 字截断，剩下的回「全文」。
+- **至多一次**：重启时「处理中」的记成中断、回一句「请再问一次」，不重跑；10 分钟内「已收到」的接着处理。
+- **推送**：`autorun` 发完邮件后调 `chat_push.after_run`，规则沿用 `notify.decide`，设置和状态在旁表 `chat_notify`。
+
+`chat.db` 里多了几张表，功能打开才建、老表一列没改：`chat_threads`、`chat_turns`（每条对话里的每一次执行：以后清理只按群聊来源删）、
+`chat_inbox`、`chat_unknown`（没开通的只记 ID 和次数）、`chat_notify`、`chat_push_log`、`chat_state`。图谱的渠道多一个 `chat`，
+执行记录的触发方式多一个 `chat`（「💬 群聊」）；旧版本读到不认识的值原样显示。部署见 [`正式部署.md`](正式部署.md#云上协同群聊机器人)。
+
 ## 组织运行图谱（graph.db）
 
 文档 → SOP → 工具 原本是一条单向流，工具查到的真实数据和人对一次回答的判断答完就丢。
@@ -212,7 +241,7 @@ SOP 不只在有人问的时候跑（用法见 [`自动执行.md`](自动执行.
 
 | 表 | 存什么 |
 |---|---|
-| `sop_runs` | 执行记录：触发方式（web / schedule / alert）、来源（计划 / 规则 id）、参数、SOP 当时的步骤、状态、等级、异常项、摘要、邮件结果 |
+| `sop_runs` | 执行记录：触发方式（web / schedule / alert / chat）、来源（计划 / 规则 id）、参数、SOP 当时的步骤、状态、等级、异常项、摘要、邮件结果 |
 | `sop_schedules` | 定时计划：SOP、方式（daily / weekly / interval）、时刻、参数、收件组与提醒设置、上一个处理过的时刻 |
 | `sop_slots` | 占过的计划时刻（计划 id + 时刻是主键），防重复执行 |
 | `alert_rules` / `alert_events` | 告警规则；收到的每条告警对上了哪条规则、结果（保留 7 天） |
@@ -252,6 +281,13 @@ app/
 ├── automation_config.py  服务器上的配置文件（邮件、收件组、告警令牌、报告链接），热加载，页面只看得到收件组的名字
 ├── automation_api.py  执行记录、计划、告警规则、测试邮件、知识库缺口的接口，挂告警入口和后台线程
 ├── gaps.py            知识库缺口看板：从回答和反馈里找出文档没写的问题，按字面 / 向量归组
+├── chat_api.py        云上协同（CHAT_BRIDGE_URL）：页面接口（状态、测试推送、推送设置）、挂聊天线程；群聊对话只读、对话列表按来源筛选
+├── chat_channel.py    聊天线程：长轮询转接程序、白名单、收件表、限频排队、命令（帮助 / 没答好 / 执行 / 误报… / 全文 / 新话题）、流式回复
+├── chat_config.py     chat.yaml：开通的群和人、各自能用的数据工具和文档分类、限频，热加载
+├── chat_bridge.py     调转接程序本机接口的客户端（只认字面的 127.0.0.1 / [::1]，不走代理、不跟重定向）
+├── chat_store.py      chat.db 里云上协同的几张表（对话对应、收件表、没开通的、推送设置和结果）
+├── chat_format.py     聊天里的文字：Markdown 转纯文本、出处、截断、命令回复、推送和缺口摘要
+├── chat_push.py       计划、告警规则的结果推到云上协同（沿用邮件的规则，状态各记各的）；每周缺口摘要
 ├── models.py          网关可用模型列表与校验
 ├── tracing.py         LangSmith 追踪
 ├── agent/
@@ -314,6 +350,8 @@ deploy/
 ├── sandbox/           计算沙箱：sandbox_service.py（宿主机 systemd 服务，127.0.0.1 + 令牌，每次执行一个 gVisor 一次性容器，
 │                      镜像和限制写死）、Dockerfile + requirements.txt（标准库 + 锁定哈希的 PyYAML）、security_check.py（真实环境安全用例）
 ├── backup.sh          每日备份
+├── ccwork/            云上协同转接程序 ccwork_bridge.py（宿主机 systemd，收 MQTT、发 HTTPS，本地接口 127.0.0.1:8796）和它的
+│                      单元、环境文件、推送目标示例；crypto_vectors.py（加解密对照数据）、check_upstream.sh（官方开发包有新提交就提醒）
 ├── container-guard.sh 内存超阈值才重启容器，配 systemd timer 每天跑一次
 └── embedding/
     ├── server.py          向量服务（FastEmbed ONNX，OpenAI 兼容 /v1/embeddings）

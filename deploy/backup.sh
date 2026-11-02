@@ -37,8 +37,8 @@ PY
 for db in chat.db playbooks.db graph.db agent_memory.db access.db; do
   [ -f "$DATA/$db" ] && sqlite_copy "$DATA/$db" "$WORK/data/$db"
 done
-# 其余目录与文件直接复制
-for item in chroma files vision_cache.json; do
+# 其余目录与文件直接复制。chat.yaml 是云上协同里谁能用、能查什么（没有密钥）；automation.yaml 里有邮箱授权码和告警令牌，不带
+for item in chroma files vision_cache.json chat.yaml; do
   [ -e "$DATA/$item" ] && cp -a "$DATA/$item" "$WORK/data/"
 done
 # 工具配置也带上（宿主机侧，不在 data 里）：主文件、页面改的开关、脚本信任表、批准过的 MCP 工具、待审申请、
@@ -50,6 +50,9 @@ for f in /opt/ops/ops_tools.yaml /opt/ops/ops_tools.overrides.yaml /opt/ops/ops_
          /opt/ops/ops_tools.page.yaml /opt/ops/ops_tools.page.known_hosts /opt/ops/ops_tools.page.log; do
   [ -f "$f" ] && { mkdir -p "$WORK/ops"; cp -a "$f" "$WORK/ops/"; }
 done
+# 云上协同转接程序的推送目标（名字 → 群 ID / 用户 ID，没有密钥）；凭据在 /etc/doc2sop-ccwork.env，不带
+f=/etc/doc2sop-ccwork/targets.yaml
+[ -f "$f" ] && { mkdir -p "$WORK/ccwork"; cp -a "$f" "$WORK/ccwork/"; }
 
 OUT="$DEST/kb-$STAMP.tgz"
 tar -czf "$OUT" -C "$WORK" .
