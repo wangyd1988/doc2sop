@@ -3586,7 +3586,8 @@ async function renderManage() {
   const kept = $('mtool').querySelector('#mSearch');
   if (kept && kept.dataset.tab === mTab) {
     $('mtool').querySelector('.ttl').outerHTML = ttl;
-    if (kept.value !== mSearch) kept.value = mSearch;
+    // 只在输入框没有焦点时（点了别的分组之类，由代码清空了搜索）才回写：用户还在打字、组字时，等着的请求回来不能把框改回旧值
+    if (kept.value !== mSearch && document.activeElement !== kept) kept.value = mSearch;
   } else $('mtool').innerHTML = ttl
     + `<input type="search" id="mSearch" data-tab="${mTab}" placeholder="搜索${cfg.title}…" value="${esc(mSearch)}" autocomplete="off">
      ${mTab === 'docs' ? '<input id="newCat" class="cat" list="catList" placeholder="上传到哪个分类（留空自动识别）" maxlength="12"><button class="act" id="mUpload">＋ 上传文档</button>'

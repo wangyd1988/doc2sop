@@ -460,6 +460,7 @@ check('云上协同的卡片和下拉不用全局的 .box、.ex', /class="(box|e
     check(`搜索框 #${id} 没有另挂 input 监听`, new RegExp(`addEventListener\\('input'[^]{0,120}${id}`).test(code), false);
   }
   check('文档 / SOP / 工具的搜索不再重建输入框', code.includes("kept.dataset.tab === mTab"), true);
+  check('等着的搜索请求回来时，不把还在打字的框改回旧值', code.includes('kept.value !== mSearch && document.activeElement !== kept'), true);
   check('选文档的筛选框按回车时不在组字', code.includes("e.target.id === 'pbDocFilter' && e.key === 'Enter' && !e.isComposing"), true);
 }
 
