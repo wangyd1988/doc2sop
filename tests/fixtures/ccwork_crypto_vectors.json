@@ -1,0 +1,5513 @@
+{
+ "about": "厂商加密程序在 A 上用 gVisor 断网跑一次得到的对照数据；输入全是固定种子生成的随机密钥和明文，不含任何真实凭据。见 deploy/ccwork/crypto_vectors.py",
+ "vendor": {
+  "file": "ccwork-crypto-linux-amd64",
+  "sha256": "11c375dae38e41f44addfbd3f6607d691a959ba6a8d6df2868b8c1fa94854800",
+  "sdk": "ccwork-sdk/ccwork-chat-sdk-go 2cf4953（v1.0.0）",
+  "run_at": "2026-11-02 10:58 CST（A 机，gVisor，断网）",
+  "command": "docker run --rm --pull never --runtime runsc --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 --memory 128m --memory-swap 128m --pids-limit 64 --cpus 1 --mount type=bind,source=/root/ccwork-vectors/bin,target=/v/bin,readonly --mount type=bind,source=/root/ccwork-vectors/in,target=/v/in,readonly --mount type=bind,source=/root/ccwork-vectors/out,target=/v/out --entrypoint /bin/sh kb-app:20261102000149 -c 'for f in /v/in/[0-9]*.json; do n=${f##*/}; n=${n%.json}; /v/bin/ccwork-crypto-linux-amd64 --request-stdin-json < \"$f\" > \"/v/out/$n.out\" 2> \"/v/out/$n.err\"; echo $? > \"/v/out/$n.rc\"; done'",
+  "sha256_checked": "sha256sum -c ??????? A ????"
+ },
+ "cases": [
+  {
+   "id": "0001",
+   "name": "encrypt raw empty",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "1Lif+slH6UMn4OyC+1x12g=="
+   }
+  },
+  {
+   "id": "0002",
+   "name": "decrypt raw->utf8 empty",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "1Lif+slH6UMn4OyC+1x12g==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": ""
+   }
+  },
+  {
+   "id": "0003",
+   "name": "decrypt raw->raw empty",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "1Lif+slH6UMn4OyC+1x12g==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0004",
+   "name": "encrypt plain empty",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "1Lif+slH6UMn4OyC+1x12g=="
+   }
+  },
+  {
+   "id": "0005",
+   "name": "decrypt base64->utf8 empty",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "1Lif+slH6UMn4OyC+1x12g==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": ""
+   }
+  },
+  {
+   "id": "0006",
+   "name": "encrypt raw a1",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "Sw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "uesaf6bVqYF7SrX5OEE7Ww=="
+   }
+  },
+  {
+   "id": "0007",
+   "name": "decrypt raw->utf8 a1",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "uesaf6bVqYF7SrX5OEE7Ww==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "K"
+   }
+  },
+  {
+   "id": "0008",
+   "name": "decrypt raw->raw a1",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "uesaf6bVqYF7SrX5OEE7Ww==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0009",
+   "name": "encrypt plain a1",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "K",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "uesaf6bVqYF7SrX5OEE7Ww=="
+   }
+  },
+  {
+   "id": "0010",
+   "name": "decrypt base64->utf8 a1",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "uesaf6bVqYF7SrX5OEE7Ww==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "K"
+   }
+  },
+  {
+   "id": "0011",
+   "name": "encrypt raw a15",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "ZTl5T1BraEFjVzFQbVg3",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "JBwtCkZnegG5r3o9gnUzYg=="
+   }
+  },
+  {
+   "id": "0012",
+   "name": "decrypt raw->utf8 a15",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "JBwtCkZnegG5r3o9gnUzYg==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "e9yOPkhAcW1PmX7"
+   }
+  },
+  {
+   "id": "0013",
+   "name": "decrypt raw->raw a15",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "JBwtCkZnegG5r3o9gnUzYg==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0014",
+   "name": "encrypt plain a15",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "e9yOPkhAcW1PmX7",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "JBwtCkZnegG5r3o9gnUzYg=="
+   }
+  },
+  {
+   "id": "0015",
+   "name": "decrypt base64->utf8 a15",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "JBwtCkZnegG5r3o9gnUzYg==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "e9yOPkhAcW1PmX7"
+   }
+  },
+  {
+   "id": "0016",
+   "name": "encrypt raw a16",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "ekhORG1ZOTVNbFRKQUtaQw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "i3J3JXMBlpaUB3k8TMahPtS4n/rJR+lDJ+Dsgvtcddo="
+   }
+  },
+  {
+   "id": "0017",
+   "name": "decrypt raw->utf8 a16",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "i3J3JXMBlpaUB3k8TMahPtS4n/rJR+lDJ+Dsgvtcddo=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "zHNDmY95MlTJAKZC"
+   }
+  },
+  {
+   "id": "0018",
+   "name": "decrypt raw->raw a16",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "i3J3JXMBlpaUB3k8TMahPtS4n/rJR+lDJ+Dsgvtcddo=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0019",
+   "name": "encrypt plain a16",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "zHNDmY95MlTJAKZC",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "i3J3JXMBlpaUB3k8TMahPtS4n/rJR+lDJ+Dsgvtcddo="
+   }
+  },
+  {
+   "id": "0020",
+   "name": "decrypt base64->utf8 a16",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "i3J3JXMBlpaUB3k8TMahPtS4n/rJR+lDJ+Dsgvtcddo=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "zHNDmY95MlTJAKZC"
+   }
+  },
+  {
+   "id": "0021",
+   "name": "encrypt raw a17",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "THVabUlRR2RPZmc0T2VIWFI=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "BEhva4weBTUOPGYcBkS5K67OEcIZJ47n0Gmx3sdH23A="
+   }
+  },
+  {
+   "id": "0022",
+   "name": "decrypt raw->utf8 a17",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "BEhva4weBTUOPGYcBkS5K67OEcIZJ47n0Gmx3sdH23A=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "LuZmIQGdOfg4OeHXR"
+   }
+  },
+  {
+   "id": "0023",
+   "name": "decrypt raw->raw a17",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "BEhva4weBTUOPGYcBkS5K67OEcIZJ47n0Gmx3sdH23A=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0024",
+   "name": "encrypt plain a17",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "LuZmIQGdOfg4OeHXR",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "BEhva4weBTUOPGYcBkS5K67OEcIZJ47n0Gmx3sdH23A="
+   }
+  },
+  {
+   "id": "0025",
+   "name": "decrypt base64->utf8 a17",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "BEhva4weBTUOPGYcBkS5K67OEcIZJ47n0Gmx3sdH23A=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "LuZmIQGdOfg4OeHXR"
+   }
+  },
+  {
+   "id": "0026",
+   "name": "encrypt raw zh",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "xVD899CFP6ta2IAYD8gdzp2/s14hZTi2h1GIR+O+w3N5/LmYMWTRy6ArY97xlFMAIAY1NtHAv1yRrc87PAxUlw=="
+   }
+  },
+  {
+   "id": "0027",
+   "name": "decrypt raw->utf8 zh",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "xVD899CFP6ta2IAYD8gdzp2/s14hZTi2h1GIR+O+w3N5/LmYMWTRy6ArY97xlFMAIAY1NtHAv1yRrc87PAxUlw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "云上协同里 @doc2sop 提问：kb-app 内存高怎么办？"
+   }
+  },
+  {
+   "id": "0028",
+   "name": "decrypt raw->raw zh",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "xVD899CFP6ta2IAYD8gdzp2/s14hZTi2h1GIR+O+w3N5/LmYMWTRy6ArY97xlFMAIAY1NtHAv1yRrc87PAxUlw==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0029",
+   "name": "encrypt plain zh",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "云上协同里 @doc2sop 提问：kb-app 内存高怎么办？",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "xVD899CFP6ta2IAYD8gdzp2/s14hZTi2h1GIR+O+w3N5/LmYMWTRy6ArY97xlFMAIAY1NtHAv1yRrc87PAxUlw=="
+   }
+  },
+  {
+   "id": "0030",
+   "name": "decrypt base64->utf8 zh",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "xVD899CFP6ta2IAYD8gdzp2/s14hZTi2h1GIR+O+w3N5/LmYMWTRy6ArY97xlFMAIAY1NtHAv1yRrc87PAxUlw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "云上协同里 @doc2sop 提问：kb-app 内存高怎么办？"
+   }
+  },
+  {
+   "id": "0031",
+   "name": "encrypt raw bin127",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "s89Ztg1SHME6kvDd2oXS7NCEWMrUVoLpSEITMfPHicdiAFYwYcx8gsdszevRIZJ64skewdtMWFwOOX7A0Gxv46tnEDjF04uTwO5HscasmyEpZDm48fNOEcsRRjfCILaOQONQqEkb1GpBU48EVherKOi1XA+WIy4BQcP7eXTqplM="
+   }
+  },
+  {
+   "id": "0032",
+   "name": "decrypt raw->utf8 bin127",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "s89Ztg1SHME6kvDd2oXS7NCEWMrUVoLpSEITMfPHicdiAFYwYcx8gsdszevRIZJ64skewdtMWFwOOX7A0Gxv46tnEDjF04uTwO5HscasmyEpZDm48fNOEcsRRjfCILaOQONQqEkb1GpBU48EVherKOi1XA+WIy4BQcP7eXTqplM=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "\u0001\n��#�=r2��?�Q��=�\u000b�S���F�,u�֋�\u0001��/S�K���� /5Gr]Z�_R��\u0017��B�Ԓ�ݲ����\u0013\u0018�� '\b�d���?��s\f*Z\u0003��嵉�j��2ܟjf΍���7�M�tf2�\\\u001d��\u001a������"
+   }
+  },
+  {
+   "id": "0033",
+   "name": "decrypt raw->raw bin127",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "s89Ztg1SHME6kvDd2oXS7NCEWMrUVoLpSEITMfPHicdiAFYwYcx8gsdszevRIZJ64skewdtMWFwOOX7A0Gxv46tnEDjF04uTwO5HscasmyEpZDm48fNOEcsRRjfCILaOQONQqEkb1GpBU48EVherKOi1XA+WIy4BQcP7eXTqplM=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0034",
+   "name": "encrypt raw bin128",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "D+cKRZiD3A/+bEKsnYIUumPPj4nZOjRXTYQbM/7TchOgenYJgiWA4a0OmyfZl5LOehlyTJ2ertrh0TKX4qdCqzRsswhU4fbmYdtSS7Azny0ANL/llgERYrhphCnZMOsbsEFVLDKSIbiSqu+ZmHx1m5idgKIku73xHTV5OBqIHF/UuJ/6yUfpQyfg7IL7XHXa"
+   }
+  },
+  {
+   "id": "0035",
+   "name": "decrypt raw->utf8 bin128",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "D+cKRZiD3A/+bEKsnYIUumPPj4nZOjRXTYQbM/7TchOgenYJgiWA4a0OmyfZl5LOehlyTJ2ertrh0TKX4qdCqzRsswhU4fbmYdtSS7Azny0ANL/llgERYrhphCnZMOsbsEFVLDKSIbiSqu+ZmHx1m5idgKIku73xHTV5OBqIHF/UuJ/6yUfpQyfg7IL7XHXa",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "\u0010$\u0003�UQJ���J����n����5�&�b�?�B[\u0012ЩG\u0001�����`��dx��x\u0019n�/z\u0001�q��5@\u001f���\u0003NMb<\u0015�,�(z��\u0004H\u0010��bi��[`�\u0010,r�I�Wn+�h��Sta��s�ߨ�� �\n\u000e�ow+�ݻ��A"
+   }
+  },
+  {
+   "id": "0036",
+   "name": "decrypt raw->raw bin128",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "D+cKRZiD3A/+bEKsnYIUumPPj4nZOjRXTYQbM/7TchOgenYJgiWA4a0OmyfZl5LOehlyTJ2ertrh0TKX4qdCqzRsswhU4fbmYdtSS7Azny0ANL/llgERYrhphCnZMOsbsEFVLDKSIbiSqu+ZmHx1m5idgKIku73xHTV5OBqIHF/UuJ/6yUfpQyfg7IL7XHXa",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0037",
+   "name": "encrypt raw bin200",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "0DP3JJLkf5nt/f7wBxNyVf9sCIoAqNdRA8aWYPuwVqX0xjFQtdYjdDV7eEkS/h+WBi/7kRpgUZbgddotGCS89I3ukqxsjQSbAYBjeY1foVXwkKZkIS9rk4lavwqStodIdB9o6c5yn1NZAg5+nIjZyZd8B9iZOuURqaE/3emF1KSdrfYi9DxEkkb1AVFcyCfnUG3iE/qYhvP0QCX4zrQcAaXbQ/H9j0NK2a6liA6+cjQsNEAZqI6v2RkBgPqRLb084Lmfr16u38mCe1FhVVdEqA=="
+   }
+  },
+  {
+   "id": "0038",
+   "name": "decrypt raw->utf8 bin200",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "0DP3JJLkf5nt/f7wBxNyVf9sCIoAqNdRA8aWYPuwVqX0xjFQtdYjdDV7eEkS/h+WBi/7kRpgUZbgddotGCS89I3ukqxsjQSbAYBjeY1foVXwkKZkIS9rk4lavwqStodIdB9o6c5yn1NZAg5+nIjZyZd8B9iZOuURqaE/3emF1KSdrfYi9DxEkkb1AVFcyCfnUG3iE/qYhvP0QCX4zrQcAaXbQ/H9j0NK2a6liA6+cjQsNEAZqI6v2RkBgPqRLb084Lmfr16u38mCe1FhVVdEqA==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "�M�{�5\t̓�Q��n�t-]:\u0000_�Ulw���\u00022\n��G^*��Q[E�\u001f8���i�+\b�L����uqЦ��k�e�~M��Ff�\u0010\u000e���J�Ym�>\u001b����/����\u0004@`��߉\u000e�%}�\\\u0003�G<����+/��\u0002\u0017N��:��\t���M_��\u001a�@3�\u0015Wm��z�9�r�!�1\u0017Ҝ6����M#X\u0018��\u0005�D�f��3�\u0016\u000f����\"���'5��:QwJ'�\bs"
+   }
+  },
+  {
+   "id": "0039",
+   "name": "decrypt raw->raw bin200",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "0DP3JJLkf5nt/f7wBxNyVf9sCIoAqNdRA8aWYPuwVqX0xjFQtdYjdDV7eEkS/h+WBi/7kRpgUZbgddotGCS89I3ukqxsjQSbAYBjeY1foVXwkKZkIS9rk4lavwqStodIdB9o6c5yn1NZAg5+nIjZyZd8B9iZOuURqaE/3emF1KSdrfYi9DxEkkb1AVFcyCfnUG3iE/qYhvP0QCX4zrQcAaXbQ/H9j0NK2a6liA6+cjQsNEAZqI6v2RkBgPqRLb084Lmfr16u38mCe1FhVVdEqA==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0040",
+   "name": "encrypt raw pb",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "6b9W2JQ0273H8Y3DlwTXeodW4reWWonwsNiIPps73eU4z4n+TA/JYdZB927RJgzXZMqBokQmUIhm33OPmZSalXVSynRkWv60md7Anm6Q72OGEf/mAWqBxmIfB//d1dg+DjVDDx/fZCYnY+lKPn27wiAJ+VU5IxMn8SrtT59jN/GCVIXbdD2JnvPxlWZ5nxnzSUyrFLcsuc9KhgQPZbfHPavoVzgdMTYaMEVpe1a/p46ttPUJ96iEfk6RgRt/C886u6xw3EW9S0/0WUOZKt/9Y+IHIeZhfykGYBpGKFZ3kYfTb7vXaGPVXEzEs1kG+TfVP+8KXlAqHZ5e/e+jHmlAsjtia53RPAnwI/RugXzManIzcHeoyvUf9D0cnK1trP8Q"
+   }
+  },
+  {
+   "id": "0041",
+   "name": "decrypt raw->utf8 pb",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "6b9W2JQ0273H8Y3DlwTXeodW4reWWonwsNiIPps73eU4z4n+TA/JYdZB927RJgzXZMqBokQmUIhm33OPmZSalXVSynRkWv60md7Anm6Q72OGEf/mAWqBxmIfB//d1dg+DjVDDx/fZCYnY+lKPn27wiAJ+VU5IxMn8SrtT59jN/GCVIXbdD2JnvPxlWZ5nxnzSUyrFLcsuc9KhgQPZbfHPavoVzgdMTYaMEVpe1a/p46ttPUJ96iEfk6RgRt/C886u6xw3EW9S0/0WUOZKt/9Y+IHIeZhfykGYBpGKFZ3kYfTb7vXaGPVXEzEs1kG+TfVP+8KXlAqHZ5e/e+jHmlAsjtia53RPAnwI/RugXzManIzcHeoyvUf9D0cnK1trP8Q",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "\n�\u0002知识库里怎么申请 VPN 权限？要走哪个流程，谁来审批，多久能开通？还有外包同事能不能申请？谢谢知识库里怎么申请 VPN 权限？要走哪个流程，谁来审批，多久能开通？还有外包同事能不能申请？谢谢\u0012\u000598765"
+   }
+  },
+  {
+   "id": "0042",
+   "name": "decrypt raw->raw pb",
+   "alg": "aes",
+   "key_name": "t16",
+   "plain": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "6b9W2JQ0273H8Y3DlwTXeodW4reWWonwsNiIPps73eU4z4n+TA/JYdZB927RJgzXZMqBokQmUIhm33OPmZSalXVSynRkWv60md7Anm6Q72OGEf/mAWqBxmIfB//d1dg+DjVDDx/fZCYnY+lKPn27wiAJ+VU5IxMn8SrtT59jN/GCVIXbdD2JnvPxlWZ5nxnzSUyrFLcsuc9KhgQPZbfHPavoVzgdMTYaMEVpe1a/p46ttPUJ96iEfk6RgRt/C886u6xw3EW9S0/0WUOZKt/9Y+IHIeZhfykGYBpGKFZ3kYfTb7vXaGPVXEzEs1kG+TfVP+8KXlAqHZ5e/e+jHmlAsjtia53RPAnwI/RugXzManIzcHeoyvUf9D0cnK1trP8Q",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0043",
+   "name": "encrypt raw empty",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "GbwR5eUmjJ35b9N3s2lQzQ=="
+   }
+  },
+  {
+   "id": "0044",
+   "name": "decrypt raw->utf8 empty",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "GbwR5eUmjJ35b9N3s2lQzQ==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": ""
+   }
+  },
+  {
+   "id": "0045",
+   "name": "decrypt raw->raw empty",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "GbwR5eUmjJ35b9N3s2lQzQ==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0046",
+   "name": "encrypt plain empty",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "GbwR5eUmjJ35b9N3s2lQzQ=="
+   }
+  },
+  {
+   "id": "0047",
+   "name": "decrypt base64->utf8 empty",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "GbwR5eUmjJ35b9N3s2lQzQ==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": ""
+   }
+  },
+  {
+   "id": "0048",
+   "name": "encrypt raw a1",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "Sw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "BLapAcZkz0iJAM+M2IbHTA=="
+   }
+  },
+  {
+   "id": "0049",
+   "name": "decrypt raw->utf8 a1",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "BLapAcZkz0iJAM+M2IbHTA==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "K"
+   }
+  },
+  {
+   "id": "0050",
+   "name": "decrypt raw->raw a1",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "BLapAcZkz0iJAM+M2IbHTA==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0051",
+   "name": "encrypt plain a1",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "K",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "BLapAcZkz0iJAM+M2IbHTA=="
+   }
+  },
+  {
+   "id": "0052",
+   "name": "decrypt base64->utf8 a1",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "BLapAcZkz0iJAM+M2IbHTA==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "K"
+   }
+  },
+  {
+   "id": "0053",
+   "name": "encrypt raw a15",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "ZTl5T1BraEFjVzFQbVg3",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "Gxki8s233sQB4OqfAHZB0g=="
+   }
+  },
+  {
+   "id": "0054",
+   "name": "decrypt raw->utf8 a15",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "Gxki8s233sQB4OqfAHZB0g==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "e9yOPkhAcW1PmX7"
+   }
+  },
+  {
+   "id": "0055",
+   "name": "decrypt raw->raw a15",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "Gxki8s233sQB4OqfAHZB0g==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0056",
+   "name": "encrypt plain a15",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "e9yOPkhAcW1PmX7",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "Gxki8s233sQB4OqfAHZB0g=="
+   }
+  },
+  {
+   "id": "0057",
+   "name": "decrypt base64->utf8 a15",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "Gxki8s233sQB4OqfAHZB0g==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "e9yOPkhAcW1PmX7"
+   }
+  },
+  {
+   "id": "0058",
+   "name": "encrypt raw a16",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "ekhORG1ZOTVNbFRKQUtaQw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "Jhm/uzE83qdvg1E4GVVAdBm8EeXlJoyd+W/Td7NpUM0="
+   }
+  },
+  {
+   "id": "0059",
+   "name": "decrypt raw->utf8 a16",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "Jhm/uzE83qdvg1E4GVVAdBm8EeXlJoyd+W/Td7NpUM0=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "zHNDmY95MlTJAKZC"
+   }
+  },
+  {
+   "id": "0060",
+   "name": "decrypt raw->raw a16",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "Jhm/uzE83qdvg1E4GVVAdBm8EeXlJoyd+W/Td7NpUM0=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0061",
+   "name": "encrypt plain a16",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "zHNDmY95MlTJAKZC",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "Jhm/uzE83qdvg1E4GVVAdBm8EeXlJoyd+W/Td7NpUM0="
+   }
+  },
+  {
+   "id": "0062",
+   "name": "decrypt base64->utf8 a16",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "Jhm/uzE83qdvg1E4GVVAdBm8EeXlJoyd+W/Td7NpUM0=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "zHNDmY95MlTJAKZC"
+   }
+  },
+  {
+   "id": "0063",
+   "name": "encrypt raw a17",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "THVabUlRR2RPZmc0T2VIWFI=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "t5CzrER0l3IxmEbRjXjArnqsBYxWuLQJFjhoh54V0hY="
+   }
+  },
+  {
+   "id": "0064",
+   "name": "decrypt raw->utf8 a17",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "t5CzrER0l3IxmEbRjXjArnqsBYxWuLQJFjhoh54V0hY=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "LuZmIQGdOfg4OeHXR"
+   }
+  },
+  {
+   "id": "0065",
+   "name": "decrypt raw->raw a17",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "t5CzrER0l3IxmEbRjXjArnqsBYxWuLQJFjhoh54V0hY=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0066",
+   "name": "encrypt plain a17",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "LuZmIQGdOfg4OeHXR",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "t5CzrER0l3IxmEbRjXjArnqsBYxWuLQJFjhoh54V0hY="
+   }
+  },
+  {
+   "id": "0067",
+   "name": "decrypt base64->utf8 a17",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "t5CzrER0l3IxmEbRjXjArnqsBYxWuLQJFjhoh54V0hY=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "LuZmIQGdOfg4OeHXR"
+   }
+  },
+  {
+   "id": "0068",
+   "name": "encrypt raw zh",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "GrbWwREecw1NaGG/MVmdm30FNkLdSkXxfATKhbqjiT8KKiY/Gob2oLduDgey8baGcIBabBoEoVTuVrNKFH3hXQ=="
+   }
+  },
+  {
+   "id": "0069",
+   "name": "decrypt raw->utf8 zh",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "GrbWwREecw1NaGG/MVmdm30FNkLdSkXxfATKhbqjiT8KKiY/Gob2oLduDgey8baGcIBabBoEoVTuVrNKFH3hXQ==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "云上协同里 @doc2sop 提问：kb-app 内存高怎么办？"
+   }
+  },
+  {
+   "id": "0070",
+   "name": "decrypt raw->raw zh",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "GrbWwREecw1NaGG/MVmdm30FNkLdSkXxfATKhbqjiT8KKiY/Gob2oLduDgey8baGcIBabBoEoVTuVrNKFH3hXQ==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0071",
+   "name": "encrypt plain zh",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "云上协同里 @doc2sop 提问：kb-app 内存高怎么办？",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "GrbWwREecw1NaGG/MVmdm30FNkLdSkXxfATKhbqjiT8KKiY/Gob2oLduDgey8baGcIBabBoEoVTuVrNKFH3hXQ=="
+   }
+  },
+  {
+   "id": "0072",
+   "name": "decrypt base64->utf8 zh",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "GrbWwREecw1NaGG/MVmdm30FNkLdSkXxfATKhbqjiT8KKiY/Gob2oLduDgey8baGcIBabBoEoVTuVrNKFH3hXQ==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "云上协同里 @doc2sop 提问：kb-app 内存高怎么办？"
+   }
+  },
+  {
+   "id": "0073",
+   "name": "encrypt raw bin127",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "fAXXjqrwvFPSKbz5yzeNBn1aqehPgjOdPewrd4tUpi3fjiak3SlVc24+aL4ptJQO8x1LGQU5Cim1qQzS7BHg3n2qcnLru/SjYTIHwDKjev6al9BS++zmq5eV7RHFrLigVAynirqZRRY4xkHiJq6DKfJViHQjW0EV/ulw9HnVtgo="
+   }
+  },
+  {
+   "id": "0074",
+   "name": "decrypt raw->utf8 bin127",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "fAXXjqrwvFPSKbz5yzeNBn1aqehPgjOdPewrd4tUpi3fjiak3SlVc24+aL4ptJQO8x1LGQU5Cim1qQzS7BHg3n2qcnLru/SjYTIHwDKjev6al9BS++zmq5eV7RHFrLigVAynirqZRRY4xkHiJq6DKfJViHQjW0EV/ulw9HnVtgo=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "\u0001\n��#�=r2��?�Q��=�\u000b�S���F�,u�֋�\u0001��/S�K���� /5Gr]Z�_R��\u0017��B�Ԓ�ݲ����\u0013\u0018�� '\b�d���?��s\f*Z\u0003��嵉�j��2ܟjf΍���7�M�tf2�\\\u001d��\u001a������"
+   }
+  },
+  {
+   "id": "0075",
+   "name": "decrypt raw->raw bin127",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "fAXXjqrwvFPSKbz5yzeNBn1aqehPgjOdPewrd4tUpi3fjiak3SlVc24+aL4ptJQO8x1LGQU5Cim1qQzS7BHg3n2qcnLru/SjYTIHwDKjev6al9BS++zmq5eV7RHFrLigVAynirqZRRY4xkHiJq6DKfJViHQjW0EV/ulw9HnVtgo=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0076",
+   "name": "encrypt raw bin128",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "cjFmgC0CU6XU7BzWIMXBQ1rtzUgUEOyWsFQDxY2rEBHyJH7BKmqIEoS3HOoTtNJijQ6HWvIVEyatQoLOJj1pSQPqzRvA3GB//zg+QhjzJpxyXlGrQOHd9gOtPPtVyM8DYj4s4V8TljU/BgzuMY6z1S5+Fq+sz+AmtQMObA2gm+8ZvBHl5SaMnflv03ezaVDN"
+   }
+  },
+  {
+   "id": "0077",
+   "name": "decrypt raw->utf8 bin128",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "cjFmgC0CU6XU7BzWIMXBQ1rtzUgUEOyWsFQDxY2rEBHyJH7BKmqIEoS3HOoTtNJijQ6HWvIVEyatQoLOJj1pSQPqzRvA3GB//zg+QhjzJpxyXlGrQOHd9gOtPPtVyM8DYj4s4V8TljU/BgzuMY6z1S5+Fq+sz+AmtQMObA2gm+8ZvBHl5SaMnflv03ezaVDN",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "\u0010$\u0003�UQJ���J����n����5�&�b�?�B[\u0012ЩG\u0001�����`��dx��x\u0019n�/z\u0001�q��5@\u001f���\u0003NMb<\u0015�,�(z��\u0004H\u0010��bi��[`�\u0010,r�I�Wn+�h��Sta��s�ߨ�� �\n\u000e�ow+�ݻ��A"
+   }
+  },
+  {
+   "id": "0078",
+   "name": "decrypt raw->raw bin128",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "cjFmgC0CU6XU7BzWIMXBQ1rtzUgUEOyWsFQDxY2rEBHyJH7BKmqIEoS3HOoTtNJijQ6HWvIVEyatQoLOJj1pSQPqzRvA3GB//zg+QhjzJpxyXlGrQOHd9gOtPPtVyM8DYj4s4V8TljU/BgzuMY6z1S5+Fq+sz+AmtQMObA2gm+8ZvBHl5SaMnflv03ezaVDN",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0079",
+   "name": "encrypt raw bin200",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "sRTC24dicFUB6evsHok4A7ErFVG7SVr6k6h2Kb1brrN6xp1QaktGAeOcdc0UpASsF9B9Vnj+f2PN75dROEGLVpEIrc/ssS+fz8fsUI9kDkuOQteQZFx+mJHbL1gVfRJCJHA8MD8NyAufpWQzli9yBGnNnOio2H7RLFjih5LRWKOEkLhLsNurMbkGAVXoNdpVwhlbwNuDUqOSuDPtGqyGTUuRc3YokKocIJdHOG/IRBf4MmVtm1MIy1kzGCB3NgG4ARI+IiRMAoWNq2jWe3zacg=="
+   }
+  },
+  {
+   "id": "0080",
+   "name": "decrypt raw->utf8 bin200",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "sRTC24dicFUB6evsHok4A7ErFVG7SVr6k6h2Kb1brrN6xp1QaktGAeOcdc0UpASsF9B9Vnj+f2PN75dROEGLVpEIrc/ssS+fz8fsUI9kDkuOQteQZFx+mJHbL1gVfRJCJHA8MD8NyAufpWQzli9yBGnNnOio2H7RLFjih5LRWKOEkLhLsNurMbkGAVXoNdpVwhlbwNuDUqOSuDPtGqyGTUuRc3YokKocIJdHOG/IRBf4MmVtm1MIy1kzGCB3NgG4ARI+IiRMAoWNq2jWe3zacg==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "�M�{�5\t̓�Q��n�t-]:\u0000_�Ulw���\u00022\n��G^*��Q[E�\u001f8���i�+\b�L����uqЦ��k�e�~M��Ff�\u0010\u000e���J�Ym�>\u001b����/����\u0004@`��߉\u000e�%}�\\\u0003�G<����+/��\u0002\u0017N��:��\t���M_��\u001a�@3�\u0015Wm��z�9�r�!�1\u0017Ҝ6����M#X\u0018��\u0005�D�f��3�\u0016\u000f����\"���'5��:QwJ'�\bs"
+   }
+  },
+  {
+   "id": "0081",
+   "name": "decrypt raw->raw bin200",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "sRTC24dicFUB6evsHok4A7ErFVG7SVr6k6h2Kb1brrN6xp1QaktGAeOcdc0UpASsF9B9Vnj+f2PN75dROEGLVpEIrc/ssS+fz8fsUI9kDkuOQteQZFx+mJHbL1gVfRJCJHA8MD8NyAufpWQzli9yBGnNnOio2H7RLFjih5LRWKOEkLhLsNurMbkGAVXoNdpVwhlbwNuDUqOSuDPtGqyGTUuRc3YokKocIJdHOG/IRBf4MmVtm1MIy1kzGCB3NgG4ARI+IiRMAoWNq2jWe3zacg==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0082",
+   "name": "encrypt raw pb",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "LGlyPjwn/zYzkiIfCW3bBlV8rfhSDyglF+df6FuQFlAsdGGcl5SxdPsiS109vN9EIPOHIaiyhwOw2anChx/deso4NouNXu7rE6sSNKJsor3qty6KiLnucK6auObZ2l0h5H1nNQjFc9F/1mZZHg9mvE0GEBQkakiEnfoswbwxu3dFHehjszJIW7S3iYIz0MYE9+pnV78UgYnXSR0utHTPs9tLw/EztfRFRECVtlgG3c1aNt7Sk+gmBFCfC9ylSXFCyKPImhkxcQLBEylH/BMGWc60quBruJ7REkr8AVOoUSAwI5cRbsoEM9VASpZTvimzbVOLaRRorn7vsQjFPhyxu15ZbayBFZAXzpfYX2lv/uCYqcIUffxKeV0094wi/QTJ"
+   }
+  },
+  {
+   "id": "0083",
+   "name": "decrypt raw->utf8 pb",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "LGlyPjwn/zYzkiIfCW3bBlV8rfhSDyglF+df6FuQFlAsdGGcl5SxdPsiS109vN9EIPOHIaiyhwOw2anChx/deso4NouNXu7rE6sSNKJsor3qty6KiLnucK6auObZ2l0h5H1nNQjFc9F/1mZZHg9mvE0GEBQkakiEnfoswbwxu3dFHehjszJIW7S3iYIz0MYE9+pnV78UgYnXSR0utHTPs9tLw/EztfRFRECVtlgG3c1aNt7Sk+gmBFCfC9ylSXFCyKPImhkxcQLBEylH/BMGWc60quBruJ7REkr8AVOoUSAwI5cRbsoEM9VASpZTvimzbVOLaRRorn7vsQjFPhyxu15ZbayBFZAXzpfYX2lv/uCYqcIUffxKeV0094wi/QTJ",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "\n�\u0002知识库里怎么申请 VPN 权限？要走哪个流程，谁来审批，多久能开通？还有外包同事能不能申请？谢谢知识库里怎么申请 VPN 权限？要走哪个流程，谁来审批，多久能开通？还有外包同事能不能申请？谢谢\u0012\u000598765"
+   }
+  },
+  {
+   "id": "0084",
+   "name": "decrypt raw->raw pb",
+   "alg": "aes",
+   "key_name": "t32",
+   "plain": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "eWszeUJRRFVlc3FaamJwd0N2bFJmcFRaa3dYVVpzTmU=",
+    "key_encoding": "base64",
+    "data": "LGlyPjwn/zYzkiIfCW3bBlV8rfhSDyglF+df6FuQFlAsdGGcl5SxdPsiS109vN9EIPOHIaiyhwOw2anChx/deso4NouNXu7rE6sSNKJsor3qty6KiLnucK6auObZ2l0h5H1nNQjFc9F/1mZZHg9mvE0GEBQkakiEnfoswbwxu3dFHehjszJIW7S3iYIz0MYE9+pnV78UgYnXSR0utHTPs9tLw/EztfRFRECVtlgG3c1aNt7Sk+gmBFCfC9ylSXFCyKPImhkxcQLBEylH/BMGWc60quBruJ7REkr8AVOoUSAwI5cRbsoEM9VASpZTvimzbVOLaRRorn7vsQjFPhyxu15ZbayBFZAXzpfYX2lv/uCYqcIUffxKeV0094wi/QTJ",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0085",
+   "name": "encrypt raw empty",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "V3q2F+vvCtK6HI1jUHkK1Q=="
+   }
+  },
+  {
+   "id": "0086",
+   "name": "decrypt raw->utf8 empty",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "V3q2F+vvCtK6HI1jUHkK1Q==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": ""
+   }
+  },
+  {
+   "id": "0087",
+   "name": "decrypt raw->raw empty",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "V3q2F+vvCtK6HI1jUHkK1Q==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0088",
+   "name": "encrypt plain empty",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "V3q2F+vvCtK6HI1jUHkK1Q=="
+   }
+  },
+  {
+   "id": "0089",
+   "name": "decrypt base64->utf8 empty",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "V3q2F+vvCtK6HI1jUHkK1Q==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": ""
+   }
+  },
+  {
+   "id": "0090",
+   "name": "encrypt raw a1",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "Sw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "0B2fd68KlyHt4wI7My7T3Q=="
+   }
+  },
+  {
+   "id": "0091",
+   "name": "decrypt raw->utf8 a1",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "0B2fd68KlyHt4wI7My7T3Q==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "K"
+   }
+  },
+  {
+   "id": "0092",
+   "name": "decrypt raw->raw a1",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "0B2fd68KlyHt4wI7My7T3Q==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0093",
+   "name": "encrypt plain a1",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "K",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "0B2fd68KlyHt4wI7My7T3Q=="
+   }
+  },
+  {
+   "id": "0094",
+   "name": "decrypt base64->utf8 a1",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "0B2fd68KlyHt4wI7My7T3Q==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "K"
+   }
+  },
+  {
+   "id": "0095",
+   "name": "encrypt raw a15",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "ZTl5T1BraEFjVzFQbVg3",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "ShorW2JgO/00XzjE1VrYJg=="
+   }
+  },
+  {
+   "id": "0096",
+   "name": "decrypt raw->utf8 a15",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "ShorW2JgO/00XzjE1VrYJg==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "e9yOPkhAcW1PmX7"
+   }
+  },
+  {
+   "id": "0097",
+   "name": "decrypt raw->raw a15",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "ShorW2JgO/00XzjE1VrYJg==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0098",
+   "name": "encrypt plain a15",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "e9yOPkhAcW1PmX7",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "ShorW2JgO/00XzjE1VrYJg=="
+   }
+  },
+  {
+   "id": "0099",
+   "name": "decrypt base64->utf8 a15",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "ShorW2JgO/00XzjE1VrYJg==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "e9yOPkhAcW1PmX7"
+   }
+  },
+  {
+   "id": "0100",
+   "name": "encrypt raw a16",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "ekhORG1ZOTVNbFRKQUtaQw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "7HghDSwDcrTbIggwUytXkFd6thfr7wrSuhyNY1B5CtU="
+   }
+  },
+  {
+   "id": "0101",
+   "name": "decrypt raw->utf8 a16",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "7HghDSwDcrTbIggwUytXkFd6thfr7wrSuhyNY1B5CtU=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "zHNDmY95MlTJAKZC"
+   }
+  },
+  {
+   "id": "0102",
+   "name": "decrypt raw->raw a16",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "7HghDSwDcrTbIggwUytXkFd6thfr7wrSuhyNY1B5CtU=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0103",
+   "name": "encrypt plain a16",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "zHNDmY95MlTJAKZC",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "7HghDSwDcrTbIggwUytXkFd6thfr7wrSuhyNY1B5CtU="
+   }
+  },
+  {
+   "id": "0104",
+   "name": "decrypt base64->utf8 a16",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "7HghDSwDcrTbIggwUytXkFd6thfr7wrSuhyNY1B5CtU=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "zHNDmY95MlTJAKZC"
+   }
+  },
+  {
+   "id": "0105",
+   "name": "encrypt raw a17",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "THVabUlRR2RPZmc0T2VIWFI=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "ZzypqHKtAiT05XR06cLsh8UT1IcXD2+wCE6lANADwWA="
+   }
+  },
+  {
+   "id": "0106",
+   "name": "decrypt raw->utf8 a17",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "ZzypqHKtAiT05XR06cLsh8UT1IcXD2+wCE6lANADwWA=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "LuZmIQGdOfg4OeHXR"
+   }
+  },
+  {
+   "id": "0107",
+   "name": "decrypt raw->raw a17",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "ZzypqHKtAiT05XR06cLsh8UT1IcXD2+wCE6lANADwWA=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0108",
+   "name": "encrypt plain a17",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "LuZmIQGdOfg4OeHXR",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "ZzypqHKtAiT05XR06cLsh8UT1IcXD2+wCE6lANADwWA="
+   }
+  },
+  {
+   "id": "0109",
+   "name": "decrypt base64->utf8 a17",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "ZzypqHKtAiT05XR06cLsh8UT1IcXD2+wCE6lANADwWA=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "LuZmIQGdOfg4OeHXR"
+   }
+  },
+  {
+   "id": "0110",
+   "name": "encrypt raw zh",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "T986sO5bYEIWMGK8bylCIp5+DwJUDCjd6lEOdd/j0WtyjqtieuWf/hrL1zgfC71zi89y0LkZI+cv/Fxvqoe0nQ=="
+   }
+  },
+  {
+   "id": "0111",
+   "name": "decrypt raw->utf8 zh",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "T986sO5bYEIWMGK8bylCIp5+DwJUDCjd6lEOdd/j0WtyjqtieuWf/hrL1zgfC71zi89y0LkZI+cv/Fxvqoe0nQ==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "云上协同里 @doc2sop 提问：kb-app 内存高怎么办？"
+   }
+  },
+  {
+   "id": "0112",
+   "name": "decrypt raw->raw zh",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "T986sO5bYEIWMGK8bylCIp5+DwJUDCjd6lEOdd/j0WtyjqtieuWf/hrL1zgfC71zi89y0LkZI+cv/Fxvqoe0nQ==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0113",
+   "name": "encrypt plain zh",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "云上协同里 @doc2sop 提问：kb-app 内存高怎么办？",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "T986sO5bYEIWMGK8bylCIp5+DwJUDCjd6lEOdd/j0WtyjqtieuWf/hrL1zgfC71zi89y0LkZI+cv/Fxvqoe0nQ=="
+   }
+  },
+  {
+   "id": "0114",
+   "name": "decrypt base64->utf8 zh",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "T986sO5bYEIWMGK8bylCIp5+DwJUDCjd6lEOdd/j0WtyjqtieuWf/hrL1zgfC71zi89y0LkZI+cv/Fxvqoe0nQ==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "云上协同里 @doc2sop 提问：kb-app 内存高怎么办？"
+   }
+  },
+  {
+   "id": "0115",
+   "name": "encrypt raw bin127",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "lizFwwgLjU1GR/kmB6aC/v3PcDPUN+4vqYEfpvv6Xmo3yMT6ax8dHrBr3JIurz22ePBCwAtjw2TzfL3/VUibqZVSqyf10aR+nDVWZ9nFDyPykgvqY1Ju6gwUqsNmm0RjvzxWZ5csgp/kLevQRcPN8AHkbLAtepwjPYg/BwDd/v8="
+   }
+  },
+  {
+   "id": "0116",
+   "name": "decrypt raw->utf8 bin127",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "lizFwwgLjU1GR/kmB6aC/v3PcDPUN+4vqYEfpvv6Xmo3yMT6ax8dHrBr3JIurz22ePBCwAtjw2TzfL3/VUibqZVSqyf10aR+nDVWZ9nFDyPykgvqY1Ju6gwUqsNmm0RjvzxWZ5csgp/kLevQRcPN8AHkbLAtepwjPYg/BwDd/v8=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "\u0001\n��#�=r2��?�Q��=�\u000b�S���F�,u�֋�\u0001��/S�K���� /5Gr]Z�_R��\u0017��B�Ԓ�ݲ����\u0013\u0018�� '\b�d���?��s\f*Z\u0003��嵉�j��2ܟjf΍���7�M�tf2�\\\u001d��\u001a������"
+   }
+  },
+  {
+   "id": "0117",
+   "name": "decrypt raw->raw bin127",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "lizFwwgLjU1GR/kmB6aC/v3PcDPUN+4vqYEfpvv6Xmo3yMT6ax8dHrBr3JIurz22ePBCwAtjw2TzfL3/VUibqZVSqyf10aR+nDVWZ9nFDyPykgvqY1Ju6gwUqsNmm0RjvzxWZ5csgp/kLevQRcPN8AHkbLAtepwjPYg/BwDd/v8=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0118",
+   "name": "encrypt raw bin128",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "OiuCXXkT+9ImO96olX0xuxkYGi34MC7hRekjsHWvtv1aBezZDE7AuzIzB+/07CIxWioOh//Zbi267z0+3CEfZUiRkQLsoul54LXXb5w+jw2zDa9FylxRV+MW/ZMv6skps5h3QqLntjOhkwleePf1AAwrGN3KV3qU5KHCslhqrGNXerYX6+8K0rocjWNQeQrV"
+   }
+  },
+  {
+   "id": "0119",
+   "name": "decrypt raw->utf8 bin128",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "OiuCXXkT+9ImO96olX0xuxkYGi34MC7hRekjsHWvtv1aBezZDE7AuzIzB+/07CIxWioOh//Zbi267z0+3CEfZUiRkQLsoul54LXXb5w+jw2zDa9FylxRV+MW/ZMv6skps5h3QqLntjOhkwleePf1AAwrGN3KV3qU5KHCslhqrGNXerYX6+8K0rocjWNQeQrV",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "\u0010$\u0003�UQJ���J����n����5�&�b�?�B[\u0012ЩG\u0001�����`��dx��x\u0019n�/z\u0001�q��5@\u001f���\u0003NMb<\u0015�,�(z��\u0004H\u0010��bi��[`�\u0010,r�I�Wn+�h��Sta��s�ߨ�� �\n\u000e�ow+�ݻ��A"
+   }
+  },
+  {
+   "id": "0120",
+   "name": "decrypt raw->raw bin128",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "OiuCXXkT+9ImO96olX0xuxkYGi34MC7hRekjsHWvtv1aBezZDE7AuzIzB+/07CIxWioOh//Zbi267z0+3CEfZUiRkQLsoul54LXXb5w+jw2zDa9FylxRV+MW/ZMv6skps5h3QqLntjOhkwleePf1AAwrGN3KV3qU5KHCslhqrGNXerYX6+8K0rocjWNQeQrV",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0121",
+   "name": "encrypt raw bin200",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "eoW5kzCU24r+VSHwXUjBx0uyqUqApgTzcMCpMTR8JQrcIVUuKvdFriM3x/Y7aTCbt7hBvR0889+Lmu65ZKbmOn7g3x2+7uYIzTAJUcELoMJGVm0sOdsA0tvXz4g22xzQH6u5ostXOqvkt3O5OKEQYTQBVX4ad4FhX13ZFIyxA5bae5wQHLzroU2WVp79SyjjP98GQoRI9/17knBwNHrCE9c9oLk4b37KGGfXYvRPN3qqVIXoJOe5q9pdkLTkRAZRp1fmYs12Z3T0g9pwcBFlKw=="
+   }
+  },
+  {
+   "id": "0122",
+   "name": "decrypt raw->utf8 bin200",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "eoW5kzCU24r+VSHwXUjBx0uyqUqApgTzcMCpMTR8JQrcIVUuKvdFriM3x/Y7aTCbt7hBvR0889+Lmu65ZKbmOn7g3x2+7uYIzTAJUcELoMJGVm0sOdsA0tvXz4g22xzQH6u5ostXOqvkt3O5OKEQYTQBVX4ad4FhX13ZFIyxA5bae5wQHLzroU2WVp79SyjjP98GQoRI9/17knBwNHrCE9c9oLk4b37KGGfXYvRPN3qqVIXoJOe5q9pdkLTkRAZRp1fmYs12Z3T0g9pwcBFlKw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "�M�{�5\t̓�Q��n�t-]:\u0000_�Ulw���\u00022\n��G^*��Q[E�\u001f8���i�+\b�L����uqЦ��k�e�~M��Ff�\u0010\u000e���J�Ym�>\u001b����/����\u0004@`��߉\u000e�%}�\\\u0003�G<����+/��\u0002\u0017N��:��\t���M_��\u001a�@3�\u0015Wm��z�9�r�!�1\u0017Ҝ6����M#X\u0018��\u0005�D�f��3�\u0016\u000f����\"���'5��:QwJ'�\bs"
+   }
+  },
+  {
+   "id": "0123",
+   "name": "decrypt raw->raw bin200",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "eoW5kzCU24r+VSHwXUjBx0uyqUqApgTzcMCpMTR8JQrcIVUuKvdFriM3x/Y7aTCbt7hBvR0889+Lmu65ZKbmOn7g3x2+7uYIzTAJUcELoMJGVm0sOdsA0tvXz4g22xzQH6u5ostXOqvkt3O5OKEQYTQBVX4ad4FhX13ZFIyxA5bae5wQHLzroU2WVp79SyjjP98GQoRI9/17knBwNHrCE9c9oLk4b37KGGfXYvRPN3qqVIXoJOe5q9pdkLTkRAZRp1fmYs12Z3T0g9pwcBFlKw==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0124",
+   "name": "encrypt raw pb",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "McX7QseeFiNotlBz332gZJjcE82PFftnQIX0yy6UNmoODl5KqsvqGKqWKOdLFsLu3+6BSOLqx7MzV+JTZAx/UlHPFGuAJdBuWK/axDxQexkuZOxAYAXHSJR3/8XbXZNcQi2GCVsr2fjox6vlEyMVORw5Yv+PIHlZyrYx4FIfz7sbIvyAMmD+v4E/6q3tz4+KWDPk2luXdIayOsbhwjJnuXEa6rLz3wU+//h9sGqOlS5FHHHmUUyJevPDd2ry8s6jUY/AsOFCRuak3M1oJFkBqiDEOSMxhKWsmvR548YIU1EjM/2picuBD5p4Izko5n4QUr3fvXEP3Zb2nzMiFmvVVWDu/IvfbgW7sz8fbol0dsVIGo/Oz+Wu89WWQ8OaAeCO"
+   }
+  },
+  {
+   "id": "0125",
+   "name": "decrypt raw->utf8 pb",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "McX7QseeFiNotlBz332gZJjcE82PFftnQIX0yy6UNmoODl5KqsvqGKqWKOdLFsLu3+6BSOLqx7MzV+JTZAx/UlHPFGuAJdBuWK/axDxQexkuZOxAYAXHSJR3/8XbXZNcQi2GCVsr2fjox6vlEyMVORw5Yv+PIHlZyrYx4FIfz7sbIvyAMmD+v4E/6q3tz4+KWDPk2luXdIayOsbhwjJnuXEa6rLz3wU+//h9sGqOlS5FHHHmUUyJevPDd2ry8s6jUY/AsOFCRuak3M1oJFkBqiDEOSMxhKWsmvR548YIU1EjM/2picuBD5p4Izko5n4QUr3fvXEP3Zb2nzMiFmvVVWDu/IvfbgW7sz8fbol0dsVIGo/Oz+Wu89WWQ8OaAeCO",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "\n�\u0002知识库里怎么申请 VPN 权限？要走哪个流程，谁来审批，多久能开通？还有外包同事能不能申请？谢谢知识库里怎么申请 VPN 权限？要走哪个流程，谁来审批，多久能开通？还有外包同事能不能申请？谢谢\u0012\u000598765"
+   }
+  },
+  {
+   "id": "0126",
+   "name": "decrypt raw->raw pb",
+   "alg": "aes",
+   "key_name": "b16",
+   "plain": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "RWjvsJ/biL6D5aebEv410Q==",
+    "key_encoding": "base64",
+    "data": "McX7QseeFiNotlBz332gZJjcE82PFftnQIX0yy6UNmoODl5KqsvqGKqWKOdLFsLu3+6BSOLqx7MzV+JTZAx/UlHPFGuAJdBuWK/axDxQexkuZOxAYAXHSJR3/8XbXZNcQi2GCVsr2fjox6vlEyMVORw5Yv+PIHlZyrYx4FIfz7sbIvyAMmD+v4E/6q3tz4+KWDPk2luXdIayOsbhwjJnuXEa6rLz3wU+//h9sGqOlS5FHHHmUUyJevPDd2ry8s6jUY/AsOFCRuak3M1oJFkBqiDEOSMxhKWsmvR548YIU1EjM/2picuBD5p4Izko5n4QUr3fvXEP3Zb2nzMiFmvVVWDu/IvfbgW7sz8fbol0dsVIGo/Oz+Wu89WWQ8OaAeCO",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0127",
+   "name": "encrypt raw bin1000",
+   "alg": "aes",
+   "key_name": "first",
+   "plain": "wgJKvIc0xNqac2ZxtmAqVdJ55gBbb//ChJO0Lu/2UbTo3dJCojwRaPYIfU04tAM6qtEoGSJ1qFwVyUi5IxOIRb8uvduIiSQnug8VUYFkR3Ohih0x3XF1utpwp6/MI46lLnxk1Jgdc2LV9IbMsrxpzAtK8qLco1s5QPB8QZ6zYsnhxZwnAJpTddB/EO+c6L8KMMSJ2uZ5PxGRxxaULHc2cBeTUEtEcvStaYd2SlClZXQwJ8QOsHGfQDyZXBOqpTIMG5j11quiLrBfkngEguF8j8P7xlbQSL2z3QRFFxtk7PWqS2vMsuCMy4nPQtfo5Hlhc5JWMpPRtyYwcLqBlBVJ7FxwHQzZl4eWQ34+me8nKjvf6VlAL+/ViUVwqX4dbVo0Xh4BO5neEfSrOfV3QtUBCBQllzLar1LsKyo4E0/wxC3LIw/HIsxbVQmxd/7bzHrpdp6UmUE6CcDqj7bYXEYh6RM+GGK25IsPnQ7X5dOe4Dzmm1G5VkIcu0Ok+FPK4GgoBzQoiaPEUmlUe9SUwZgj/yC0Gb2RV0mFfcduu6VHcf3tZDIo6EUYobmDfaDQc/dA37qEVlqRxAWqz1XDTxfE8tx8eU1OjV8AMhgEbaFaB8TF8FaYJz2SCtQyT10vjrcc60V4Xwm8vs2I0hC2SAvn5wx3k2rqlvoq7s8/F0y+CQeAA8rii3cIUg18T3jtLMRN5qyje+dD8f07MoSy2MBoThS4bF4FYZ7ixYuUfR+wvEunzuAjk11hlfoiZgQS3rZLlysQTASyKRl2noX9x0Jy9j2u0MkBJYOei/cGFAFwHN3ESrvT2KSfzYEL0JCvHeeWIPCZCvhUqz+9Qvxv1AFBiKDyPsCvuCpDwKvia4KttfvM4V9RlFVsjrx2oOVnvIdhEIGIYas8sXpkFwPdgZCGCTXdF+8pyabEbhtsYpty+wBMo7nFR4V0vt7HfBqw+QLM8aurRcnHIFuSaiYDo/ULhkJKfO+FWzljeiIDKG5cQzdtCxHoGxw/JftmHaByOTpluaIxFLjOnU51npA4ryknoefJKxX6rV7pDzlDHyO0ecErkwW7zINHWVwzr9bmt8TMS5qShAySBp2dip5qntUfGHtiiXBLYusHBTHKeGyCtI1CMoYJh7AwYQkv2/jlUO2UgAQj+H1U31g0OBlCJ1MDz7q/ZeUlAUy2dGMYIXpgHr31qGCUUIYnFuB0TW6LqEc/eha0jU0RWfqrKB2Hy2xfkTB6p+XoUX3kLR2+iPnMB/Nz1WYPGceKzW/Kr8JuZxcNCpZPqDztwB2e3zxVHlv1x5yKe49isuIvb4+RCF1p5vFQqrxo7zcn7w==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "wgJKvIc0xNqac2ZxtmAqVdJ55gBbb//ChJO0Lu/2UbTo3dJCojwRaPYIfU04tAM6qtEoGSJ1qFwVyUi5IxOIRb8uvduIiSQnug8VUYFkR3Ohih0x3XF1utpwp6/MI46lLnxk1Jgdc2LV9IbMsrxpzAtK8qLco1s5QPB8QZ6zYsnhxZwnAJpTddB/EO+c6L8KMMSJ2uZ5PxGRxxaULHc2cBeTUEtEcvStaYd2SlClZXQwJ8QOsHGfQDyZXBOqpTIMG5j11quiLrBfkngEguF8j8P7xlbQSL2z3QRFFxtk7PWqS2vMsuCMy4nPQtfo5Hlhc5JWMpPRtyYwcLqBlBVJ7FxwHQzZl4eWQ34+me8nKjvf6VlAL+/ViUVwqX4dbVo0Xh4BO5neEfSrOfV3QtUBCBQllzLar1LsKyo4E0/wxC3LIw/HIsxbVQmxd/7bzHrpdp6UmUE6CcDqj7bYXEYh6RM+GGK25IsPnQ7X5dOe4Dzmm1G5VkIcu0Ok+FPK4GgoBzQoiaPEUmlUe9SUwZgj/yC0Gb2RV0mFfcduu6VHcf3tZDIo6EUYobmDfaDQc/dA37qEVlqRxAWqz1XDTxfE8tx8eU1OjV8AMhgEbaFaB8TF8FaYJz2SCtQyT10vjrcc60V4Xwm8vs2I0hC2SAvn5wx3k2rqlvoq7s8/F0y+CQeAA8rii3cIUg18T3jtLMRN5qyje+dD8f07MoSy2MBoThS4bF4FYZ7ixYuUfR+wvEunzuAjk11hlfoiZgQS3rZLlysQTASyKRl2noX9x0Jy9j2u0MkBJYOei/cGFAFwHN3ESrvT2KSfzYEL0JCvHeeWIPCZCvhUqz+9Qvxv1AFBiKDyPsCvuCpDwKvia4KttfvM4V9RlFVsjrx2oOVnvIdhEIGIYas8sXpkFwPdgZCGCTXdF+8pyabEbhtsYpty+wBMo7nFR4V0vt7HfBqw+QLM8aurRcnHIFuSaiYDo/ULhkJKfO+FWzljeiIDKG5cQzdtCxHoGxw/JftmHaByOTpluaIxFLjOnU51npA4ryknoefJKxX6rV7pDzlDHyO0ecErkwW7zINHWVwzr9bmt8TMS5qShAySBp2dip5qntUfGHtiiXBLYusHBTHKeGyCtI1CMoYJh7AwYQkv2/jlUO2UgAQj+H1U31g0OBlCJ1MDz7q/ZeUlAUy2dGMYIXpgHr31qGCUUIYnFuB0TW6LqEc/eha0jU0RWfqrKB2Hy2xfkTB6p+XoUX3kLR2+iPnMB/Nz1WYPGceKzW/Kr8JuZxcNCpZPqDztwB2e3zxVHlv1x5yKe49isuIvb4+RCF1p5vFQqrxo7zcn7w==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "JU7ydnZfkQDhyRe0ny85FhJ1wzZLFruL0rXtgV4dBSsR2ZsWMlsKdQ8mDny9tpuesoueLsl8lVXX+ppsWTcd4Z3nfRG+WALdPGuQKleFmkzprLnUqzP3nzKchyvkQxJC4eNCGdBgWnb5fCRzjRc3vgFJehngx+QAepdBFqU7lCnRooBcA7B14+Kcd9oQdj7o7KmsMK1U3/D4kM8k3m9RcOHim87roiXKLglcmfT30v9gL9oIO1MdedOOlvRUlGu3PeJXnUePmZERKlgK9RRd4ULCjBXCejuuc3DqnXYwPPkG4Wmq7Cf2CtzqIQ6iQcUiCeFBQaY3Mk8WD6YkF5M8sII0XPsxSCpCSiJvW6b165sIC65THf20ze2tLE7FjfE+ovHftSoRVdqKeesZk8XMAwmC2LHpO7WscaFTxOtUkX8sp2OI0JfmueRlIn75icET0EcH205QAyfKtBUugHqQBZng6T3Ap39+vwY1Wt0wxAdQ6glJSdHYQ9Nc/578MS/jBz3hOBpwSaX6s4XAfGRTUShEJhybVvCjXoGg4M6lVXwWIUISH0B3+MVrVdEibaENWnayV2LUf3gLPS2j0nt44Ahr1aTpLH06YWR2ltLEDNOYbtJ1+iWSR8xQjqy9zrnhoCog00OOILzAvC+mR1FKQOGysNwUOgcVAsaHwhtMx3aab6GGdm1b51FJZ0GcKVj3Y91szxI9w9knSk+NjmvF4T5QJXc/futnBW1G8IZpuqXmBKz1OxD1RiBV7QvjBoMXWbTJn/CfgsYevYJCC6fn2CJ67lubDiqnjh4fjWQISrDZDJ7JsthkHGXVDJtfdEriKn8+3+uUUx0MLhMVTKpe6s9beFHkQcGnRraTF00Wd21P5VmhaZg7bY/vbkSvoy4UKpasmTWoIQOjVsdMRlH68pbacNybsTnVkIxZRNBugQJNab2+xgQS55RCasYdfRIW6pGXDpDIx5z4FCKmYP0zxexvsnjtIKwPphpcD2oZNgsIaqEGOBtIg7MI00/TdqUZ/dLQes3gAyqWPnlRvbOzZcJzJhEaGw1M5KhHqsfI1s8zyvBlJokV+Gti5YCfICcOQxBSw0zoKl3kJb8rpI7Flfo6DG+3B2GGNutzAM/YSoNDGu97wsuG4sJEqhjTGnYMISUisAdBz5p/Tff/dLqTh0JPClz2z354Obv6gMziCCcT4cVcOCpb+Dd0NZqsDL/qtgEHgpEP4TyfxZiqZNBBhtdhIKgjH98l9qL7xYLzzSB3GbqRDTSQeKVSm+uvIvVHM0gfiSj/fr1f6n/U36/A7AoaKQ+5gdjOJeLCWId2ksnF0ADcey7C7jwPDpfKgQmy"
+   }
+  },
+  {
+   "id": "0128",
+   "name": "decrypt raw->raw bin1000",
+   "alg": "aes",
+   "key_name": "first",
+   "plain": "wgJKvIc0xNqac2ZxtmAqVdJ55gBbb//ChJO0Lu/2UbTo3dJCojwRaPYIfU04tAM6qtEoGSJ1qFwVyUi5IxOIRb8uvduIiSQnug8VUYFkR3Ohih0x3XF1utpwp6/MI46lLnxk1Jgdc2LV9IbMsrxpzAtK8qLco1s5QPB8QZ6zYsnhxZwnAJpTddB/EO+c6L8KMMSJ2uZ5PxGRxxaULHc2cBeTUEtEcvStaYd2SlClZXQwJ8QOsHGfQDyZXBOqpTIMG5j11quiLrBfkngEguF8j8P7xlbQSL2z3QRFFxtk7PWqS2vMsuCMy4nPQtfo5Hlhc5JWMpPRtyYwcLqBlBVJ7FxwHQzZl4eWQ34+me8nKjvf6VlAL+/ViUVwqX4dbVo0Xh4BO5neEfSrOfV3QtUBCBQllzLar1LsKyo4E0/wxC3LIw/HIsxbVQmxd/7bzHrpdp6UmUE6CcDqj7bYXEYh6RM+GGK25IsPnQ7X5dOe4Dzmm1G5VkIcu0Ok+FPK4GgoBzQoiaPEUmlUe9SUwZgj/yC0Gb2RV0mFfcduu6VHcf3tZDIo6EUYobmDfaDQc/dA37qEVlqRxAWqz1XDTxfE8tx8eU1OjV8AMhgEbaFaB8TF8FaYJz2SCtQyT10vjrcc60V4Xwm8vs2I0hC2SAvn5wx3k2rqlvoq7s8/F0y+CQeAA8rii3cIUg18T3jtLMRN5qyje+dD8f07MoSy2MBoThS4bF4FYZ7ixYuUfR+wvEunzuAjk11hlfoiZgQS3rZLlysQTASyKRl2noX9x0Jy9j2u0MkBJYOei/cGFAFwHN3ESrvT2KSfzYEL0JCvHeeWIPCZCvhUqz+9Qvxv1AFBiKDyPsCvuCpDwKvia4KttfvM4V9RlFVsjrx2oOVnvIdhEIGIYas8sXpkFwPdgZCGCTXdF+8pyabEbhtsYpty+wBMo7nFR4V0vt7HfBqw+QLM8aurRcnHIFuSaiYDo/ULhkJKfO+FWzljeiIDKG5cQzdtCxHoGxw/JftmHaByOTpluaIxFLjOnU51npA4ryknoefJKxX6rV7pDzlDHyO0ecErkwW7zINHWVwzr9bmt8TMS5qShAySBp2dip5qntUfGHtiiXBLYusHBTHKeGyCtI1CMoYJh7AwYQkv2/jlUO2UgAQj+H1U31g0OBlCJ1MDz7q/ZeUlAUy2dGMYIXpgHr31qGCUUIYnFuB0TW6LqEc/eha0jU0RWfqrKB2Hy2xfkTB6p+XoUX3kLR2+iPnMB/Nz1WYPGceKzW/Kr8JuZxcNCpZPqDztwB2e3zxVHlv1x5yKe49isuIvb4+RCF1p5vFQqrxo7zcn7w==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "JU7ydnZfkQDhyRe0ny85FhJ1wzZLFruL0rXtgV4dBSsR2ZsWMlsKdQ8mDny9tpuesoueLsl8lVXX+ppsWTcd4Z3nfRG+WALdPGuQKleFmkzprLnUqzP3nzKchyvkQxJC4eNCGdBgWnb5fCRzjRc3vgFJehngx+QAepdBFqU7lCnRooBcA7B14+Kcd9oQdj7o7KmsMK1U3/D4kM8k3m9RcOHim87roiXKLglcmfT30v9gL9oIO1MdedOOlvRUlGu3PeJXnUePmZERKlgK9RRd4ULCjBXCejuuc3DqnXYwPPkG4Wmq7Cf2CtzqIQ6iQcUiCeFBQaY3Mk8WD6YkF5M8sII0XPsxSCpCSiJvW6b165sIC65THf20ze2tLE7FjfE+ovHftSoRVdqKeesZk8XMAwmC2LHpO7WscaFTxOtUkX8sp2OI0JfmueRlIn75icET0EcH205QAyfKtBUugHqQBZng6T3Ap39+vwY1Wt0wxAdQ6glJSdHYQ9Nc/578MS/jBz3hOBpwSaX6s4XAfGRTUShEJhybVvCjXoGg4M6lVXwWIUISH0B3+MVrVdEibaENWnayV2LUf3gLPS2j0nt44Ahr1aTpLH06YWR2ltLEDNOYbtJ1+iWSR8xQjqy9zrnhoCog00OOILzAvC+mR1FKQOGysNwUOgcVAsaHwhtMx3aab6GGdm1b51FJZ0GcKVj3Y91szxI9w9knSk+NjmvF4T5QJXc/futnBW1G8IZpuqXmBKz1OxD1RiBV7QvjBoMXWbTJn/CfgsYevYJCC6fn2CJ67lubDiqnjh4fjWQISrDZDJ7JsthkHGXVDJtfdEriKn8+3+uUUx0MLhMVTKpe6s9beFHkQcGnRraTF00Wd21P5VmhaZg7bY/vbkSvoy4UKpasmTWoIQOjVsdMRlH68pbacNybsTnVkIxZRNBugQJNab2+xgQS55RCasYdfRIW6pGXDpDIx5z4FCKmYP0zxexvsnjtIKwPphpcD2oZNgsIaqEGOBtIg7MI00/TdqUZ/dLQes3gAyqWPnlRvbOzZcJzJhEaGw1M5KhHqsfI1s8zyvBlJokV+Gti5YCfICcOQxBSw0zoKl3kJb8rpI7Flfo6DG+3B2GGNutzAM/YSoNDGu97wsuG4sJEqhjTGnYMISUisAdBz5p/Tff/dLqTh0JPClz2z354Obv6gMziCCcT4cVcOCpb+Dd0NZqsDL/qtgEHgpEP4TyfxZiqZNBBhtdhIKgjH98l9qL7xYLzzSB3GbqRDTSQeKVSm+uvIvVHM0gfiSj/fr1f6n/U36/A7AoaKQ+5gdjOJeLCWId2ksnF0ADcey7C7jwPDpfKgQmy",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0129",
+   "name": "decrypt bad length",
+   "alg": "aes",
+   "key_name": "first",
+   "plain": null,
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "eHh4eHh4eHh4eHh4eHh4eHh4eHg=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0130",
+   "name": "decrypt bad padding",
+   "alg": "aes",
+   "key_name": "first",
+   "plain": null,
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "d2hMNGpaUERHNEd6d0Jieg==",
+    "key_encoding": "base64",
+    "data": "oZzTRi18DFy/nwjzIIpJYCaet2Z9sKF2ANJDZ0AZCas=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0131",
+   "name": "encrypt bad key",
+   "alg": "aes",
+   "key_name": "short",
+   "plain": "YWJj",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "aes-ecb",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "MDEyMzQ1Njc4OQ==",
+    "key_encoding": "base64",
+    "data": "YWJj",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "crypto/aes: invalid key size 10",
+    "data": ""
+   }
+  },
+  {
+   "id": "0132",
+   "name": "encrypt raw empty",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "xbRiqjJDL3kYIztVqizZTA=="
+   }
+  },
+  {
+   "id": "0133",
+   "name": "decrypt raw->utf8 empty",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "3YBjZ3pym+xQMZ3bvd2duw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": ""
+   }
+  },
+  {
+   "id": "0134",
+   "name": "decrypt raw->raw empty",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "3YBjZ3pym+xQMZ3bvd2duw==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0135",
+   "name": "encrypt plain empty",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "xbRiqjJDL3kYIztVqizZTA=="
+   }
+  },
+  {
+   "id": "0136",
+   "name": "decrypt base64->utf8 empty",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "3YBjZ3pym+xQMZ3bvd2duw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": ""
+   }
+  },
+  {
+   "id": "0137",
+   "name": "encrypt raw a1",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "Sw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "DPyXjQDAedjKGdAb8dgiEg=="
+   }
+  },
+  {
+   "id": "0138",
+   "name": "decrypt raw->utf8 a1",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "XBUaqOeJeUqdZiMhmHrlEQ==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": ""
+   }
+  },
+  {
+   "id": "0139",
+   "name": "decrypt raw->raw a1",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "XBUaqOeJeUqdZiMhmHrlEQ==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0140",
+   "name": "encrypt plain a1",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "K",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "DPyXjQDAedjKGdAb8dgiEg=="
+   }
+  },
+  {
+   "id": "0141",
+   "name": "decrypt base64->utf8 a1",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "XBUaqOeJeUqdZiMhmHrlEQ==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": ""
+   }
+  },
+  {
+   "id": "0142",
+   "name": "encrypt raw a15",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "ZTl5T1BraEFjVzFQbVg3",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "xKDms8DIeIxo3y9GbFd08Q=="
+   }
+  },
+  {
+   "id": "0143",
+   "name": "decrypt raw->utf8 a15",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "9L3ojz+rAuE53oDAxHEnSw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": ""
+   }
+  },
+  {
+   "id": "0144",
+   "name": "decrypt raw->raw a15",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "9L3ojz+rAuE53oDAxHEnSw==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0145",
+   "name": "encrypt plain a15",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "e9yOPkhAcW1PmX7",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "xKDms8DIeIxo3y9GbFd08Q=="
+   }
+  },
+  {
+   "id": "0146",
+   "name": "decrypt base64->utf8 a15",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "9L3ojz+rAuE53oDAxHEnSw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": ""
+   }
+  },
+  {
+   "id": "0147",
+   "name": "encrypt raw a16",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "ekhORG1ZOTVNbFRKQUtaQw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "y9T+M2PCvVq9+cw8R1g2vH5cE7+dC1WsCY3PBzCzg9E="
+   }
+  },
+  {
+   "id": "0148",
+   "name": "decrypt raw->utf8 a16",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "XqSbNNvbpynnF1i4QAu/5h9VdiFJUVtL8kquSTLkgnQ=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "-~\u001f\u000e<\u001bJ.-\u001c\f(*\u0011\u0012"
+   }
+  },
+  {
+   "id": "0149",
+   "name": "decrypt raw->raw a16",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "XqSbNNvbpynnF1i4QAu/5h9VdiFJUVtL8kquSTLkgnQ=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0150",
+   "name": "encrypt plain a16",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "zHNDmY95MlTJAKZC",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "y9T+M2PCvVq9+cw8R1g2vH5cE7+dC1WsCY3PBzCzg9E="
+   }
+  },
+  {
+   "id": "0151",
+   "name": "decrypt base64->utf8 a16",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "XqSbNNvbpynnF1i4QAu/5h9VdiFJUVtL8kquSTLkgnQ=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "-~\u001f\u000e<\u001bJ.-\u001c\f(*\u0011\u0012"
+   }
+  },
+  {
+   "id": "0152",
+   "name": "encrypt raw a17",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "THVabUlRR2RPZmc0T2VIWFI=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "1OA7EHNk/d3WvWzgYb7oZScYvipVjj3BSrsqsh/3by4="
+   }
+  },
+  {
+   "id": "0153",
+   "name": "decrypt raw->utf8 a17",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "2pjK6aXyG/mQJ6/faWn/8VXJYmajPTTPxQGtNiDIccQ=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "\u001bC\u000b'\u0018\u00134.,'/r&\u0004\u0003\tR"
+   }
+  },
+  {
+   "id": "0154",
+   "name": "decrypt raw->raw a17",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "2pjK6aXyG/mQJ6/faWn/8VXJYmajPTTPxQGtNiDIccQ=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0155",
+   "name": "encrypt plain a17",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "LuZmIQGdOfg4OeHXR",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "1OA7EHNk/d3WvWzgYb7oZScYvipVjj3BSrsqsh/3by4="
+   }
+  },
+  {
+   "id": "0156",
+   "name": "decrypt base64->utf8 a17",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "2pjK6aXyG/mQJ6/faWn/8VXJYmajPTTPxQGtNiDIccQ=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "\u001bC\u000b'\u0018\u00134.,'/r&\u0004\u0003\tR"
+   }
+  },
+  {
+   "id": "0157",
+   "name": "encrypt raw zh",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "19G5JwAFGHSe7qKSguZIuPcfWwXLqgvtz4BrbayS6kx0wLutIcWCQezlL8QD+URe/zA/lkSsG+hGt6feH66B+Q=="
+   }
+  },
+  {
+   "id": "0158",
+   "name": "decrypt raw->utf8 zh",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "wlvZbw2ACbjQo6IMSPn4qsHVADp0xHVkNb0O4u0UTKNTeZplRRLd/Pmx3BO15dEeREcn/IJfzVjOMwAkXM40hA==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "�����Ȗ����ʀ��q@doc2sop 提问：kb-app 内存高怎么办？"
+   }
+  },
+  {
+   "id": "0159",
+   "name": "decrypt raw->raw zh",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "wlvZbw2ACbjQo6IMSPn4qsHVADp0xHVkNb0O4u0UTKNTeZplRRLd/Pmx3BO15dEeREcn/IJfzVjOMwAkXM40hA==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0160",
+   "name": "encrypt plain zh",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "云上协同里 @doc2sop 提问：kb-app 内存高怎么办？",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "19G5JwAFGHSe7qKSguZIuPcfWwXLqgvtz4BrbayS6kx0wLutIcWCQezlL8QD+URe/zA/lkSsG+hGt6feH66B+Q=="
+   }
+  },
+  {
+   "id": "0161",
+   "name": "decrypt base64->utf8 zh",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "wlvZbw2ACbjQo6IMSPn4qsHVADp0xHVkNb0O4u0UTKNTeZplRRLd/Pmx3BO15dEeREcn/IJfzVjOMwAkXM40hA==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "�����Ȗ����ʀ��q@doc2sop 提问：kb-app 内存高怎么办？"
+   }
+  },
+  {
+   "id": "0162",
+   "name": "encrypt raw bin127",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "nOS0gixV9mAPJ+1Zz4JexKXdHQEbUrN7TFr2CscRF08bokkVnXoA4KeYMLlavGcT6wKJb2hfmazZWIRiTHouWmWiWq4/oefjNs6LNTpLDpJIAwR0x5m3JQBIkcm0i00ydEayxj8p4negsVRjtRD/If0liXsrdw0H9DGODBFPIdA="
+   }
+  },
+  {
+   "id": "0163",
+   "name": "decrypt raw->utf8 bin127",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "wQxP0eKZH1gR6pT7D4SztwkS76dtrLTdEtkNRbHQFs+L9TnFOv59ewaZvWNZOpAgYj6mJDANtp87RqJt97cPLnsLBtlfCEDr9YG4vOrUXxuS8x0Ns48vJr2yBdcJw77qOjIJV5aBgK0CStWhXTk3A/2AMkzRZeryTbMKnjHRaCQ=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "V<��r�N8Qחy�0��=�\u000b�S���F�,u�֋�\u0001��/S�K���� /5Gr]Z�_R��\u0017��B�Ԓ�ݲ����\u0013\u0018�� '\b�d���?��s\f*Z\u0003��嵉�j��2ܟjf΍���7�M�tf2�\\\u001d��\u001a������"
+   }
+  },
+  {
+   "id": "0164",
+   "name": "decrypt raw->raw bin127",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "wQxP0eKZH1gR6pT7D4SztwkS76dtrLTdEtkNRbHQFs+L9TnFOv59ewaZvWNZOpAgYj6mJDANtp87RqJt97cPLnsLBtlfCEDr9YG4vOrUXxuS8x0Ns48vJr2yBdcJw77qOjIJV5aBgK0CStWhXTk3A/2AMkzRZeryTbMKnjHRaCQ=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0165",
+   "name": "encrypt raw bin128",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "FotcdIXdp70ZgBSz33Oej3WR9mxRZes8xzyzw/ecM/vGhhXKoqVKG2sCvpzkNFYr+ckELe1skcoejBlCuKRBk2W6bzxrPT7vqmbBBbsB5YzGXOqfnbbLxBjiWoW0nruc3TqnaiFdDo2S8YAVmAn4HPCJOMWdD24kCFHnuBhBdtoHy58WafMWcVecqiUJM4Z3"
+   }
+  },
+  {
+   "id": "0166",
+   "name": "decrypt raw->utf8 bin128",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "lzk4Bv/oriNoS2zSwlxQekd9Iox+wChFdJvPf7KHTd11he521mAL7e6RzJzxRurDzP3dLlyadY9YidtVLi3uAiebpw7vpPIXrq6QFxMDR7TM6GZgApCIiCkFypmVL3B20Q8kfWv4KoCTPOAy4GBNRGxAA6lrcADyu81i8If1gaebsDxyIvCs06W46nRYcG5u",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "G\u0012R�\u0004\u00139�ܧ\u0002����?����5�&�b�?�B[\u0012ЩG\u0001�����`��dx��x\u0019n�/z\u0001�q��5@\u001f���\u0003NMb<\u0015�,�(z��\u0004H\u0010��bi��[`�\u0010,r�I�Wn+�h��Sta��s�ߨ�� �\n\u000e�ow+�ݻ��A"
+   }
+  },
+  {
+   "id": "0167",
+   "name": "decrypt raw->raw bin128",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "lzk4Bv/oriNoS2zSwlxQekd9Iox+wChFdJvPf7KHTd11he521mAL7e6RzJzxRurDzP3dLlyadY9YidtVLi3uAiebpw7vpPIXrq6QFxMDR7TM6GZgApCIiCkFypmVL3B20Q8kfWv4KoCTPOAy4GBNRGxAA6lrcADyu81i8If1gaebsDxyIvCs06W46nRYcG5u",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0168",
+   "name": "encrypt raw bin200",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "PLZ+LjkFVBchEkzo71gj2WA5/RoZSfLsXe7IftuM8aJQPTfuj+HN6m1ZCBk4RlwWIO0BL9hkvTCnVn8sKVgYQQtMVrpxZTYUoChCX+x/ebBMCGvG1hyuPNqG3dFTbwrq6QwZNMa69avK2g7xseyoiKLEFYmJUIE5J0OcYY39cp16MICSR+4hX30nZxUJi9tYWsCh0xILYhcxevPrgmgje5AJS0ndW+GprfloTgEN7cDTyPafnzX2FKeAUJGh20Xq27MIaHoNRy4CCg2sObRJSQ=="
+   }
+  },
+  {
+   "id": "0169",
+   "name": "decrypt raw->utf8 bin200",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "22iNB4NXtE+xmyQMw7+QDatzB8LtlMYmoppKrSUBl794KSD/jL51aQM1YQt90a/oDDJHmC/+2A9QudxPuAdPGvmlNXn/+u60TdG9LYKFG6K9RrOWcf5vL6hl0dAX/mqlC4WZBoDwupgh2wnRLCtV8XE6+vVCPV7xJv2Lwm6QvXddqYTypvN8g2ooKXbuuPYKtDeV4Na0PJsWV6gdbOJXcPizihDDEaDnHyacma1Gg9eCd6mXq6KkYMOWQish53WGLyY3m/ITMjL3reGkl+FPdA==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "�{�1�wz���\u0019��\u000f�%-]:\u0000_�Ulw���\u00022\n��G^*��Q[E�\u001f8���i�+\b�L����uqЦ��k�e�~M��Ff�\u0010\u000e���J�Ym�>\u001b����/����\u0004@`��߉\u000e�%}�\\\u0003�G<����+/��\u0002\u0017N��:��\t���M_��\u001a�@3�\u0015Wm��z�9�r�!�1\u0017Ҝ6����M#X\u0018��\u0005�D�f��3�\u0016\u000f����\"���'5��:QwJ'�\bs"
+   }
+  },
+  {
+   "id": "0170",
+   "name": "decrypt raw->raw bin200",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "22iNB4NXtE+xmyQMw7+QDatzB8LtlMYmoppKrSUBl794KSD/jL51aQM1YQt90a/oDDJHmC/+2A9QudxPuAdPGvmlNXn/+u60TdG9LYKFG6K9RrOWcf5vL6hl0dAX/mqlC4WZBoDwupgh2wnRLCtV8XE6+vVCPV7xJv2Lwm6QvXddqYTypvN8g2ooKXbuuPYKtDeV4Na0PJsWV6gdbOJXcPizihDDEaDnHyacma1Gg9eCd6mXq6KkYMOWQish53WGLyY3m/ITMjL3reGkl+FPdA==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0171",
+   "name": "encrypt raw pb",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "fhkYUVS/eEsnGlDpT1BskSSDRiN34Kgy5otgW34M7pdidCiPzBHR3Ym74T4YBOn1WwGxo4UWKykFNpKvGtahwplqAA5GaV4jFwGsaiqXNvgJ2qKUhtUQzy4nsQsB+r6CdTv+PVsDwdna9PBNKB20pLP60R6lVHob7KcDifdSlx32sOzcGeShiiKZdeI4DuAopUWMr8cXbAKBxHUaullwCeu9xAvcefVN/e0q5Jkj7dSgkC/fwns2O+co8EA7AWIj64t6zCJxSTy07D8P4GsKT1CyJTQ0cJPkWGUW6+EVJSBNAClWYRjyJ8UTFCyO2vsnqGUgZdrJWUSJBiZXvT2b7/nF3NGuoOY8UcMQnG0g88eZuRBB3CH5z5t3MGKm+Rkx"
+   }
+  },
+  {
+   "id": "0172",
+   "name": "decrypt raw->utf8 pb",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "5lkWDTdBEVwi6elijXlMNMmYI8RcXvHOFJfAnIdWhtfkzQVSnGoMg2p0e1hnq1Y/yFQ9GmSSazzTwCN5rdH4Ra1TNSdPl6iAVCMuePCILqCVKPeyoWgFE7gObtE/MlgkVoo9ytUV17g8s9GIDoR20E1fR92+0CAfBwt/6cLL/QYNcdzkG9D3DIySuZ2b0BNlsJkOPdefy8rBPvuNdElCrFZxa63ANGjKuDFiC9oJwTmWLp4UoEYpgTk0rVyPHaMSKT2td9HlhPJv66+cgWoHfO8R5sEoXQrNa0Yz+s+UybBL80xfyOvuVpdzFx80JbKdIYd9JscTk5ng3PE3g5L70IR31+6mLwkr69pJwJe6B2pn17D8bhX1/FxagvtLkSDF",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "]�S��������Հ�Ƿ��么申请 VPN 权限？要走哪个流程，谁来审批，多久能开通？还有外包同事能不能申请？谢谢知识库里怎么申请 VPN 权限？要走哪个流程，谁来审批，多久能开通？还有外包同事能不能申请？谢谢\u0012\u000598765"
+   }
+  },
+  {
+   "id": "0173",
+   "name": "decrypt raw->raw pb",
+   "alg": "sm4",
+   "key_name": "t16",
+   "plain": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "5lkWDTdBEVwi6elijXlMNMmYI8RcXvHOFJfAnIdWhtfkzQVSnGoMg2p0e1hnq1Y/yFQ9GmSSazzTwCN5rdH4Ra1TNSdPl6iAVCMuePCILqCVKPeyoWgFE7gObtE/MlgkVoo9ytUV17g8s9GIDoR20E1fR92+0CAfBwt/6cLL/QYNcdzkG9D3DIySuZ2b0BNlsJkOPdefy8rBPvuNdElCrFZxa63ANGjKuDFiC9oJwTmWLp4UoEYpgTk0rVyPHaMSKT2td9HlhPJv66+cgWoHfO8R5sEoXQrNa0Yz+s+UybBL80xfyOvuVpdzFx80JbKdIYd9JscTk5ng3PE3g5L70IR31+6mLwkr69pJwJe6B2pn17D8bhX1/FxagvtLkSDF",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0174",
+   "name": "encrypt raw empty",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "bjfYsva+GBDSNlqigmlg0A=="
+   }
+  },
+  {
+   "id": "0175",
+   "name": "decrypt raw->utf8 empty",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "bjfYsva+GBDSNlqigmlg0A==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": ""
+   }
+  },
+  {
+   "id": "0176",
+   "name": "decrypt raw->raw empty",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "bjfYsva+GBDSNlqigmlg0A==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0177",
+   "name": "encrypt plain empty",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "bjfYsva+GBDSNlqigmlg0A=="
+   }
+  },
+  {
+   "id": "0178",
+   "name": "decrypt base64->utf8 empty",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "bjfYsva+GBDSNlqigmlg0A==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": ""
+   }
+  },
+  {
+   "id": "0179",
+   "name": "encrypt raw a1",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "Sw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "VL30EKl5dsNP/9WiJtIXKg=="
+   }
+  },
+  {
+   "id": "0180",
+   "name": "decrypt raw->utf8 a1",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "VL30EKl5dsNP/9WiJtIXKg==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "K"
+   }
+  },
+  {
+   "id": "0181",
+   "name": "decrypt raw->raw a1",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "VL30EKl5dsNP/9WiJtIXKg==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0182",
+   "name": "encrypt plain a1",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "K",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "VL30EKl5dsNP/9WiJtIXKg=="
+   }
+  },
+  {
+   "id": "0183",
+   "name": "decrypt base64->utf8 a1",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "Sw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "VL30EKl5dsNP/9WiJtIXKg==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "K"
+   }
+  },
+  {
+   "id": "0184",
+   "name": "encrypt raw a15",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "ZTl5T1BraEFjVzFQbVg3",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "EGlL0J4dgx3xzu7qgA531Q=="
+   }
+  },
+  {
+   "id": "0185",
+   "name": "decrypt raw->utf8 a15",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "EGlL0J4dgx3xzu7qgA531Q==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "e9yOPkhAcW1PmX7"
+   }
+  },
+  {
+   "id": "0186",
+   "name": "decrypt raw->raw a15",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "EGlL0J4dgx3xzu7qgA531Q==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0187",
+   "name": "encrypt plain a15",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "e9yOPkhAcW1PmX7",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "EGlL0J4dgx3xzu7qgA531Q=="
+   }
+  },
+  {
+   "id": "0188",
+   "name": "decrypt base64->utf8 a15",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "ZTl5T1BraEFjVzFQbVg3",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "EGlL0J4dgx3xzu7qgA531Q==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "e9yOPkhAcW1PmX7"
+   }
+  },
+  {
+   "id": "0189",
+   "name": "encrypt raw a16",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "ekhORG1ZOTVNbFRKQUtaQw==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "n7agVFeNDRSXBuaMa9firnY9xsPSlMA86aAAgcmaa7U="
+   }
+  },
+  {
+   "id": "0190",
+   "name": "decrypt raw->utf8 a16",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "n7agVFeNDRSXBuaMa9firnY9xsPSlMA86aAAgcmaa7U=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "zHNDmY95MlTJAKZC"
+   }
+  },
+  {
+   "id": "0191",
+   "name": "decrypt raw->raw a16",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "n7agVFeNDRSXBuaMa9firnY9xsPSlMA86aAAgcmaa7U=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0192",
+   "name": "encrypt plain a16",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "zHNDmY95MlTJAKZC",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "n7agVFeNDRSXBuaMa9firnY9xsPSlMA86aAAgcmaa7U="
+   }
+  },
+  {
+   "id": "0193",
+   "name": "decrypt base64->utf8 a16",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "ekhORG1ZOTVNbFRKQUtaQw==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "n7agVFeNDRSXBuaMa9firnY9xsPSlMA86aAAgcmaa7U=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "zHNDmY95MlTJAKZC"
+   }
+  },
+  {
+   "id": "0194",
+   "name": "encrypt raw a17",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "THVabUlRR2RPZmc0T2VIWFI=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "GQUBU6LBhD/7dR8AC7j3bFfps4MIO+DaSvzz1cJxrhk="
+   }
+  },
+  {
+   "id": "0195",
+   "name": "decrypt raw->utf8 a17",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "GQUBU6LBhD/7dR8AC7j3bFfps4MIO+DaSvzz1cJxrhk=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "LuZmIQGdOfg4OeHXR"
+   }
+  },
+  {
+   "id": "0196",
+   "name": "decrypt raw->raw a17",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "GQUBU6LBhD/7dR8AC7j3bFfps4MIO+DaSvzz1cJxrhk=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0197",
+   "name": "encrypt plain a17",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "LuZmIQGdOfg4OeHXR",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "GQUBU6LBhD/7dR8AC7j3bFfps4MIO+DaSvzz1cJxrhk="
+   }
+  },
+  {
+   "id": "0198",
+   "name": "decrypt base64->utf8 a17",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "THVabUlRR2RPZmc0T2VIWFI=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "GQUBU6LBhD/7dR8AC7j3bFfps4MIO+DaSvzz1cJxrhk=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "LuZmIQGdOfg4OeHXR"
+   }
+  },
+  {
+   "id": "0199",
+   "name": "encrypt raw zh",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "Zi4kcZ2mvtRaDTSTYBBnnFJXHQm1yi15/ugTaJ6pEOJjdoYUKYY9lRseppn7mxnRngrITHPyYKfL8KPjzWf2YQ=="
+   }
+  },
+  {
+   "id": "0200",
+   "name": "decrypt raw->utf8 zh",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "Zi4kcZ2mvtRaDTSTYBBnnFJXHQm1yi15/ugTaJ6pEOJjdoYUKYY9lRseppn7mxnRngrITHPyYKfL8KPjzWf2YQ==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "云上协同里 @doc2sop 提问：kb-app 内存高怎么办？"
+   }
+  },
+  {
+   "id": "0201",
+   "name": "decrypt raw->raw zh",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "Zi4kcZ2mvtRaDTSTYBBnnFJXHQm1yi15/ugTaJ6pEOJjdoYUKYY9lRseppn7mxnRngrITHPyYKfL8KPjzWf2YQ==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0202",
+   "name": "encrypt plain zh",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "plain",
+    "output_encoding": "base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "云上协同里 @doc2sop 提问：kb-app 内存高怎么办？",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "Zi4kcZ2mvtRaDTSTYBBnnFJXHQm1yi15/ugTaJ6pEOJjdoYUKYY9lRseppn7mxnRngrITHPyYKfL8KPjzWf2YQ=="
+   }
+  },
+  {
+   "id": "0203",
+   "name": "decrypt base64->utf8 zh",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "5LqR5LiK5Y2P5ZCM6YeMIEBkb2Myc29wIOaPkOmXru+8mmtiLWFwcCDlhoXlrZjpq5jmgI7kuYjlip7vvJ8=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "base64",
+    "output_encoding": "utf8",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "Zi4kcZ2mvtRaDTSTYBBnnFJXHQm1yi15/ugTaJ6pEOJjdoYUKYY9lRseppn7mxnRngrITHPyYKfL8KPjzWf2YQ==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "云上协同里 @doc2sop 提问：kb-app 内存高怎么办？"
+   }
+  },
+  {
+   "id": "0204",
+   "name": "encrypt raw bin127",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "dPafow95E1e/enDfjrDg+IQyTqiijhppLK5uD1QTLUnqUEZQLksc4RMGjXjaZvCu5iQNdzTrs0UD7BJow5VBMMi8h4MnesSXIF9WTJKCQ9+IdQAlcRzpPYtIhHOtWAikvrSD2TsNxkDyzbPB/JURTm+nd9lqJeEvpTosBmvq8SM="
+   }
+  },
+  {
+   "id": "0205",
+   "name": "decrypt raw->utf8 bin127",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "dPafow95E1e/enDfjrDg+IQyTqiijhppLK5uD1QTLUnqUEZQLksc4RMGjXjaZvCu5iQNdzTrs0UD7BJow5VBMMi8h4MnesSXIF9WTJKCQ9+IdQAlcRzpPYtIhHOtWAikvrSD2TsNxkDyzbPB/JURTm+nd9lqJeEvpTosBmvq8SM=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "\u0001\n��#�=r2��?�Q��=�\u000b�S���F�,u�֋�\u0001��/S�K���� /5Gr]Z�_R��\u0017��B�Ԓ�ݲ����\u0013\u0018�� '\b�d���?��s\f*Z\u0003��嵉�j��2ܟjf΍���7�M�tf2�\\\u001d��\u001a������"
+   }
+  },
+  {
+   "id": "0206",
+   "name": "decrypt raw->raw bin127",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "AQrptyPcPXIylt8/klGKpD31C/tTsq/eRs8sdeLWi4cBiZkvU4ZLg+r+/iAvNUdyXVqrX1Liwxe+qkKW1JLw3bLd+ODrExiGzSAnCPJknqzDP8PBcwwqWgOjsuW1icRqrf8y3J9qZs6Nv5+aN5FNqXRmMu9cHeCxGrrtrqX83Q==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "dPafow95E1e/enDfjrDg+IQyTqiijhppLK5uD1QTLUnqUEZQLksc4RMGjXjaZvCu5iQNdzTrs0UD7BJow5VBMMi8h4MnesSXIF9WTJKCQ9+IdQAlcRzpPYtIhHOtWAikvrSD2TsNxkDyzbPB/JURTm+nd9lqJeEvpTosBmvq8SM=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0207",
+   "name": "encrypt raw bin128",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "VCHSX312zkPQ9dJyP1fu5m1t1YiOtFB04zMpJi4QpZcfD82xjwpr3vZX8ZhhgazB0NNpdpX3aExiJLs5oagxwhYZJwpN0gmszVTdAbpq5XJM+JCPK8l3l/ydlcmyjHggOirNixdHn2S0V58X/Ifkhn3Syc7gO6mb1l9pwvRKn5XvEStQI0Y9Ph5H8kXYCIHp"
+   }
+  },
+  {
+   "id": "0208",
+   "name": "decrypt raw->utf8 bin128",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "VCHSX312zkPQ9dJyP1fu5m1t1YiOtFB04zMpJi4QpZcfD82xjwpr3vZX8ZhhgazB0NNpdpX3aExiJLs5oagxwhYZJwpN0gmszVTdAbpq5XJM+JCPK8l3l/ydlcmyjHggOirNixdHn2S0V58X/Ifkhn3Syc7gO6mb1l9pwvRKn5XvEStQI0Y9Ph5H8kXYCIHp",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "\u0010$\u0003�UQJ���J����n����5�&�b�?�B[\u0012ЩG\u0001�����`��dx��x\u0019n�/z\u0001�q��5@\u001f���\u0003NMb<\u0015�,�(z��\u0004H\u0010��bi��[`�\u0010,r�I�Wn+�h��Sta��s�ߨ�� �\n\u000e�ow+�ݻ��A"
+   }
+  },
+  {
+   "id": "0209",
+   "name": "decrypt raw->raw bin128",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "ECQDkFVRSqa/5kq0kv/jbszM09412CaSYt8/20JbEtCpRwG5hYrL0GCqnGR4rKh4GW68L3oB43HisDVAH+3A0wNOTWI8FccszSh6/+kESBCfnmJptt1bYPgQLHL2SeJXbiuPaNTWU3Rhw91zot+o6pogqQoOlG93K3/g3bvl/0E=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "VCHSX312zkPQ9dJyP1fu5m1t1YiOtFB04zMpJi4QpZcfD82xjwpr3vZX8ZhhgazB0NNpdpX3aExiJLs5oagxwhYZJwpN0gmszVTdAbpq5XJM+JCPK8l3l/ydlcmyjHggOirNixdHn2S0V58X/Ifkhn3Syc7gO6mb1l9pwvRKn5XvEStQI0Y9Ph5H8kXYCIHp",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0210",
+   "name": "encrypt raw bin200",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "LtIddtCu1LDaG66Lq1miDajVOFTQDwOqk2vvz1ffoOP3vd3NwbJeXAp/rgN5uI7bbktoRUReeaxGxgAJpAGeOWoWVVWChUAElspOqub0VYHFZIi8rUIxz83zBvZPB2ybYnRAa4TTzxnDvNnguRuljmJSQgWjJw6jtXykznqXiui064GKMSrbdJI0cdrhBz1uNj14jHx0+vvbWjnn/a3WY+YZGD0ky5akk55WFgsjWQpy/2BxF6F1JSkmnEjI3WFDIJwqREM8ULM0zYsmCjxUsg=="
+   }
+  },
+  {
+   "id": "0211",
+   "name": "decrypt raw->utf8 bin200",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "LtIddtCu1LDaG66Lq1miDajVOFTQDwOqk2vvz1ffoOP3vd3NwbJeXAp/rgN5uI7bbktoRUReeaxGxgAJpAGeOWoWVVWChUAElspOqub0VYHFZIi8rUIxz83zBvZPB2ybYnRAa4TTzxnDvNnguRuljmJSQgWjJw6jtXykznqXiui064GKMSrbdJI0cdrhBz1uNj14jHx0+vvbWjnn/a3WY+YZGD0ky5akk55WFgsjWQpy/2BxF6F1JSkmnEjI3WFDIJwqREM8ULM0zYsmCjxUsg==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "�M�{�5\t̓�Q��n�t-]:\u0000_�Ulw���\u00022\n��G^*��Q[E�\u001f8���i�+\b�L����uqЦ��k�e�~M��Ff�\u0010\u000e���J�Ym�>\u001b����/����\u0004@`��߉\u000e�%}�\\\u0003�G<����+/��\u0002\u0017N��:��\t���M_��\u001a�@3�\u0015Wm��z�9�r�!�1\u0017Ҝ6����M#X\u0018��\u0005�D�f��3�\u0016\u000f����\"���'5��:QwJ'�\bs"
+   }
+  },
+  {
+   "id": "0212",
+   "name": "decrypt raw->raw bin200",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "1U2ve8Y1CcyT41G2km6edC1dOgBfp1Vsd6PywQIyCq3dR14qyupRW0XnHzjP5/RpgisIyUze8vP1dXHQpvDfa79lvn5N0cJGZuMQDpSRi0r2WW30PhvhmcP1L8fxiIEEQGDfyt+JDu8lfdlcA8pHPNPfzMwrL7/OAhdOib06uvsJ6pHtTV/58xreQDPeFVdtuvh67jn7cpkhkTEX0pw2u7mHy00jWBitmQWTRPpmoPAz8BYPk/TmtiKZkcEnNeOVOlF3Sif9CHM=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "LtIddtCu1LDaG66Lq1miDajVOFTQDwOqk2vvz1ffoOP3vd3NwbJeXAp/rgN5uI7bbktoRUReeaxGxgAJpAGeOWoWVVWChUAElspOqub0VYHFZIi8rUIxz83zBvZPB2ybYnRAa4TTzxnDvNnguRuljmJSQgWjJw6jtXykznqXiui064GKMSrbdJI0cdrhBz1uNj14jHx0+vvbWjnn/a3WY+YZGD0ky5akk55WFgsjWQpy/2BxF6F1JSkmnEjI3WFDIJwqREM8ULM0zYsmCjxUsg==",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0213",
+   "name": "encrypt raw pb",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "EQVMgHOh22pG00VcwPjSNv8V4Sp92rQcfoCFpQ6ohBdH85zLctafPasYK6Hida2GawFJ5H7+4Op8PKQqoZwVYQhPnVkwIglkDzJEh7I6dsak+RH3hcYD07Xh+qWvOx/utW82WaeWyuH67pO91hPlBKb9iC5L35bJnWGORCQ5s7WABgn2M+H2yrpk7BW6TKLRCSdKwA0PMfQec5/Z7TDslDGMnOQm82EmoCcUtMUxqGvrSVUiqtBWTeWfyC9Ih1z4JLN+k/XgwRbwjZwIDh6eGAhfRQUyUYeVUlF2uJRC57U2h3qSeEMMpA0NYrD2+9lahvtL/Ox4B05k86mhqpf6sMu1RapGq7ffrUP9MQChzf27M+0xpRgfAw7WOvi38P/S"
+   }
+  },
+  {
+   "id": "0214",
+   "name": "decrypt raw->utf8 pb",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "utf8",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "EQVMgHOh22pG00VcwPjSNv8V4Sp92rQcfoCFpQ6ohBdH85zLctafPasYK6Hida2GawFJ5H7+4Op8PKQqoZwVYQhPnVkwIglkDzJEh7I6dsak+RH3hcYD07Xh+qWvOx/utW82WaeWyuH67pO91hPlBKb9iC5L35bJnWGORCQ5s7WABgn2M+H2yrpk7BW6TKLRCSdKwA0PMfQec5/Z7TDslDGMnOQm82EmoCcUtMUxqGvrSVUiqtBWTeWfyC9Ih1z4JLN+k/XgwRbwjZwIDh6eGAhfRQUyUYeVUlF2uJRC57U2h3qSeEMMpA0NYrD2+9lahvtL/Ox4B05k86mhqpf6sMu1RapGq7ffrUP9MQChzf27M+0xpRgfAw7WOvi38P/S",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "\n�\u0002知识库里怎么申请 VPN 权限？要走哪个流程，谁来审批，多久能开通？还有外包同事能不能申请？谢谢知识库里怎么申请 VPN 权限？要走哪个流程，谁来审批，多久能开通？还有外包同事能不能申请？谢谢\u0012\u000598765"
+   }
+  },
+  {
+   "id": "0215",
+   "name": "decrypt raw->raw pb",
+   "alg": "sm4",
+   "key_name": "b16",
+   "plain": "CowC55+l6K+G5bqT6YeM5oCO5LmI55Sz6K+3IFZQTiDmnYPpmZDvvJ/opoHotbDlk6rkuKrmtYHnqIvvvIzosIHmnaXlrqHmibnvvIzlpJrkuYXog73lvIDpgJrvvJ/ov5jmnInlpJbljIXlkIzkuovog73kuI3og73nlLPor7fvvJ/osKLosKLnn6Xor4blupPph4zmgI7kuYjnlLPor7cgVlBOIOadg+mZkO+8n+imgei1sOWTquS4qua1geeoi++8jOiwgeadpeWuoeaJue+8jOWkmuS5heiDveW8gOmAmu+8n+i/mOacieWkluWMheWQjOS6i+iDveS4jeiDveeUs+ivt++8n+iwouiwohIFOTg3NjU=",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "/KdWfjXaAOJlC2S9GE3cgw==",
+    "key_encoding": "base64",
+    "data": "EQVMgHOh22pG00VcwPjSNv8V4Sp92rQcfoCFpQ6ohBdH85zLctafPasYK6Hida2GawFJ5H7+4Op8PKQqoZwVYQhPnVkwIglkDzJEh7I6dsak+RH3hcYD07Xh+qWvOx/utW82WaeWyuH67pO91hPlBKb9iC5L35bJnWGORCQ5s7WABgn2M+H2yrpk7BW6TKLRCSdKwA0PMfQec5/Z7TDslDGMnOQm82EmoCcUtMUxqGvrSVUiqtBWTeWfyC9Ih1z4JLN+k/XgwRbwjZwIDh6eGAhfRQUyUYeVUlF2uJRC57U2h3qSeEMMpA0NYrD2+9lahvtL/Ox4B05k86mhqpf6sMu1RapGq7ffrUP9MQChzf27M+0xpRgfAw7WOvi38P/S",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0216",
+   "name": "encrypt raw bin1000",
+   "alg": "sm4",
+   "key_name": "first",
+   "plain": "IorDptRa6has+XPMj7yoywvm0+UD3Klcxog2Pf3AOeClmDw4Gl6hBBPFZKNlYSmPSTF7ExleZ5pIU5Psk7bKBe8brx9bgoThV3xodD8LQsegxnFdwdWJcu8NAdKHFhiv+UH9SEm1uI6swLwI+jYoWol60Q2FA4y1OFuM7PnQURFRNMJ7L5R/Hhj0rvS+zzrGGLCucamVDaAuu8KY0mdkmu9O5GeWhpaIRVavr8WdoVn43ujWha5cyail3vxFgqsNlYb3ikscxmG9RrjlsJRHuGFNpGrIOsMFWowsdT8EIl45fHndmWhpVgZ7vaib71CVIaV2IuIbbgBaEVQanexuUPt63fkgg8DZxQKVzJel0s9YI5NiUJLAESsBx97i5JPtI46BpnR0i6IC8kdT5MatvG5IWsN8hoSD5YYETYH8lFU23FalKz910tusbbLrQMdEaz1lRFygjdS0MVcjFXKS4HzcFBoKUPj1FuuDpGgGZIe0cG7qIiF7fIeKzsvNiEk1MFi8tj+UEaYMNYD+rAGf0Q/tT7VvLM8BGsiCaRwmmddAkWzHC/AKXrSzf8opzle3txB+wwW7K1oGcXlmWp0FjV/bZsBw46i2EctoZc/YlLyI4a2qoaLuoVg0Pk2WlsdXhHo9AESQNoi6oBNLLVbgvTOAZMDb/AnKY+GuXYHSNHbkhiVJNiG/DevMveL2elftTJUwG2Kr5DHHL+CbYmI8OMcuNTtiE/oVFf+Jo25/3qu8pipZ7zkYs27LKSDRyKQ2u/rS8AiWynsbcH8HGSjqzkBE01ThD2IVYnsOL8V2l8qw3hKM24Vz3U5yAj1Mlsnk7tJk7POQ2xkE6FsAMBmS5dIpfmdvYtseiP5h4Lco+6/ah+pZ1Sx7oEm1OOyIew/mzgycFi/Hem0l5Ycz1hWPViHdHOGTjAevhvqlbOdYyYgthhuSW6b5CoUCdRFtg+R93ha3kwvhU3f2AeQStZpKh6O72ryNKx0chIXpWkwDnSJW1as2ym90Mqy0EmwdKtds+Nz2+JDXyM6+AXHSwh2OoMWEHKjHx5mMflI1/qGCxvCVqOZSg201wgljUeRVE7TJlIgnz2+xn+qM1yfOU8tM9fodLjpvS7rG71vuraku0rhnYD5P30Ex1ERxoIKtTygJoZ+/smxhQg4S5kSYiy5uhg0jC0+VOOlviJiRqwiSlnqr8KbhrppWukAsyJ5irIOqchqHEPuXjwERvg3BMWZCT8pbhWoiLHM/k5vJvgugi40tGuNLnR+FJAr1+yVJN3yp69nKIzJkzVf2cL4ZtPkMNIaqsqA4YH+TN6g+zGw5eCQvSS9qZzS+3g==",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "IorDptRa6has+XPMj7yoywvm0+UD3Klcxog2Pf3AOeClmDw4Gl6hBBPFZKNlYSmPSTF7ExleZ5pIU5Psk7bKBe8brx9bgoThV3xodD8LQsegxnFdwdWJcu8NAdKHFhiv+UH9SEm1uI6swLwI+jYoWol60Q2FA4y1OFuM7PnQURFRNMJ7L5R/Hhj0rvS+zzrGGLCucamVDaAuu8KY0mdkmu9O5GeWhpaIRVavr8WdoVn43ujWha5cyail3vxFgqsNlYb3ikscxmG9RrjlsJRHuGFNpGrIOsMFWowsdT8EIl45fHndmWhpVgZ7vaib71CVIaV2IuIbbgBaEVQanexuUPt63fkgg8DZxQKVzJel0s9YI5NiUJLAESsBx97i5JPtI46BpnR0i6IC8kdT5MatvG5IWsN8hoSD5YYETYH8lFU23FalKz910tusbbLrQMdEaz1lRFygjdS0MVcjFXKS4HzcFBoKUPj1FuuDpGgGZIe0cG7qIiF7fIeKzsvNiEk1MFi8tj+UEaYMNYD+rAGf0Q/tT7VvLM8BGsiCaRwmmddAkWzHC/AKXrSzf8opzle3txB+wwW7K1oGcXlmWp0FjV/bZsBw46i2EctoZc/YlLyI4a2qoaLuoVg0Pk2WlsdXhHo9AESQNoi6oBNLLVbgvTOAZMDb/AnKY+GuXYHSNHbkhiVJNiG/DevMveL2elftTJUwG2Kr5DHHL+CbYmI8OMcuNTtiE/oVFf+Jo25/3qu8pipZ7zkYs27LKSDRyKQ2u/rS8AiWynsbcH8HGSjqzkBE01ThD2IVYnsOL8V2l8qw3hKM24Vz3U5yAj1Mlsnk7tJk7POQ2xkE6FsAMBmS5dIpfmdvYtseiP5h4Lco+6/ah+pZ1Sx7oEm1OOyIew/mzgycFi/Hem0l5Ycz1hWPViHdHOGTjAevhvqlbOdYyYgthhuSW6b5CoUCdRFtg+R93ha3kwvhU3f2AeQStZpKh6O72ryNKx0chIXpWkwDnSJW1as2ym90Mqy0EmwdKtds+Nz2+JDXyM6+AXHSwh2OoMWEHKjHx5mMflI1/qGCxvCVqOZSg201wgljUeRVE7TJlIgnz2+xn+qM1yfOU8tM9fodLjpvS7rG71vuraku0rhnYD5P30Ex1ERxoIKtTygJoZ+/smxhQg4S5kSYiy5uhg0jC0+VOOlviJiRqwiSlnqr8KbhrppWukAsyJ5irIOqchqHEPuXjwERvg3BMWZCT8pbhWoiLHM/k5vJvgugi40tGuNLnR+FJAr1+yVJN3yp69nKIzJkzVf2cL4ZtPkMNIaqsqA4YH+TN6g+zGw5eCQvSS9qZzS+3g==",
+    "transport_format": "json"
+   },
+   "rc": 0,
+   "stderr": "",
+   "response": {
+    "code": 0,
+    "message": "ok",
+    "data": "vWT/s49k/CgJw6169vw204DfXPj9hPSsn6O3jEe0+FhAkieNi0eWtghF+ZTe2iESzj2mXXw0C0RchOeTFurZd7VZOI8tplwisHz95haA83VeWzXOA4vFb78lNiZqiTVb7jzPnksyFcfwkbqkAkrTkNbAoORowqhekM2HQVxqYj25rTSaybkJ2LtJh1UVPcsjL9S3hPUlCYajWRfSHeVW+sgr8+Gtbsr6jgNtkfUAJpjntD5FC91FhxB78r7iaK1BnJh26EJuxC040JHZsEcfxro+u5ywa9rOlCQqWXIhiWh4QU6yBmZtI3hfXXEwyixia1IPKoU4q5tzddUviXBZM3H79GVAk4dSmLP+LPLzgfw7jHWsKil7SWbA20SurcJucH9Yk/GEWObNwiaCIoEf90P3foC5ZjVxItqHO/ZQ9eydMU5ngBYNXLbbf6motWboonh8wfNIaWsFLMXCwbjwcvOg1oALfwhX3VBtaKEApNCvITG6twKmEgRdFnnK+54+16FnU+AkjNmf+2/x5CeC1nqIhIT6ml2D2CGUUt/2c3mpuicFSg/J6e04SKhSe2kKs6/AiNvxNxL9uant5mhguYezUaXKWj469PKlWgKZzhwS9aEaT+aUwcrUV4ug9967PEeH7i3SRzwh0Ba0TtBuRmbciIiIvwi6kfU+iPiFPhBr6skd/kefMjt1gzZCb7FOPr3KKyqsqhRfWbEXyrpPDr4ZJJ4WIBOFTxMUNHz1NNkQyuFTHeh/TMIJDmwDnLGwiuW5ZS91EsAqGEtoszVCQD/Oo33QVNDmtu9uI/m/qRw/T7Ah5rCQbMzDS0Aiod6T+hvbsBYZVYaDGFWITveZpr2eReCbc+V3nCyTtIy6g42aO5mKB5qAuYRhpAxZY0p7S7TIQ653hK65dATZYmwWA+FD7QGQf3Xq3UgvUfra8CQHsfmHXGuNGDbVhooLkHlzB6L3npXtPQrqE4Yi1FBBb6ttPWDd6SQscpIjfiz+68RC7HVU994C9l0ZW0yk1XGDFtqidu46xbdx67PiOWYFBOcdne3DuI6TXM1zqKDTIRX/yKn270LHPLh68ETt5EDrq3otqGmpKiGv8uSssbmR0TyFWFZrlBhGwA1VMHzkRwSxQZOx/oLCXSia/ozPHPGesz26ZkDt58ZRpa7XU8u7FsfS0chSZ5FGGgVaHN1UThZfJN4pCzBHpiEWK1MbSAIB03BLDapPaikvQ7Mg/NCFxd62uMpxCJrLjm0hMj4ePJ/5YccD+DVrSmwUm7IEcmh82UDx2K3z70KwNUmbSw2/FBKl2biXjnhE3mQZit2xJV5PvDLY4ZirJl9D11Z88kuo"
+   }
+  },
+  {
+   "id": "0217",
+   "name": "decrypt raw->raw bin1000",
+   "alg": "sm4",
+   "key_name": "first",
+   "plain": "IorDptRa6has+XPMj7yoywvm0+UD3Klcxog2Pf3AOeClmDw4Gl6hBBPFZKNlYSmPSTF7ExleZ5pIU5Psk7bKBe8brx9bgoThV3xodD8LQsegxnFdwdWJcu8NAdKHFhiv+UH9SEm1uI6swLwI+jYoWol60Q2FA4y1OFuM7PnQURFRNMJ7L5R/Hhj0rvS+zzrGGLCucamVDaAuu8KY0mdkmu9O5GeWhpaIRVavr8WdoVn43ujWha5cyail3vxFgqsNlYb3ikscxmG9RrjlsJRHuGFNpGrIOsMFWowsdT8EIl45fHndmWhpVgZ7vaib71CVIaV2IuIbbgBaEVQanexuUPt63fkgg8DZxQKVzJel0s9YI5NiUJLAESsBx97i5JPtI46BpnR0i6IC8kdT5MatvG5IWsN8hoSD5YYETYH8lFU23FalKz910tusbbLrQMdEaz1lRFygjdS0MVcjFXKS4HzcFBoKUPj1FuuDpGgGZIe0cG7qIiF7fIeKzsvNiEk1MFi8tj+UEaYMNYD+rAGf0Q/tT7VvLM8BGsiCaRwmmddAkWzHC/AKXrSzf8opzle3txB+wwW7K1oGcXlmWp0FjV/bZsBw46i2EctoZc/YlLyI4a2qoaLuoVg0Pk2WlsdXhHo9AESQNoi6oBNLLVbgvTOAZMDb/AnKY+GuXYHSNHbkhiVJNiG/DevMveL2elftTJUwG2Kr5DHHL+CbYmI8OMcuNTtiE/oVFf+Jo25/3qu8pipZ7zkYs27LKSDRyKQ2u/rS8AiWynsbcH8HGSjqzkBE01ThD2IVYnsOL8V2l8qw3hKM24Vz3U5yAj1Mlsnk7tJk7POQ2xkE6FsAMBmS5dIpfmdvYtseiP5h4Lco+6/ah+pZ1Sx7oEm1OOyIew/mzgycFi/Hem0l5Ycz1hWPViHdHOGTjAevhvqlbOdYyYgthhuSW6b5CoUCdRFtg+R93ha3kwvhU3f2AeQStZpKh6O72ryNKx0chIXpWkwDnSJW1as2ym90Mqy0EmwdKtds+Nz2+JDXyM6+AXHSwh2OoMWEHKjHx5mMflI1/qGCxvCVqOZSg201wgljUeRVE7TJlIgnz2+xn+qM1yfOU8tM9fodLjpvS7rG71vuraku0rhnYD5P30Ex1ERxoIKtTygJoZ+/smxhQg4S5kSYiy5uhg0jC0+VOOlviJiRqwiSlnqr8KbhrppWukAsyJ5irIOqchqHEPuXjwERvg3BMWZCT8pbhWoiLHM/k5vJvgugi40tGuNLnR+FJAr1+yVJN3yp69nKIzJkzVf2cL4ZtPkMNIaqsqA4YH+TN6g+zGw5eCQvSS9qZzS+3g==",
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "RiUmNbolxU6ck2NYrQlzDZI3KKWM+4Tn0/NipU6ygF/bacJOkiLg7Lus5Nh5xRdKkIEbv19/G45+Sglt9Z2D47KBnTnNgL/+JcGGWjF7HQnjtpKvNaWi0b49uTZ/2LUUtpqyBViCsp1TYkC81+rwuOsKo30D4EALf3PMlarpdPMhIKb6QhDK81vuPYEFDLn4ZXzIK3ajmRsyaIlARmkteaWx3vgaSfla+FK6y8Pd51IU27p6U+GCZFMWkX7bufOnYvEcd2Gm8nQ37SP2nXpeyvBN5zW4WmGBd2e3bPRloOOvjhvlyfQjqtQl9T0EtWoMlJqTzaFXahsHMHmOt9/8NHu4lqQ976ypbFIJGEGm/yppiDhZRpRFezkZRnIAP9THMSdWCSiLF2dz9g66BHOPL62xJ4xPghLjLxyVi7Uk2Hq1KuT+LNmdSLWsV09Lqe7cpSkVPQn+WUH6MkaU85O/e4JELkPvTyiXuQTThAAx5nQFa5bTumQSV9/Xmzn1h3WQPcTRQmZut0WsmuDoVC8A3+O8wVKu2mvWY3iNUPXLjYz9oW9CW1qRD5ZvXgoYR66lOt2tDG0hSW2gO0/Gaj0JAqhOXQzezGbve317agwHI1iwQbY0GRoG3nbOr8sqGK37CrEEsO3uFikRjty0Fhly3zGQw+Y9hJXGmc+kVdS5lMlbr0GQu5YSqO5gI9SUkeNw5wGuCIV4/JupKYBU+8dbELA4xxKbDsK6cPhNGJfbbRRZALN4UQpKqUaBdWF/AzgfC8JW1mb71mOJROYDkFM/0InSOLWVIn4szuh/40qgQuI6vCqGuJSKT49baVkC9IwJsLv0CB41tDQQRU8Ody7L+8i5aXr5WFjBmdhN1f/xuwOI5BDKTDXqpVQtKiqaUgOIdGIZuM9yuLKoeXrUlFugFa4AJhNozS5N1Lfg/XyBX3LoeRqdD/5QMTUNRHpCaF3uyNtcHgUMfBQuCw9rFxrzUOvtLQ/W5SBHaNje4jE9AxhudLoa6sVoPHGgp4fABRox7xr79gj//yGzUyTg5i0xgXaESurZOMk51BASefsGKQM7VZzul0hQzrYoUf/gmHU+Jv6fzA0l199dUuzN0msafG+3IrJsAlMLO/KM7peIN0nDVL1H9mkA4v/uJuLKQ4hzY2Cyh+jtxzr37HhTt/S0U1IDnq5n86Uj4TJeN0qaXLROwLAiPBQ3Xs9deEjl+U/Gi68aavHc2QGAAeucEysVjsjyS5vyEVIaoXqISSLLYs7eRVlfsPz8HdY2oY8oaNDVly8jCPyfffjerbpVzHDXsQJdqRSBgtGi5+oA80QGEL4WdqoWHnT9AIl8VRwWa5ie",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0218",
+   "name": "decrypt bad length",
+   "alg": "sm4",
+   "key_name": "first",
+   "plain": null,
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "eHh4eHh4eHh4eHh4eHh4eHh4eHg=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0219",
+   "name": "decrypt bad padding",
+   "alg": "sm4",
+   "key_name": "first",
+   "plain": null,
+   "request": {
+    "version": 1,
+    "op": "decrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "V2M2QVFISkZRaUJhc0tKUQ==",
+    "key_encoding": "base64",
+    "data": "V+5LF+BoCoqnScSf6GUIw+SqmDFUifjuc5sydk8SZRA=",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "unsupported output encoding: raw_base64",
+    "data": ""
+   }
+  },
+  {
+   "id": "0220",
+   "name": "encrypt bad key",
+   "alg": "sm4",
+   "key_name": "short",
+   "plain": "YWJj",
+   "request": {
+    "version": 1,
+    "op": "encrypt",
+    "alg": "sm4-cbc",
+    "input_encoding": "raw_base64",
+    "output_encoding": "raw_base64",
+    "key": "MDEyMzQ1Njc4OQ==",
+    "key_encoding": "base64",
+    "data": "YWJj",
+    "transport_format": "json"
+   },
+   "rc": 1,
+   "stderr": "",
+   "response": {
+    "code": 1001,
+    "message": "SM4: invalid key size 10",
+    "data": ""
+   }
+  }
+ ]
+}

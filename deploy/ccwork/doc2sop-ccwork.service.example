@@ -1,0 +1,66 @@
+# doc2sop 的云上协同转接程序（deploy/ccwork/ccwork_bridge.py）。
+#
+# 安装（root）：
+#   apt install python3-paho-mqtt python3-cryptography python3-yaml
+#   useradd --system --no-create-home --shell /usr/sbin/nologin doc2sop-ccwork
+#   install -d -m 755 /opt/doc2sop-ccwork
+#   install -m 644 deploy/ccwork/ccwork_bridge.py /opt/doc2sop-ccwork/
+#   install -m 600 deploy/ccwork/ccwork.env.example /etc/doc2sop-ccwork.env       # 再编辑开关、用 set-credentials 写凭据
+#   install -d -m 750 -g doc2sop-ccwork /etc/doc2sop-ccwork
+#   install -m 640 -g doc2sop-ccwork deploy/ccwork/targets.yaml.example /etc/doc2sop-ccwork/targets.yaml
+#   install -m 644 deploy/ccwork/doc2sop-ccwork.service.example /etc/systemd/system/doc2sop-ccwork.service
+#   systemctl daemon-reload && systemctl enable --now doc2sop-ccwork
+#
+# 升级：先备份 /opt/doc2sop-ccwork/ccwork_bridge.py（带时间戳），再拷新文件，systemctl restart doc2sop-ccwork。
+# systemd 先停后起：停的时候发 MQTT 的 DISCONNECT，同一个机器人不会同时连两处（两处会互相踢）。
+
+[Unit]
+Description=doc2sop 云上协同转接程序（收 MQTT、发 HTTPS，本地接口只听 127.0.0.1:8796）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=doc2sop-ccwork
+Group=doc2sop-ccwork
+# 开关和凭据：root 600，systemd 以 root 读入后作为环境变量交给进程；进程自己读不到这个文件（见下面 InaccessiblePaths）。
+# kb-app 的 .env 里 CHAT_BRIDGE_TOKEN 填同一个值
+EnvironmentFile=/etc/doc2sop-ccwork.env
+ExecStart=/usr/bin/python3 -I /opt/doc2sop-ccwork/ccwork_bridge.py serve
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+
+# 没有可写的目录：待取队列只在内存里
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+# 用不着的地方一律看不见：kb-app 的数据和 .env、工具服务和沙箱的配置与凭据、docker、自己的环境文件
+InaccessiblePaths=-/opt/kb-app -/opt/ops -/etc/ops-readonly -/etc/ops-readonly.env -/etc/doc2sop-sandbox.env
+InaccessiblePaths=-/etc/doc2sop-ccwork.env -/var/lib/docker -/run/docker.sock
+MemoryMax=100M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
