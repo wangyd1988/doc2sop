@@ -1,9 +1,10 @@
 """SOP 执行记录、自动执行（定时、告警）、邮件、知识库缺口看板的页面接口（docs/自动执行.md）。
 
 都在网页的 Basic 认证后面（FastAPI 的全局依赖），写请求照常过防跨站中间件。唯一的例外是告警入口 /api/alerts/hook：
-它挂在路由表上、不经 FastAPI（见 alerts.py），只认服务器上配置的告警令牌，没配时回 404。
+它挂在路由表上、不经 FastAPI（见 alerts.py），只认配置好的告警令牌，没配时回 404。
 """
 import html
+import json
 import threading
 import time
 from collections import deque
@@ -11,15 +12,19 @@ from contextlib import asynccontextmanager
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
 from starlette.routing import Route
 
-from app import alerts, automation_config, autorun, catalog, gaps, mailer, playbooks, runs, schedules
+from app import alerts, automation_config, automation_page, autorun, catalog, gaps, mailer, playbooks, runs, schedules
 from app.config import BOT_NAME, SCHEDULER, WEB_USER, log
 
 router = APIRouter()
 TEST_MAIL_GAP = 60          # 同一个收件组的测试邮件至少隔多少秒
 TEST_MAIL_PER_HOUR = 10
+SETTINGS_BODY_MAX = 64 * 1024
+SETTINGS_PER_MINUTE = 10    # 每个来源地址每分钟最多改几次设置：和「主机与数据源」的写操作同一档（main.CONFIG_LIMITS）
+NO_STORE = {"Cache-Control": "no-store"}
 
 
 def _groups() -> dict:
@@ -247,13 +252,69 @@ def alert_events(limit: int = 50):
     return {"events": alerts.recent_events(max(1, min(200, limit)))}
 
 
-# --- 服务器配置的状态、测试邮件 ---------------------------------------------------------------
+# --- 自动执行的设置（发件邮箱、收件组、告警入口）、测试邮件 ---------------------------------------------
 
 @router.get("/api/automation")
-def automation_status():
-    """服务器上配了什么（不含任何地址、账号、授权码、令牌）、各种上限、告警入口的地址。"""
-    return {**automation_config.public(), "hook_path": alerts.PATH, "scheduler": SCHEDULER, "limits": _limits(),
+def automation_status(response: Response):
+    """自动执行的设置和状态。settings 是页面上看、改的那份（automation_page.view）：发件服务器、账号、收件组的地址都看得到
+    （要改就得看得见），授权码、告警令牌永远只有状态（已设置的时间 / 未设置 / 要重新输入），没有值。
+    其余是摘要（收件组只有名字和人数，计划、告警规则的表单用）、各种上限、告警入口的地址。"""
+    response.headers.update(NO_STORE)
+    return {**automation_config.public(), "settings": automation_page.view(), "hook_path": alerts.PATH,
+            "scheduler": SCHEDULER, "limits": _limits(),
             "counts": {"schedules": len(schedules.listing()), "rules": len(alerts.rules())}}
+
+
+_settings_hits: dict = {}
+_settings_lock = threading.Lock()
+
+
+def _settings_wait(address: str) -> int:
+    """这个来源地址还要等几秒才能再改；0 表示现在就行（并记一次）。"""
+    now = time.monotonic()
+    with _settings_lock:
+        for stale in [key for key, hits in _settings_hits.items() if not hits or now - hits[-1] >= 60]:
+            del _settings_hits[stale]
+        hits = [at for at in _settings_hits.get(address, []) if now - at < 60]
+        if len(hits) >= SETTINGS_PER_MINUTE:
+            _settings_hits[address] = hits
+            return int(60 - (now - hits[0])) + 1
+        _settings_hits[address] = hits + [now]
+    return 0
+
+
+async def _settings_body(request: Request) -> dict:
+    body = await request.body()
+    if len(body) > SETTINGS_BODY_MAX:
+        raise HTTPException(413, "请求体太大")
+    try:
+        data = json.loads(body or b"{}")
+    except ValueError:
+        raise HTTPException(400, "请求体不是合法 JSON") from None
+    if not isinstance(data, dict):
+        raise HTTPException(400, "请求体必须是 JSON 对象")
+    return data
+
+
+@router.post("/api/automation/settings")
+async def save_settings(request: Request):
+    """页面上改自动执行的设置：{version, change: {kind, …}, passphrase}。扩大能力的要审批口令（工具服务核对），缩小能力的不要。
+    请求体手动解析：FastAPI 的 422 会把输入（口令、授权码）回显出来。口令、授权码不保存、不记日志，也不出现在回复和报错里；
+    新生成的告警令牌只在这一次的回复里。每个来源地址每分钟最多 SETTINGS_PER_MINUTE 次。"""
+    data = await _settings_body(request)
+    address = request.client.host if request.client else "-"
+    wait = _settings_wait(address)
+    if wait:
+        log.info("automation settings refused: too frequent (ip=%s)", address)
+        raise HTTPException(429, f"操作太频繁了：{wait} 秒后再试")
+    try:
+        result = await run_in_threadpool(automation_page.apply, data, f"web user={WEB_USER} ip={address}", WEB_USER, address)
+    except automation_page.Refused as exc:
+        change = data.get("change")
+        kind = change.get("kind") if isinstance(change, dict) else None
+        log.info("automation settings %s refused: %s (ip=%s)", str(kind)[:30], exc.status, address)
+        return JSONResponse({"detail": str(exc), **exc.extra}, status_code=exc.status, headers=NO_STORE)
+    return JSONResponse(result, headers=NO_STORE)
 
 
 _test_mail = {"times": deque(), "by_group": {}}
@@ -262,13 +323,14 @@ _test_mail_lock = threading.Lock()
 
 @router.post("/api/automation/test-mail")
 def test_mail(request: Request, data: dict = Body(...)):
-    """发一封测试邮件：只能发给服务器上配置好的收件组；同一个组每分钟一封、每小时一共最多 TEST_MAIL_PER_HOUR 封。"""
+    """发一封测试邮件：只能发给配置好的收件组；同一个组每分钟一封、每小时一共最多 TEST_MAIL_PER_HOUR 封。"""
     group = " ".join(str(_body(data).get("group") or "").split())
     settings = automation_config.load()
     if settings.mail is None:
-        raise HTTPException(409, "服务器上没有配置邮件（SMTP）")
+        raise HTTPException(409, f"发件设置用不了：{settings.mail_problem}" if settings.mail_problem else
+                            "还没有配置发件邮箱（SMTP）：先在下面的「邮件」里设置")
     if group not in settings.groups:
-        raise HTTPException(400, f"服务器上没有收件组「{group}」")
+        raise HTTPException(400, f"没有收件组「{group}」：可能刚被删掉，刷新后再选")
     now = time.monotonic()
     with _test_mail_lock:
         times = _test_mail["times"]
@@ -283,7 +345,7 @@ def test_mail(request: Request, data: dict = Body(...)):
     who = f"user={WEB_USER} ip={request.client.host if request.client else '-'}"
     log.info("test mail to group %s requested (%s)", group, who)
     subject = f"[{BOT_NAME}] 测试邮件：收件组「{group}」"
-    text = (f"这是 {BOT_NAME} 的测试邮件，发给收件组「{group}」。\n收到它说明服务器上的邮件配置能用："
+    text = (f"这是 {BOT_NAME} 的测试邮件，发给收件组「{group}」。\n收到它说明邮件设置能用："
             "SOP 自动执行有异常、没跑成、没法判断时会发到这个组（按计划和告警规则上的设置）。\n")
     html_body = "".join(f"<p>{html.escape(line)}</p>" for line in text.strip().split("\n"))
     try:

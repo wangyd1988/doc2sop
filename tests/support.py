@@ -52,7 +52,7 @@ def clear_graph():
     with graph.lock:
         for table in ("feedback", "proposals", "facts", "tool_calls", "executions", "entities",
                       "sop_runs", "sop_schedules", "sop_slots", "alert_rules", "alert_events",
-                      "kb_gaps", "kb_gap_ignores", "app_state"):
+                      "kb_gaps", "kb_gap_ignores", "app_state", "automation_changes"):
             graph.db.execute(f"DELETE FROM {table}")
         graph.db.commit()
 

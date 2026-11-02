@@ -238,6 +238,14 @@ CREATE TABLE IF NOT EXISTS app_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS automation_changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,      -- 页面上改自动执行设置（发件邮箱、收件组、告警令牌……）的记录，留最近 200 条
+  at TEXT NOT NULL,
+  user TEXT NOT NULL DEFAULT '',
+  ip TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL,
+  detail TEXT NOT NULL                       -- 改了什么；不记授权码、令牌的值
+);
 """
 db.executescript(AUTOMATION_SCHEMA)
 db.commit()

@@ -179,8 +179,47 @@ check('知识库缺口：线索写成中文', gap.includes('有人工反馈 2'),
 check('知识库缺口：id 进属性也转义', gap.includes('data-gapopen="g&quot;1"'), true);
 // 问题标题不能用工作台示例问题的全局 .ex（4 列网格）：长问题会被挤在四分之一宽里折行
 check('知识库缺口：标题不用全局的 .ex', /class="ex"/.test(gap) || !gap.includes('class="gq"'), false);
-// 页面上只能选收件组的名字：自动执行页不显示收件地址、SMTP 账号
-check('自动执行页不显示收件地址、SMTP 账号', /\.addresses|mail\.user\b|mail\.password|mail\.host\b/.test(scripts.join('\n')), false);
+// 自动执行的设置：地址和账号现在看得到（要改就得看得见），服务端来的文字一律转义；授权码、令牌只画状态，值就算混进了回复也不画出来。
+// 什么都不能改时按钮全灰；口令用不了时只灰掉要口令的，缩小能力的照常能点；在服务器上配置的没有按钮
+const autoCode = [/^const esc = .*$/m, /^const unlockIn = .*$/m, /^const AS_SRV = .*$/m, /^const AS_SEC = .*$/m, /^const AS_PW = .*$/m,
+  /^const AS_KIND = .*$/m, /^const AS_SKIP = .*$/m].map(lineOf)
+  .concat(['setAtText', 'icCopy', 'asBtn', 'autoLocks', 'asPwHtml', 'autoMailHtml', 'autoSiteHtml', 'autoGroupRow', 'autoHookHtml',
+           'autoChangeRow', 'autoSkipRow', 'autoSettingsHtml', 'autoTokenHtml', 'asUsedHtml'].map(extract)).join('\n');
+const A = new Function(`${autoCode}\nreturn {autoSettingsHtml, autoTokenHtml, autoLocks, asUsedHtml};`)();
+const autoS = (over = {}) => ({
+  version: 'v1', writable: {ok: true, reason: ''}, approval: {configured: true, locked: false, problem: ''},
+  mail: {source: 'page', configured: false, host: '<img src=x onerror=alert(1)>', port: 465, security: 'ssl', user: '<q>u@x.com', from: '<i>f@x.com',
+         password: {state: 'set', set_at: '<u>2026', value: 'SECRET-AUTH-CODE'}, problem: '<em>授权码要重新输入</em>'},
+  site_url: {source: 'page', value: 'http://<svg onload=1>', plain: true},
+  groups: [{name: '<script>g</script>', addresses: ['<q>a@x.com'], source: 'page'}, {name: '手写组', addresses: ['b@x.com'], source: 'server'}],
+  alerts: {enabled: true, token: {source: 'page', state: 'set', set_at: '2026-11-02T01:00:00+00:00', value: 'SECRET-TOKEN'},
+           clients: {source: 'page', values: ['<i>10.0.0.0/8']}},
+  skipped: [{kind: 'group', name: '<q>坏组', reason: '<img src=y>'}], problems: [],
+  server: {file: '<u>/data/automation.yaml', exists: true, keys: ['<i>mail'], groups: ['<q>手写组']},
+  page: {file: '/data/automation.page.json', secrets_file: '/data/automation.page-secrets.json'},
+  used_by: {'<script>g</script>': [{kind: 'schedule', id: 's1', name: '<img src=z>'}]},
+  changes: [{at: '<q>t', user: '<i>u', ip: '<u>1.2.3.4', kind: '<svg>', detail: '<img src=w>'}], limits: {groups: 20}, ...over});
+const asButtons = h => [...h.matchAll(/<button[^>]*data-as="([^"]+)"[^>]*>/g)].map(m => [m[1], /\bdisabled\b/.test(m[0])]);
+const asHtml = A.autoSettingsHtml({settings: autoS(), mail: {configured: true}, groups: [{name: '<q>组'}], file: ''}, 'http://kb/<svg>');
+check('自动执行的设置：地址、组名、原因、变更、文件名都转义', raw.test(asHtml), false);
+check('自动执行的设置：授权码、令牌的值就算混进回复也不画出来', /SECRET-AUTH-CODE|SECRET-TOKEN/.test(asHtml), false);
+check('自动执行的设置：收件地址、发件账号看得到', asHtml.includes('&lt;q&gt;a@x.com') && asHtml.includes('&lt;q&gt;u@x.com'), true);
+check('自动执行的设置：在服务器上配置的收件组没有按钮，标出来',
+  asHtml.includes('<b>手写组</b>') && !asHtml.includes('data-name="手写组"') && asHtml.includes('在服务器上配置'), true);
+check('能改时：按钮都能点', asButtons(asHtml).every(([, off]) => !off), true);
+const asLocked = A.autoSettingsHtml({settings: autoS({approval: {configured: true, locked: true, unlock_minutes: 9}})}, 'h');
+const asOff = Object.fromEntries(asButtons(asLocked));
+check('口令锁定时：要口令的灰掉', [asOff['mail-edit'], asOff['site-edit'], asOff['group-add'], asOff['token-new']], [true, true, true, true]);
+check('口令锁定时：缩小能力的照常能点', [asOff['mail-clear'], asOff['site-clear'], asOff['group-del'], asOff['token-del'], asOff['skip-del']],
+  [false, false, false, false, false]);
+check('口令锁定时：写明原因', asLocked.includes('页面审批锁定中，9 分钟后解锁'), true);
+const asReadOnly = A.autoSettingsHtml({settings: autoS({writable: {ok: false, reason: '工具服务较旧：<b>升级</b>'}})}, 'h');
+check('工具服务较旧：按钮全灰，原因转义', asButtons(asReadOnly).every(([, off]) => off) && asReadOnly.includes('工具服务较旧：&lt;b&gt;升级'), true);
+check('没读到设置：只能看', A.autoLocks(undefined).all, '读不到自动执行的设置');
+const asToken = A.autoTokenHtml('ab'.repeat(32), 'http://kb/<svg onload=1>');
+check('新令牌：地址转义', raw.test(asToken), false);
+check('新令牌：令牌在复制块里', asToken.includes('<pre>' + 'ab'.repeat(32) + '</pre>'), true);
+check('删收件组：选了它的计划和规则转义', raw.test(A.asUsedHtml([{name: '<img src=x>'}])), false);
 
 // 自动检查与模型预审：检查结果、模型说的话一律转义；模型预审的标题固定；开关关着（没有 prereview）时这一块整个不出现
 const checkCode = [/^const esc = .*$/m, /^const PC_ICON = .*$/m, /^const PC_VERDICT_ICON = .*$/m, /^const PRE_DISCLAIMER = .*$/m,

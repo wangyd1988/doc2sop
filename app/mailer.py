@@ -1,6 +1,6 @@
 """发邮件（docs/自动执行.md「邮件」）。
 
-只发给服务器上配置好的收件组：调用方只能给组名，地址、SMTP 账号和授权码都在 automation_config 里，不经过页面。
+只发给配置好的收件组（页面上加的，或服务器上写的）：调用方只能给组名，地址、SMTP 账号和授权码都在 automation_config 里。
 465（ssl，一连上就是 TLS）和 587（starttls，先明文再升级）都支持；证书照常校验，内网自签的证书用 mail.ca_file。
 连接、超时这类临时失败重试（一共 3 次）；登录被拒、发件人被拒这类重试也没用的，不重试。日志里不写授权码。
 """
@@ -26,7 +26,7 @@ class MailError(RuntimeError):
 
 
 def reason(exc) -> str:
-    """异常 → 给人看的原因。不带 SMTP 主机和账号（页面上看不到它们）。"""
+    """异常 → 给人看的原因。不带 SMTP 主机和账号：原因会写进执行记录和日志，那里用不着它们。"""
     if isinstance(exc, smtplib.SMTPAuthenticationError):
         return f"登录被拒绝：账号或授权码不对（SMTP {exc.smtp_code}）"
     if isinstance(exc, smtplib.SMTPSenderRefused):
@@ -102,10 +102,11 @@ def send(group, subject, text, html="", settings=None, sleep=time.sleep, delays=
     delays = RETRY_DELAYS if delays is None else delays
     settings = settings or automation_config.load()
     if settings.mail is None:
-        raise MailError("服务器上没有配置邮件（SMTP），见 docs/自动执行.md")
+        raise MailError(f"发件设置用不了：{settings.mail_problem}" if settings.mail_problem else
+                        "还没有配置发件邮箱（SMTP）：在「SOP → 自动执行 → 邮件」里设置，或写在服务器上的配置文件里")
     recipients = settings.groups.get(group)
     if not recipients:
-        raise MailError(f"服务器上没有收件组「{group}」")
+        raise MailError(f"没有收件组「{group}」：可能已经删掉了，到计划或告警规则里重新选一个")
     message = build(settings.mail, recipients, subject, text, html)
     attempts, last = 0, ""
     for attempt in range(len(delays) + 1):

@@ -1100,6 +1100,22 @@ details.rs pre.code { margin: 4px 0 0; font: 12px/1.5 ui-monospace, Consolas, mo
               white-space: pre; overflow-x: auto; margin: 8px 0 0; }
 .sf .filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 14px; font-size: 13px; }
 .sf .filter select { width: auto; }
+/* 自动执行页的设置（邮件、告警入口）：小标题行是名字、状态和按钮；没生效的条目一行一个，带「删除」 */
+.sf .as-h { font-size: 15px; margin: 22px 0 8px; }
+.sf .as-sub { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 16px 0 8px; font-size: 13.5px; }
+.sf .card > h3 + .as-sub { margin-top: 0; }
+.sf .as-acts { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.sf .as-acts button { font-size: 12.5px; padding: 4px 11px; border-radius: 8px; background: var(--panel-2); color: var(--text); }
+.sf .as-acts button.go { background: var(--user-bg); color: #fff; }
+.sf .as-acts button.del { color: var(--danger); }
+.sf .as-acts button:disabled { opacity: .45; cursor: not-allowed; }
+.sf .as-skip { list-style: none; margin: 0; padding: 0; font-size: 12.5px; line-height: 1.6; }
+.sf .as-skip li { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid var(--border); }
+.sf .as-skip li:last-child { border-bottom: 0; }
+.sf .as-skip button { font-size: 12px; padding: 2px 10px; border-radius: 6px; background: var(--panel-2); color: var(--danger); flex-shrink: 0; }
+.sf .as-skip button:disabled { opacity: .45; cursor: not-allowed; }
+.dlg.ic .fld textarea { font: 13px/1.5 ui-monospace, Consolas, monospace; padding: 8px 10px; border-radius: 10px; border: 1.5px solid var(--border);
+  background: var(--panel-2); color: var(--text); outline: none; min-height: 96px; resize: vertical; }
 .gap-row { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border);
            align-items: start; }
 .gap-row:first-child { border-top: 0; padding-top: 2px; }
@@ -5361,7 +5377,7 @@ $('mdetail').addEventListener('click', async e => {
    执行记录：每次按 SOP 执行（对话里的「▶ 执行」、SOP 页的「立即执行一次」、定时、告警触发）都留一份：结论（正常 / 有异常 /
    没跑成 / 没法判断）、异常项、和上次比、每一步的调用和原始返回、人工反馈。结论从回答里按 SOP 输出格式的表格解析，
    解析不出来的记「没法判断」，不当成正常。
-   自动执行：计划和告警规则只能从服务器上配好的收件组里选名字，收件地址、SMTP 账号和告警令牌页面上都看不到。
+   自动执行：计划和告警规则从配好的收件组里选名字；发件邮箱、收件组、告警入口在下面的设置里改（扩大能力的要审批口令），授权码、令牌只写不读。
    知识库缺口：大家常问、文档里没写的问题，按次数排；「忽略」后相似的问题不再出现。 */
 const LEVEL = {ok: ['ok', '✅', '正常'], anomaly: ['warn', '⚠️', '有异常'], failed: ['bad', '❌', '没跑成'], unknown: ['unk', '❓', '没法判断']};
 const RUN_STATUS = {queued: '排队中', running: '执行中', missed: '错过', skipped: '跳过'};
@@ -5625,7 +5641,7 @@ function paramRows(bookId, values) {
 function notifyRows(n) {
   n = n || {};
   const groups = autoState.groups || [];
-  return `<div class="frow"><span>邮件发给<i>服务器上配好的收件组</i></span><select id="afGroup"><option value="">不发邮件</option>${groups.map(g =>
+  return `<div class="frow"><span>邮件发给<i>配好的收件组</i></span><select id="afGroup"><option value="">不发邮件</option>${groups.map(g =>
       `<option value="${esc(g.name)}"${n.group === g.name ? ' selected' : ''}>${esc(g.name)}（${g.count} 人）</option>`).join('')}</select></div>
     <div class="frow"><span>什么时候发</span><select id="afWhen">${Object.entries(NOTIFY_WHEN).map(([k, v]) =>
       `<option value="${k}"${(n.when || 'problems') === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
@@ -5703,6 +5719,9 @@ async function renderAuto() {
   autoState = {groups: st.groups || [], books, schedules: sc.schedules || [], rules: rl.rules || [], chat};
   const lim = st.limits || {}, mail = st.mail || {}, alerts = st.alerts || {};
   const hook = location.origin + (st.hook_path || '/api/alerts/hook');
+  autoState.hook = hook;
+  autoSettings = st.settings || null;
+  if (autoSettings && autoSettings.approval) apState.approval = autoSettings.approval;
   const problems = [...(st.problems || []), st.loose].filter(Boolean);
   const table = (head, rows, none) => rows ? `<table class="ax stack"><tr>${head.map(x => `<th>${x}</th>`).join('')}</tr>${rows}</table>` : `<div class="note">${none}</div>`;
   $('msettings').innerHTML = `<div class="sf auto">
@@ -5714,7 +5733,7 @@ async function renderAuto() {
       <span class="pill ${mail.configured ? 'ok' : 'off'}">${mail.configured ? '✓ 邮件已配置' : '– 邮件没配置'}</span>
       <span class="pill ${alerts.enabled ? 'ok' : 'off'}">${alerts.enabled ? '✓ 告警入口已打开' : '– 告警入口关着'}</span>
       ${st.scheduler === false ? '<span class="pill warn">定时执行在服务器上关了（SCHEDULER=false）</span>' : ''}</div>
-    ${problems.length ? `<div class="warn" style="margin:0 0 14px"><b>服务器上的配置文件有问题：</b><ul class="ax">${problems.map(p => `<li>${esc(p)}</li>`).join('')}</ul></div>` : ''}
+    ${problems.length ? `<div class="warn" style="margin:0 0 14px"><b>自动执行的设置有问题：</b><ul class="ax">${problems.map(p => `<li>${esc(p)}</li>`).join('')}</ul></div>` : ''}
     <div class="card"><h3>定时计划 <small>北京时间；每隔 N 分钟的最少 ${lim.min_every || 15} 分钟；一共最多 ${lim.max_schedules || 50} 条</small></h3>
       ${table(['SOP', '时间', '邮件', '下次', '上次', ''], scheduleRows(autoState.schedules), '还没有计划。')}
       ${autoForm && autoForm.kind === 'schedule' ? scheduleForm(autoForm.item) : `<div class="row"><button class="pri" data-afnew="schedule" ${enabledBooks().length ? '' : 'disabled'}>＋ 添加计划</button></div>`}
@@ -5727,20 +5746,115 @@ async function renderAuto() {
         告警内容只当背景资料放进提问，不当指令。</div></div>
     <div class="card"><h3>最近收到的告警 <small>保留 7 天：对上了哪条规则、有没有触发</small></h3>
       ${table(['时间', '告警', '标签', '结果', '来源'], eventRows(ev.events || []), alerts.enabled ? '还没有收到过告警。' : '告警入口关着，还没有收到过告警。')}</div>
-    <div class="card"><h3>邮件 <small>SMTP 和收件人在服务器上配，页面上只能选收件组的名字</small></h3>
-      <dl><dt>状态</dt><dd>${mail.configured ? `已配置（${esc(mail.security === 'starttls' ? 'STARTTLS' : mail.security === 'ssl' ? 'SSL' : '不加密')}）` : '没有配置：自动执行照常跑，只是不发邮件'}</dd>
-        <dt>收件组</dt><dd>${(st.groups || []).map(g => `<span class="pill">${esc(g.name)} · ${g.count} 人</span>`).join(' ') || '还没有'}</dd>
-        <dt>报告链接</dt><dd>${st.site_url ? `<code>${esc(st.site_url)}</code>` : '没配 site_url：邮件里没有报告链接'}</dd></dl>
-      <div class="row"><select id="testGroup" ${mail.configured && (st.groups || []).length ? '' : 'disabled'}>${(st.groups || []).map(g =>
-        `<option value="${esc(g.name)}">${esc(g.name)}</option>`).join('') || '<option>（没有收件组）</option>'}</select>
-        <button data-testmail ${mail.configured && (st.groups || []).length ? '' : 'disabled'}>发一封测试邮件</button>
+    ${autoSettingsHtml(st, hook)}
+  </div>`;
+  showKindRows();
+}
+/* ---------- 自动执行的设置：发件邮箱、报告链接、收件组、告警入口（docs/自动执行.md「在页面上配置」） ----------
+   和「主机与数据源」同一个规矩：网页密码能看、能做缩小能力的改动；扩大能力的要审批口令，由工具服务核对——要不要口令由服务端判断，
+   这里的口令框只是提示。服务器上手写的 automation.yaml 写了的部分以它为准，只读。授权码、令牌只写不读：页面上只有状态和设置时间；
+   新生成的令牌只在生成后的那个对话框里显示这一次。 */
+let autoSettings = null;             // 最近一次读到的设置（GET /api/automation 的 settings），带版本号
+const AS_SRV = '<span class="pill off" title="写在服务器上的配置文件（automation.yaml）里：以它为准，页面上只读">在服务器上配置</span>';
+const AS_SEC = {ssl: 'SSL', starttls: 'STARTTLS', none: '不加密'};
+const AS_PW = {set: ['ok', '已设置'], missing: ['bad', '要重新输入'], server: ['', '在服务器上配置'], none: ['off', '不需要']};
+const AS_KIND = {mail: '发件设置', 'mail-clear': '清除发件设置', 'site-url': '报告链接', 'site-url-clear': '清空报告链接', group: '收件组', 'group-delete': '删除收件组', 'alert-token': '告警令牌', 'alert-token-delete': '删除告警令牌', 'alert-clients': '告警来源地址'};
+const AS_SKIP = {all: '页面上的设置', mail: '发件设置', site_url: '报告链接', group: '收件组', groups: '收件组', alert_token: '告警令牌', alert_clients: '告警来源地址'};
+function asBtn(act, label, lock, extra = '', cls = '') {
+  return `<button class="${cls}" data-as="${act}"${extra}${lock ? ` disabled title="${esc(lock)}"` : ''}>${label}</button>`;
+}
+// 现在能不能改：all 是什么都不能改的原因（没有工具服务、工具服务较旧、开关关了、文件坏了）；pass 是要口令的改动做不了的原因
+function autoLocks(S) {
+  const w = (S && S.writable) || {ok: false, reason: '读不到自动执行的设置'};
+  if (!w.ok) return {all: w.reason || '页面上只能看', pass: w.reason || '页面上只能看'};
+  const ap = (S && S.approval) || {};
+  const pass = ap.problem ? '审批口令不可用：' + ap.problem : !ap.configured ? '还没设审批口令（在「设置 → 审批口令」里设）'
+    : ap.locked ? '页面审批锁定中，' + unlockIn(ap) : '';
+  return {all: '', pass};
+}
+function asPwHtml(pw) {
+  const [cls, text] = AS_PW[(pw || {}).state] || AS_PW.none;
+  return `<span class="pill ${cls}">${text}</span>${pw && pw.set_at ? ` <span class="note">${esc(setAtText(pw.set_at))}</span>` : ''}`;
+}
+function autoMailHtml(S, locks) {
+  const m = S.mail || {}, page = m.source === 'page';
+  const state = m.configured ? '<span class="pill ok">能用</span>' : m.source ? '<span class="pill bad">用不了</span>' : '<span class="pill off">没有设置</span>';
+  const acts = m.source === 'server' ? AS_SRV : asBtn('mail-edit', page ? '修改' : '设置发件邮箱', locks.all || locks.pass, '', 'go')
+    + (page ? asBtn('mail-clear', '清除', locks.all, '', 'del') : '');
+  const rows = `<dt>服务器</dt><dd><code>${esc(m.host)}:${esc(m.port)}</code> · ${esc(AS_SEC[m.security] || m.security)}</dd>
+      <dt>账号</dt><dd>${m.user ? esc(m.user) : '—（不登录）'}</dd><dt>发件人</dt><dd>${esc(m.from)}</dd>
+      <dt>授权码</dt><dd>${asPwHtml(m.password)}</dd>`;
+  return `<div class="as-sub"><b>发件邮箱（SMTP）</b>${state}<div class="as-acts">${acts}</div></div>
+    ${m.problem ? `<div class="note warn-t">${esc(m.problem)}</div>` : ''}
+    ${m.source && m.host ? `<dl>${rows}</dl>` : m.source ? '' : '<div class="note">没有设置：自动执行照常跑，只是不发邮件。</div>'}`;
+}
+function autoSiteHtml(S, locks) {
+  const s = S.site_url || {}, page = s.source === 'page';
+  const acts = s.source === 'server' ? AS_SRV : asBtn('site-edit', page ? '修改' : '设置', locks.all || locks.pass, '', 'go')
+    + (page ? asBtn('site-clear', '清空', locks.all, '', 'del') : '');
+  return `<div class="as-sub"><b>报告链接</b><div class="as-acts">${acts}</div></div>
+    <div class="note">${s.value ? `<code>${esc(s.value)}</code>${s.plain ? '<span class="warn-t">：http 链接经明文传输</span>' : ''}`
+      : '没有设置：邮件里没有「查看完整报告」的链接'}</div>`;
+}
+function autoGroupRow(g, used, locks) {
+  const name = esc(g.name), extra = ` data-name="${name}"`;
+  const acts = g.source === 'page' ? asBtn('group-edit', '修改', locks.all, extra, 'go') + asBtn('group-del', '删除', locks.all, extra, 'del') : AS_SRV;
+  return `<tr><td data-l="组名"><b>${name}</b></td><td data-l="地址">${(g.addresses || []).map(a => `<code>${esc(a)}</code>`).join(' ')}</td>
+    <td data-l="谁在用">${(used || []).length ? used.map(u => esc(u.name)).join('<br>') : '—'}</td><td><div class="ops">${acts}</div></td></tr>`;
+}
+function autoHookHtml(S, hook, locks) {
+  const al = S.alerts || {}, t = al.token || {}, c = al.clients || {}, values = c.values || [];
+  const tokState = t.source === 'server' ? AS_SRV : t.state === 'set'
+    ? `<span class="pill ok">已设置</span>${t.set_at ? ` <span class="note">${esc(setAtText(t.set_at))}</span>` : ''}` : '<span class="pill off">没有</span>';
+  const tokActs = t.source === 'server' ? '' : asBtn('token-new', t.state === 'set' ? '重新生成' : '生成令牌', locks.all || locks.pass, '', 'go')
+    + (t.state === 'set' ? asBtn('token-del', '删除令牌', locks.all, '', 'del') : '');
+  const cliState = (values.length ? values.map(v => `<code>${esc(v)}</code>`).join(' ') : '<span class="note">不限（只靠令牌）</span>')
+    + (c.source === 'server' ? ' ' + AS_SRV : '');
+  return `<dl><dt>状态</dt><dd>${al.enabled ? '已打开' : '关着：没有告警令牌，访问这个地址会得到 404'}</dd>
+      <dt>地址</dt><dd><code>POST ${esc(hook)}</code></dd>
+      <dt>认证</dt><dd>请求头 <code>Authorization: Bearer &lt;告警令牌&gt;</code>（不是网页密码；网页密码打不开它）</dd></dl>
+    <div class="as-sub"><b>令牌</b>${tokState}<div class="as-acts">${tokActs}</div></div>
+    <div class="as-sub"><b>来源地址</b>${cliState}<div class="as-acts">${c.source === 'server' ? '' : asBtn('clients-edit', '修改', locks.all)}</div></div>`;
+}
+function autoChangeRow(x) {
+  return `<li>${esc(x.detail)}<div class="who">${esc(setAtText(x.at))} · ${esc(x.user || '-')} · ${esc(x.ip || '-')}</div></li>`;
+}
+function autoSkipRow(x, locks) {
+  const deletable = ['group', 'mail', 'site_url', 'alert_token', 'alert_clients'].includes(x.kind);
+  const button = deletable ? asBtn('skip-del', '删除', locks.all, ` data-kind="${esc(x.kind)}" data-name="${esc(x.name)}"`) : '';
+  return `<li><span><b>${esc(AS_SKIP[x.kind] || x.kind)}</b>${x.kind === 'group' ? `「${esc(x.name)}」` : ''}：${esc(x.reason)}</span>${button}</li>`;
+}
+// 「邮件」「告警入口」「没有生效的设置」「最近的设置变更」「服务器上的配置文件」几张卡片；st 是 GET /api/automation 的回复
+function autoSettingsHtml(st, hook) {
+  const S = st.settings || {}, locks = autoLocks(S), lim = S.limits || {}, used = S.used_by || {}, groups = S.groups || [];
+  const server = S.server || {}, files = S.page || {}, skipped = S.skipped || [], changes = S.changes || [];
+  const names = (st.groups || []).map(g => g.name), canTest = !!(st.mail || {}).configured && names.length > 0;
+  const banner = locks.all ? `<div class="banner">${esc(locks.all)}</div>`
+    : locks.pass ? `<div class="banner">${esc(locks.pass)}：要口令的改动先做不了，不要口令的照常能做。</div>`
+    : `<div class="howto" style="margin:0 0 14px">审批口令等同工具服务那台机器的 root，只经 SSH 隧道打开页面再输：<code>ssh -N -L 8765:127.0.0.1:8765 root@服务器</code>，再开 <code>http://127.0.0.1:8765</code>。
+      授权码、令牌只写不读：存好以后页面上只看得到「已设置」。</div>`;
+  return `<h3 class="as-h">邮件与告警入口的设置</h3>
+    <ul class="tiers">
+      <li><b>网页密码</b>：看；发测试邮件；删收件人、删收件组、删来源地址、删令牌、清除发件设置、清空报告链接（只缩小能力）。</li>
+      <li><b>审批口令</b>（由工具服务核对，和批准工具共用输错计数）：新设或修改发件设置（只重输授权码也算）、改报告链接、加收件组或收件人、
+        生成或重新生成告警令牌、加来源地址或删到一个不剩（等于不限来源）。</li>
+      <li><b>只能在服务器上</b>：服务器上的配置文件里写了的部分（标「在服务器上配置」，以它为准）、内网自签证书（<code>mail.ca_file</code>）、超时。</li>
+    </ul>
+    ${banner}
+    <div class="card"><h3>邮件 <small>有异常、没跑成、没法判断时发；计划和告警规则上选收件组</small></h3>
+      ${autoMailHtml(S, locks)}
+      ${autoSiteHtml(S, locks)}
+      <div class="as-sub"><b>收件组</b><span class="note">${groups.length} 个，最多 ${esc(lim.groups || 20)} 个</span>
+        <div class="as-acts">${asBtn('group-add', '＋ 添加收件组', locks.all || locks.pass, '', 'go')}</div></div>
+      ${groups.length ? `<table class="ax stack"><tr><th>组名</th><th>地址</th><th>选了它的计划、告警规则</th><th></th></tr>${
+        groups.map(g => autoGroupRow(g, used[g.name], locks)).join('')}</table>` : '<div class="note">还没有收件组。</div>'}
+      <div class="row"><select id="testGroup" ${canTest ? '' : 'disabled'}>${names.map(n =>
+        `<option value="${esc(n)}">${esc(n)}</option>`).join('') || '<option>（没有收件组）</option>'}</select>
+        <button data-testmail ${canTest ? '' : 'disabled'}>发一封测试邮件</button>
         <span class="note">同一个组每分钟最多一封，每次都记日志</span></div></div>
     <div class="card"><h3>告警入口 <small>给 Prometheus Alertmanager 或任何能发 webhook 的监控用</small></h3>
-      <dl><dt>状态</dt><dd>${alerts.enabled ? '已打开' : '关着：服务器上没有配告警令牌，访问这个地址会得到 404'}</dd>
-        <dt>地址</dt><dd><code>POST ${esc(hook)}</code></dd>
-        <dt>认证</dt><dd>请求头 <code>Authorization: Bearer &lt;告警令牌&gt;</code>（令牌在服务器上配，不是网页密码；网页密码打不开它）</dd>
-        <dt>来源限制</dt><dd>${(alerts.clients || []).length ? (alerts.clients || []).map(c => `<code>${esc(c)}</code>`).join(' ') : '不限（可以在服务器上配 alerts.clients）'}</dd></dl>
-      <div class="howto"><b>Alertmanager：</b>在 receivers 里加一个 webhook，令牌写在 Alertmanager 机器上的文件里：
+      ${autoHookHtml(S, hook, locks)}
+      <div class="howto"><b>Alertmanager：</b>在 receivers 里加一个 webhook，令牌写在 Alertmanager 机器上的文件里（生成令牌时对话框里有现成的命令）：
         <pre class="cfg">receivers:
   - name: doc2sop
     webhook_configs:
@@ -5750,12 +5864,21 @@ async function renderAuto() {
           authorization:
             credentials_file: /etc/alertmanager/doc2sop.token</pre>
         <b>别的监控（通用 JSON）：</b><pre class="cfg">curl -X POST ${esc(hook)} \\
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer 告警令牌" -H "Content-Type: application/json" \\
   -d '{"title": "磁盘使用率高", "content": "/ 用了 91%", "labels": {"host": "gw"}}'</pre></div></div>
-    <div class="card"><h3>服务器上的配置文件 <small>邮件、收件组、告警令牌都在这里，改了不用重启</small></h3>
-      <dl><dt>文件</dt><dd><code>${esc(st.file || '')}</code>${st.exists ? '' : '（还没有）'}</dd></dl>
-      <div class="howto">在宿主机上编辑这个文件（容器里的 <code>/data</code> 就是宿主机的数据目录），然后 <code>chmod 600</code>——里面有邮箱授权码和告警令牌。保存后下一次用到时生效，不用重启。
-        <pre class="cfg">site_url: http://10.0.0.5:8765        # 邮件里「查看完整报告」指向这里
+    ${skipped.length ? `<div class="card"><h3>没有生效的设置 <small>页面上存着、却没有用上的条目和原因；删掉一般不要口令</small></h3>
+      <ul class="as-skip">${skipped.map(x => autoSkipRow(x, locks)).join('')}</ul></div>` : ''}
+    <div class="card"><h3>最近的设置变更 <small>谁、从哪里、改了什么（不记授权码和令牌）</small></h3>
+      ${changes.length ? `<ul class="changes">${changes.map(autoChangeRow).join('')}</ul>` : '<div class="note">页面上还没有改过。</div>'}</div>
+    <div class="card"><h3>服务器上的配置文件 <small>可选：写了的部分以它为准，在页面上只读</small></h3>
+      <dl><dt>手写的</dt><dd><code>${esc(server.file || st.file || '')}</code>${server.exists ? '' : '（没有）'}${(server.keys || []).length
+          ? `<div class="note">写了：${server.keys.map(k => `<code>${esc(k)}</code>`).join(' ')}</div>` : ''}${(server.groups || []).length
+          ? `<div class="note">收件组：${server.groups.map(esc).join('、')}</div>` : ''}</dd>
+        <dt>页面上填的</dt><dd><code>${esc(files.file || '')}</code>（不含密钥，进备份）<div class="note">授权码、令牌在 <code>${esc(files.secrets_file || '')}</code>：
+          只写不读，不进备份——恢复备份以后在页面上重输授权码、重新生成令牌</div></dd></dl>
+      <div class="howto">要用内网自签证书（<code>mail.ca_file</code>）、改超时，或者不想在页面上管，就在宿主机上编辑这个文件（容器里的 <code>/data</code> 就是宿主机的数据目录）并
+        <code>chmod 600</code>，改了不用重启。写了的以它为准：<code>mail</code> 整段（连同授权码）、<code>site_url</code>、<code>alerts.token</code>、<code>alerts.clients</code> 按键算，收件组按组名算。
+        <pre class="cfg">site_url: http://127.0.0.1:8765      # 邮件里「查看完整报告」指向这里
 mail:
   host: smtp.qq.com
   port: 465
@@ -5763,13 +5886,201 @@ mail:
   user: bot@example.com
   password: 邮箱的授权码
   from: doc2sop 巡检 &lt;bot@example.com&gt;
-groups:                                # 页面上只能选这些名字
+groups:
   运维值班: [a@example.com, b@example.com]
 alerts:
   token: 用 openssl rand -hex 32 生成
-  clients: [10.0.0.0/8]                # 可选：只接受这些来源</pre></div></div>
-  </div>`;
-  showKindRows();
+  clients: [10.0.0.0/8]                # 可选：只接受这些来源</pre></div></div>`;
+}
+function autoTokenHtml(token, hook) {
+  return `<div class="sum">现在就复制保存：关掉这个对话框以后，页面上只显示「已设置」，再要就只能重新生成（旧的立即失效）。</div>
+    ${icCopy('令牌', token)}
+    ${icCopy('在 Alertmanager 那台机器上：令牌写进只有它能读的文件（chown 换成运行 Alertmanager 的账号）',
+      `(umask 077; printf '%s' '${token}' > /etc/alertmanager/doc2sop.token)\nchown alertmanager /etc/alertmanager/doc2sop.token`)}
+    ${icCopy('Alertmanager 的 receivers 里加一个 webhook', `receivers:\n  - name: doc2sop\n    webhook_configs:\n      - url: ${hook}\n`
+      + '        send_resolved: false\n        http_config:\n          authorization:\n            credentials_file: /etc/alertmanager/doc2sop.token')}
+    ${icCopy('别的监控：请求头带上令牌', `curl -X POST ${hook} \\\n  -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" \\\n`
+      + `  -d '{"title": "磁盘使用率高", "content": "/ 用了 91%"}'`)}`;
+}
+
+const AS_CANCEL = '<button type="button" class="btn" data-dlgcancel>取消</button>';
+const asSaveBtn = label => `<button type="submit" class="btn warn" data-assave>${label}</button>`;
+function asPost(change, passphrase) {
+  const body = {version: (autoSettings || {}).version || '', change};
+  if (passphrase) body.passphrase = passphrase;
+  return postJson('/api/automation/settings', body);
+}
+function asDone(result) {
+  closeDialog();
+  toast(result.detail ? '已保存：' + result.detail : '已保存', 'ok', 5000);
+  if (result.token) asTokenShow(result.token);
+  renderAuto();
+}
+// 对话框里的「保存」：口令框亮着就带上口令；服务端说这次要口令（400 + passphrase）时把口令框亮出来；
+// 设置刚被改过（409 + stale）就关掉对话框、重新读，免得盖掉别人刚改的
+function asSave(wrap, button, build) {
+  return icRun(wrap, button, async () => {
+    const change = typeof build === 'function' ? build() : build;
+    const box = wrap.querySelector('[data-passbox]');
+    const pass = box && !box.hidden ? icPass(wrap, '这项改动要输审批口令') : '';
+    try {
+      asDone(await asPost(change, pass));
+    } catch (e) {
+      if (e.data && e.data.stale) { closeDialog(); toast(e.message, 'err', 8000); renderAuto(); return; }
+      if (e.status === 400 && e.data && e.data.passphrase && box && box.hidden) {
+        box.hidden = false;
+        setTimeout(() => box.querySelector('input')?.focus(), 30);
+      }
+      throw e;
+    }
+  });
+}
+// 不用填表的改动（清除、删除）：先不带口令发；服务端说要口令时再问
+async function asQuick(change, question) {
+  if (question && !confirm(question)) return;
+  try {
+    asDone(await asPost(change));
+  } catch (e) {
+    if (e.status === 400 && e.data && e.data.passphrase) {
+      return askPassphrase({title: AS_KIND[change.kind] || '改设置', summary: esc(e.message), confirm: '确定',
+                            run: pass => asPost(change, pass), done: asDone});
+    }
+    toast(e.message, 'err', 8000);
+    if (e.data && e.data.stale) renderAuto();
+  }
+}
+function asMailDialog() {
+  const m = (autoSettings || {}).mail || {}, page = m.source === 'page';
+  const f = page ? m : {host: '', port: 465, security: 'ssl', user: '', from: ''};
+  const kept = page && (m.password || {}).state === 'set';
+  const body = `<div class="sum">改了发件服务器、端口、加密方式或账号，原来存的授权码就作废，要一起输入新的；只改发件人，授权码沿用。
+      授权码是邮箱后台生成的「授权码 / 客户端专用密码」，不是登录密码；存好以后页面上只看得到「已设置」。</div>
+    <div class="icbox">常见写法：QQ 邮箱 <code>smtp.qq.com</code>、腾讯企业邮 <code>smtp.exmail.qq.com</code>、163 邮箱 <code>smtp.163.com</code>——
+      465 端口选 SSL，587 端口选 STARTTLS。云主机大多封了 25 端口。</div>
+    <div class="grid2">
+      <label class="fld">发件服务器<input data-f="host" value="${esc(f.host || '')}" placeholder="smtp.qq.com" spellcheck="false" autocapitalize="off"></label>
+      <label class="fld">加密方式<select data-f="security">${icOpt('ssl', 'SSL（465）', f.security)}${icOpt('starttls', 'STARTTLS（587）', f.security)}${
+        icOpt('none', '不加密（只用于不登录的内网中继）', f.security)}</select></label>
+      <label class="fld">端口<input data-f="port" value="${esc(f.port || '')}" inputmode="numeric" placeholder="465"></label>
+      <label class="fld">账号<input data-f="user" value="${esc(f.user || '')}" placeholder="bot@qq.com" spellcheck="false" autocapitalize="off" autocomplete="off"></label>
+      <label class="fld wide">发件人<input data-f="from" value="${esc(f.from || '')}" placeholder="doc2sop 巡检 &lt;bot@qq.com&gt;；不填就用账号"></label>
+      <label class="fld wide">授权码<input type="password" data-f="password" autocomplete="new-password" spellcheck="false" placeholder="${kept ? '留空就沿用（只改发件人时）' : ''}">
+        <span class="hint">${kept ? `现在：已设置（${esc(setAtText(m.password.set_at))}）` : page ? '现在：要重新输入' : '只写不读'}</span></label>
+    </div>
+    <div data-passbox>${icPassHtml()}</div>`;
+  const wrap = icDialog(`📮 ${page ? '修改' : '设置'}发件邮箱`, body, AS_CANCEL + asSaveBtn('保存'));
+  const sec = icField(wrap, 'security'), port = icField(wrap, 'port');
+  sec.addEventListener('change', () => {          // 端口还是某个默认值时，跟着加密方式换
+    if (['', '25', '465', '587'].includes(port.value.trim())) port.value = {ssl: 465, starttls: 587, none: 25}[sec.value];
+  });
+  wrap.querySelector('[data-assave]').onclick = e => asSave(wrap, e.currentTarget, () => {
+    const v = key => icField(wrap, key).value.trim();
+    if (!v('host')) throw new Error('要填发件服务器');
+    const change = {kind: 'mail', host: v('host'), port: v('port'), security: v('security'), user: v('user'), from: v('from')};
+    const password = icField(wrap, 'password').value;
+    if (password) change.password = password;
+    return change;
+  });
+  setTimeout(() => icField(wrap, 'host').focus(), 30);
+}
+function asSiteDialog() {
+  const s = (autoSettings || {}).site_url || {};
+  const body = `<div class="sum">邮件里「查看完整报告」的链接指向这里：应用的地址，不带路径。两种填法各有代价：</div>
+    <ul class="ax"><li><code>http://127.0.0.1:8765</code>：只有开着 SSH 隧道（<code>ssh -N -L 8765:127.0.0.1:8765 root@服务器</code>）时点得开，不经公网。</li>
+      <li>公网地址（如 <code>http://服务器地址:8765</code>）：在哪都点得开，但 http 下链接和打开后的页面都经明文传输。</li></ul>
+    <label class="fld">报告链接<input data-f="url" value="${esc(s.source === 'page' ? s.value : '')}" placeholder="http://127.0.0.1:8765" spellcheck="false" autocapitalize="off"></label>
+    <div class="note warn-t" data-plain hidden>⚠ http 链接经明文传输。</div>
+    <div data-passbox>${icPassHtml()}</div>`;
+  const wrap = icDialog('🔗 报告链接', body, AS_CANCEL + asSaveBtn('保存'));
+  const url = icField(wrap, 'url'), plain = wrap.querySelector('[data-plain]');
+  const sync = () => { plain.hidden = !/^http:\/\//i.test(url.value.trim()); };
+  url.addEventListener('input', sync);
+  sync();
+  wrap.querySelector('[data-assave]').onclick = e => asSave(wrap, e.currentTarget, () => {
+    const value = url.value.trim();
+    if (!value) throw new Error('要填报告链接；不要了就点「清空」');
+    return {kind: 'site-url', value};
+  });
+  setTimeout(() => url.focus(), 30);
+}
+const asList = text => text.split(/[\s,;，；]+/).map(x => x.trim()).filter(Boolean);
+function asGroupDialog(name) {
+  const S = autoSettings || {}, lim = S.limits || {};
+  const g = name ? (S.groups || []).find(x => x.name === name && x.source === 'page') : null;
+  if (name && !g) return toast('页面上没有这个收件组了，刷新看看', 'err');
+  const old = new Set((g ? g.addresses : []).map(a => a.toLowerCase()));
+  const body = `<div class="sum">${g ? '组名改不了：要改名就新建一组，再删掉这一组。' : ''}新加的地址要审批口令；只删地址、调顺序不要。
+      一组最多 ${esc(lim.addresses || 50)} 个地址；收件组一共最多 ${esc(lim.groups || 20)} 个（服务器上的和页面上的加起来）。</div>
+    <label class="fld">组名<input data-f="name" value="${esc(g ? g.name : '')}"${g ? ' disabled' : ''} maxlength="${esc(lim.name || 30)}" placeholder="运维值班"></label>
+    <label class="fld">地址<textarea data-f="addresses" rows="5" spellcheck="false" placeholder="一行一个，或者用逗号隔开">${esc(g ? g.addresses.join('\n') : '')}</textarea></label>
+    <div data-passbox${g ? ' hidden' : ''}>${icPassHtml()}</div>`;
+  const wrap = icDialog(g ? `👥 收件组「${esc(g.name)}」` : '👥 添加收件组', body, AS_CANCEL + asSaveBtn('保存'));
+  const area = icField(wrap, 'addresses'), box = wrap.querySelector('[data-passbox]');
+  if (g) area.addEventListener('input', () => { box.hidden = !asList(area.value).some(a => !old.has(a.toLowerCase())); });
+  wrap.querySelector('[data-assave]').onclick = e => asSave(wrap, e.currentTarget, () => {
+    const groupName = g ? g.name : icField(wrap, 'name').value.trim(), addresses = asList(area.value);
+    if (!groupName) throw new Error('要填组名');
+    if (!addresses.length) throw new Error('至少要有一个地址；整组不要了就点「删除」');
+    return g ? {kind: 'group', name: groupName, addresses} : {kind: 'group', create: true, name: groupName, addresses};
+  });
+  setTimeout(() => (g ? area : icField(wrap, 'name')).focus(), 30);
+}
+function asUsedHtml(items) {
+  return (items || []).length ? `<div class="icbox warn"><h4>选了这个组的计划和告警规则：删了以后它们照常执行，邮件那一项会记成失败</h4><ul>${
+    items.map(i => `<li>${esc(i.name)}</li>`).join('')}</ul></div>
+    <label class="chk"><input type="checkbox" data-f="confirm"><span>我知道这些计划、告警规则以后发不出邮件</span></label>` : '';
+}
+function asGroupDelete(name) {
+  let current = ((autoSettings || {}).used_by || {})[name] || [];
+  const body = `<div class="sum">删掉收件组「${esc(name)}」？不要审批口令。</div><div data-confirm>${asUsedHtml(current)}</div>`;
+  const wrap = icDialog('删除收件组', body, AS_CANCEL + asSaveBtn('删除'));
+  wrap.icConflict = data => {          // 在用它的变了：换成新的列表，勾选框重新变成没勾
+    if (!data.used_by) return;
+    current = data.used_by;
+    wrap.querySelector('[data-confirm]').innerHTML = asUsedHtml(current);
+  };
+  wrap.querySelector('[data-assave]').onclick = e => asSave(wrap, e.currentTarget, () => {
+    if (current.length && !(icField(wrap, 'confirm') || {}).checked) throw new Error('先勾选「我知道这些计划、告警规则以后发不出邮件」');
+    return {kind: 'group-delete', name, used_by: current};
+  });
+}
+function asTokenDialog() {
+  const t = ((autoSettings || {}).alerts || {}).token || {}, again = t.state === 'set';
+  const body = `<div class="sum">${again ? '重新生成以后，旧的令牌立即失效：Alertmanager 那边要换成新的。' : '生成以后告警入口就打开了。'}
+      令牌只在生成后显示这一次，之后页面上只看得到「已设置」；丢了就再生成一个。</div><div data-passbox>${icPassHtml()}</div>`;
+  const wrap = icDialog(again ? '🔑 重新生成告警令牌' : '🔑 生成告警令牌', body, AS_CANCEL + asSaveBtn(again ? '重新生成' : '生成'));
+  wrap.querySelector('[data-assave]').onclick = e => asSave(wrap, e.currentTarget, {kind: 'alert-token'});
+}
+function asTokenShow(token) {
+  icDialog('🔑 告警令牌（只显示这一次）', autoTokenHtml(token, autoState.hook || location.origin + '/api/alerts/hook'),
+           '<button type="button" class="btn pri" data-dlgcancel>我已经存好了</button>');
+}
+function asClientsDialog() {
+  const S = autoSettings || {}, c = (S.alerts || {}).clients || {}, lim = S.limits || {};
+  const body = `<div class="sum">只接受这些来源地址的告警推送：IP 或网段，一行一个，最多 ${esc(lim.clients || 50)} 项；留空就是不限来源（只靠令牌）。
+      加新的地址、删到一个不剩要审批口令；删掉一部分、收窄范围不要。</div>
+    <label class="fld">来源地址<textarea data-f="clients" rows="4" spellcheck="false" placeholder="10.0.0.0/8">${esc((c.source === 'page' ? c.values || [] : []).join('\n'))}</textarea></label>
+    <div data-passbox hidden>${icPassHtml()}</div>`;
+  const wrap = icDialog('🛡 告警来源地址', body, AS_CANCEL + asSaveBtn('保存'));
+  wrap.querySelector('[data-assave]').onclick = e => asSave(wrap, e.currentTarget,
+    () => ({kind: 'alert-clients', clients: asList(icField(wrap, 'clients').value)}));
+}
+function asAction(act, d) {
+  const quick = {
+    'mail-clear': [{kind: 'mail-clear'}, '清除页面上的发件设置（连同存着的授权码）？之后自动执行照常跑，只是不发邮件。'],
+    'site-clear': [{kind: 'site-url-clear'}, '清空报告链接？邮件里不再带「查看完整报告」的链接。'],
+    'token-del': [{kind: 'alert-token-delete'}, '删除告警令牌？告警入口立刻回到 404，推过来的告警都会被拒。'],
+  }[act];
+  if (quick) return asQuick(...quick);
+  if (act === 'skip-del') {
+    const change = {group: {kind: 'group-delete', name: d.name}, mail: {kind: 'mail-clear'}, site_url: {kind: 'site-url-clear'},
+                    alert_token: {kind: 'alert-token-delete'}, alert_clients: {kind: 'alert-clients', clients: []}}[d.kind];
+    return change && asQuick(change, `删掉页面上存的${AS_SKIP[d.kind] || ''}${d.kind === 'group' ? `「${d.name}」` : ''}？它现在没有生效。`);
+  }
+  const dialogs = {'mail-edit': asMailDialog, 'site-edit': asSiteDialog, 'group-add': () => asGroupDialog(''),
+                   'group-edit': () => asGroupDialog(d.name), 'group-del': () => asGroupDelete(d.name),
+                   'token-new': asTokenDialog, 'clients-edit': asClientsDialog};
+  if (dialogs[act]) dialogs[act]();
 }
 function autoFormBody() {
   const form = $('msettings').querySelector('.autoform'); if (!form) return null;
@@ -5835,6 +6146,7 @@ $('msettings').addEventListener('click', async e => {
   if (!autoPage && !gapPage) return;
   const t = e.target.closest('button'); if (!t || t.disabled) return;
   const d = t.dataset;
+  if (autoPage && d.as) return asAction(d.as, d);
   if (d.openrun) { runFilter = {sop: '', trigger: ''}; return go('sop', {tab: 'runs', item: d.openrun}); }
   if (d.afnew) { autoForm = {kind: d.afnew, item: null}; return renderAuto(); }
   if (d.afcancel !== undefined) { autoForm = null; return renderAuto(); }

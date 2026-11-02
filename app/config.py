@@ -171,8 +171,9 @@ PACKS_DIR = Path(os.environ.get("PACKS_DIR", "") or Path(__file__).resolve().par
 DEMO_PACKS = [p.strip() for p in os.environ.get("DEMO_PACKS", "").split(",") if p.strip()]
 
 # --- SOP 自动执行（docs/自动执行.md）---------------------------------------------------
-# 邮件（SMTP、收件组）、告警入口的令牌、报告链接用的页面地址，都写在服务器上的这个文件里，页面上只能选收件组的名字。
-# 文件不在时邮件和告警入口都是关的（告警入口回 404）。改了不用重启：每次用到时看一眼修改时间，变了就重新读。
+# 邮件（SMTP、收件组）、告警入口的令牌、报告链接用的页面地址：在页面上填（扩大能力的要审批口令，存在 DATA_DIR 的
+# automation.page.json 和 automation.page-secrets.json），或者手写在服务器上的这个文件里——两边都写了的键以这个文件为准。
+# 什么都没配时邮件和告警入口都是关的（告警入口回 404）。改了不用重启：每次用到时看一眼这几个文件，变了就重新读。
 AUTOMATION_FILE = Path(os.environ.get("AUTOMATION_FILE", "") or DATA_DIR / "automation.yaml")
 # 定时执行的后台线程。false 时计划照样能建、能「立即执行一次」，只是不按时间自动跑（告警触发不受影响）
 SCHEDULER = os.environ.get("SCHEDULER", "true").strip().lower() in _TRUE

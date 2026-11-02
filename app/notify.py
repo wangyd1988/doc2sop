@@ -7,7 +7,7 @@
     恢复    之前发过问题、这次正常了：发一封「已恢复」
 
 「同一个问题」看的是哪几步、什么结论（runs.signature），数值变了不算新问题。上一封没发出去的，下一次照样会发。
-邮件正文：结论、异常项、和上次比的变化、报告链接（页面地址在服务器上配置）；不附工具的原始返回。
+邮件正文：结论、异常项、和上次比的变化、报告链接（site_url，在自动执行的设置里配）；不附工具的原始返回。
 HTML 里的动态内容一律转义，只有我们自己的报告链接是可点的——模型输出里的链接不做成链接。
 """
 import html
@@ -28,11 +28,11 @@ class InvalidNotify(ValueError):
 
 
 def clean(raw, groups) -> dict:
-    """页面上的设置 → 存进库的。收件组只能是服务器上配置好的名字之一；不发邮件就是空的组名。"""
+    """页面上的设置 → 存进库的。收件组只能是配置好的名字之一（页面上加的或服务器上写的）；不发邮件就是空的组名。"""
     raw = raw if isinstance(raw, dict) else {}
     group = " ".join(str(raw.get("group") or "").split())
     if group and group not in groups:
-        raise InvalidNotify(f"服务器上没有收件组「{group}」：收件组在服务器的配置文件里定，页面上只能选")
+        raise InvalidNotify(f"没有收件组「{group}」：先在「自动执行 → 邮件」里添加，或写在服务器上的配置文件里")
     when = raw.get("when") or DEFAULTS["when"]
     repeat = raw.get("repeat") or DEFAULTS["repeat"]
     if when not in WHEN:

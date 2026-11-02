@@ -129,7 +129,7 @@ docker compose up -d --build
 - [x] 场景包：文档 + 工具 + SOP 一个目录，拿走就用
 - [x] 一键演示：`docker compose up` 自动导入三个场景包
 - [x] 工具层接 MCP server（第 1 期：stdio 客户端 + 逐个审批与只读确认）；doc2sop 自己作为 MCP server：`/mcp` 对外开放知识库、SOP（工具、提示词、`SKILL.md`）和宿主机标了 `export` 的只读工具，按客户端发令牌、审计、限流（`MCP_ENABLED`，默认关，见 [`docs/工具.md`](docs/工具.md#对外-mcp-出口让-claude-codecopilotcursor-用上知识库和-sop)）；知识检索工具化：`kb_search` / `kb_read` / `kb_catalog` 补查与读前后文、三种检索模式、待办清单 `plan`（默认关，评测达标后再定默认）；计算沙箱 `python_exec`：模型写 Python 算本轮数据工具的完整返回，宿主机沙箱服务起一次性 gVisor 容器（无网络、只读、限资源），输出照样算出网污点（`SANDBOX_URL`，默认空，见 [`docs/正式部署.md`](docs/正式部署.md#计算沙箱python_exec)）；远程主机：经 SSH 巡检一批 Linux 主机，`target` 参数与 `@组` 并发，受控模式（主机上的执行器 + root 所有的白名单 + 强制命令公钥）与直连模式，`enroll` / `push` / `status`，不配主机清单时一切照旧（见 [`docs/工具.md`](docs/工具.md#远程主机在别的-linux-主机上跑命令型工具)；演示站带一台演示主机）；更多数据源：只读 SQL 模板（PostgreSQL / MySQL / SQLite，参数绑定、只读事务）、K8s API 与 Prometheus 接口模板、远程 MCP server（Streamable HTTP，两代协议），参数会发到组织外的「外部」工具过出网规则，部署的人在主配置里写同名工具就能换掉场景包的实现；工具服务查 K8s 改用只读 ServiceAccount（见 [`docs/工具.md`](docs/工具.md#sql-工具按模板查只读数据库)）
-- [x] 自动执行 SOP：每次执行留结构化的执行记录（结论从 SOP 输出格式的表格解析，和上次比）；定时计划、告警 webhook 触发（单独的告警令牌，默认关）；有异常、没跑成时发邮件（SMTP 和收件组只在服务器上配）；知识库缺口看板（见 [`docs/自动执行.md`](docs/自动执行.md)）
+- [x] 自动执行 SOP：每次执行留结构化的执行记录（结论从 SOP 输出格式的表格解析，和上次比）；定时计划、告警 webhook 触发（单独的告警令牌，默认关）；有异常、没跑成时发邮件（SMTP、收件组、告警令牌在页面上填，扩大能力的要审批口令）；知识库缺口看板（见 [`docs/自动执行.md`](docs/自动执行.md)）
 
 计划（顺序大致如此，不承诺时间）：
 

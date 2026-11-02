@@ -116,10 +116,10 @@ class ValidationTests(ScheduleCase):
             self.create(kind="weekly", weekdays=[])
         self.assertEqual(self.create(kind="interval", every=15)["describe"], "每 15 分钟")
 
-    def test_only_server_side_groups_can_be_chosen(self):
+    def test_only_configured_groups_can_be_chosen(self):
         with self.assertRaises(schedules.InvalidSchedule) as caught:
             self.create(notify={"group": "外面的人"})
-        self.assertIn("服务器上没有收件组", str(caught.exception))
+        self.assertIn("没有收件组「外面的人」", str(caught.exception))
         write_config("groups:\n  运维值班: [ops@example.com]\n")
         self.assertEqual(self.create(notify={"group": "运维值班"})["notify"]["group"], "运维值班")
 

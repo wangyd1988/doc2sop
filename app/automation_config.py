@@ -1,11 +1,13 @@
-"""自动执行的服务器配置（docs/自动执行.md「服务器上的配置」）。
+"""自动执行的配置：发件邮箱（SMTP）、收件组、告警入口的令牌和来源地址、报告链接用的页面地址（docs/自动执行.md）。
 
-邮件（SMTP 主机、端口、加密方式、账号、授权码、发件人）、收件组、告警入口的令牌和来源地址、报告链接用的页面地址，
-都只写在服务器上的一个文件里（AUTOMATION_FILE，默认 DATA_DIR/automation.yaml）。页面上只看得到收件组的名字和人数，
-计划和告警规则也只能从收件组里选名字：如果页面能改收件人，拿到网页密码的人就能把巡检结果定时发到外面去。
+两个来源，按键合并（automation_page.overlay）：
+    服务器上手写的 AUTOMATION_FILE（默认 DATA_DIR/automation.yaml）：照旧有效，写了的键优先，在页面上只读；
+    页面上填的（automation_page：DATA_DIR/automation.page.json，授权码和令牌另放 automation.page-secrets.json），
+    扩大能力的改动要审批口令（工具服务核对）。
+页面上看得到发件服务器、账号、收件组的地址（要改就得看得见）；授权码、告警令牌永远只有状态，没有值。
 
-改了不用重启：每次用到时看一眼文件的修改时间和大小，变了就重新读。读不了、写错了的部分按「没配」处理，
-页面上写明哪里不对——说明里不带任何密钥和收件地址。
+改了不用重启：每次用到时看一眼三个文件的 inode、修改时间、大小和权限，变了就重新读；应用自己写完直接清掉缓存。
+读不了、写错了的部分按「没配」处理，页面上写明哪里不对——说明里不带任何密钥。
 """
 import ipaddress
 import os
@@ -30,6 +32,8 @@ TIMEOUT = 20.0
 EMAIL = re.compile(r"^[^@\s<>,;\"'()\[\]]+@[^@\s<>,;\"'()\[\]]+\.[^@\s<>,;\"'()\[\]]+$")
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 KNOWN = ("site_url", "mail", "groups", "alerts")
+# 手写文件里写了就以手写为准的键（groups 按组名另算；整个 groups 写坏了时也在这里）
+MANAGED = ("site_url", "mail", "groups", "alerts.token", "alerts.clients")
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,14 @@ class Settings:
     site_url: str = ""
     problems: tuple = ()
     loose: str = ""                                  # 文件权限太宽时的说明
+    # 下面是合并页面上的设置用的（automation_page.overlay）
+    broken: bool = False                             # 手写文件在，却整个读不了：页面上的设置都不生效、也不能改
+    server_keys: frozenset = frozenset()             # 手写文件里写了的键（MANAGED 里的）
+    server_groups: frozenset = frozenset()           # 手写文件里的组名
+    sources: dict = field(default_factory=dict)      # 每一项从哪来：server / page（页面显示）
+    mail_problem: str = ""                           # 页面上的发件设置为什么用不了（授权码要重新输入……）
+    skipped: tuple = ()                              # 页面上存了、却没生效的条目：({kind, name, reason}, …)
+    page: object = None                              # automation_page.PageState
 
 
 _lock = threading.Lock()
@@ -64,33 +76,52 @@ _cache = {"key": None, "value": None}
 
 
 def reset():
-    """忘掉缓存（测试里同一秒内改两次文件、大小又一样时用）。"""
+    """忘掉缓存：应用自己写完设置后马上调，下一次 load() 一定重新读。"""
     with _lock:
         _cache.update(key=None, value=None)
 
 
+def _stamp(path):
+    """文件此刻的样子：inode、修改时间、大小、权限。原子替换后 inode 一定变——修改时间只精确到几毫秒，
+    间隔很短的两次写、大小又一样时，只看修改时间会读到旧内容。"""
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return ("unreadable", exc.__class__.__name__)
+    return (st.st_ino, st.st_mtime_ns, st.st_size, st.st_mode)
+
+
 def load() -> Settings:
-    """此刻的配置。文件没变就用上次读到的；变了重新读，有问题记一行日志（不带密钥）。"""
+    """此刻的配置：手写的 automation.yaml 加上页面上填的（手写的优先）。三个文件都没变就用上次读到的；
+    变了重新读，有问题记一行日志（不带密钥）。"""
+    from app import automation_page
     path = AUTOMATION_FILE
+    key = (_stamp(path), _stamp(automation_page.PAGE_FILE), _stamp(automation_page.SECRETS_FILE))
+    with _lock:
+        if _cache["key"] == key:
+            return _cache["value"]
+    value = automation_page.overlay(_hand(path), automation_page.read())
+    with _lock:
+        _cache.update(key=key, value=value)
+    if value.problems or value.loose:
+        log.warning("automation config: %s", "；".join(value.problems + ((value.loose,) if value.loose else ())))
+    if value.mail or value.groups or value.alert_token or value.site_url:
+        log.info("automation config loaded: mail=%s groups=%d alerts=%s", "on" if value.mail else "off",
+                 len(value.groups), "on" if value.alert_token else "off")
+    return value
+
+
+def _hand(path) -> Settings:
+    """服务器上手写的那个文件。不在就是什么都没写；在却读不了时 broken：页面上的设置一概不生效（宁可不发、入口关着）。"""
     try:
         st = path.stat()
     except FileNotFoundError:
         return Settings(path=str(path), exists=False)
     except OSError as exc:
-        return Settings(path=str(path), exists=True, problems=(f"读不了这个文件：{exc.__class__.__name__}",))
-    key = (st.st_mtime_ns, st.st_size, st.st_mode)
-    with _lock:
-        if _cache["key"] == key:
-            return _cache["value"]
-    value = _parse(path, st)
-    with _lock:
-        _cache.update(key=key, value=value)
-    if value.problems or value.loose:
-        log.warning("automation config %s: %s", path, "；".join(value.problems + ((value.loose,) if value.loose else ())))
-    else:
-        log.info("automation config loaded: mail=%s groups=%d alerts=%s", "on" if value.mail else "off",
-                 len(value.groups), "on" if value.alert_token else "off")
-    return value
+        return Settings(path=str(path), exists=True, broken=True, problems=(f"读不了这个文件：{exc.__class__.__name__}",))
+    return _parse(path, st)
 
 
 def _where(exc) -> str:
@@ -105,26 +136,45 @@ def _parse(path, st) -> Settings:
     loose = ""
     if os.name != "nt" and st.st_mode & 0o077:
         loose = f"文件权限 {oct(st.st_mode & 0o777)[2:]} 太宽：里面有邮箱授权码和告警令牌，请 chmod 600"
+    broken = {"path": str(path), "exists": True, "broken": True, "loose": loose}
     if st.st_size > FILE_MAX:
-        return Settings(path=str(path), exists=True, problems=(f"文件超过 {FILE_MAX // 1024} KB，没有读",), loose=loose)
+        return Settings(**broken, problems=(f"文件超过 {FILE_MAX // 1024} KB，没有读",))
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
-        return Settings(path=str(path), exists=True, problems=(f"YAML 写错了，{_where(exc)}",), loose=loose)
+        return Settings(**broken, problems=(f"YAML 写错了，{_where(exc)}",))
     except (OSError, UnicodeDecodeError) as exc:
-        return Settings(path=str(path), exists=True, problems=(f"读不了这个文件：{exc.__class__.__name__}",), loose=loose)
+        return Settings(**broken, problems=(f"读不了这个文件：{exc.__class__.__name__}",))
     data = data or {}
     if not isinstance(data, dict):
-        return Settings(path=str(path), exists=True, problems=("最外层要写成「键: 值」",), loose=loose)
+        return Settings(**broken, problems=("最外层要写成「键: 值」",))
     unknown = [str(k) for k in data if k not in KNOWN]
     if unknown:
         problems.append(f"不认识的配置项：{'、'.join(unknown[:5])}（只认 {'、'.join(KNOWN)}）")
     mail = _mail(data.get("mail"), problems)
     groups = _groups(data.get("groups"), problems)
     token, clients, networks = _alerts(data.get("alerts"), problems)
+    keys, names = _defined(data)
     return Settings(path=str(path), exists=True, mail=mail, groups=groups, alert_token=token, alert_clients=clients,
                     alert_networks=networks, site_url=_site(data.get("site_url"), problems),
-                    problems=tuple(problems), loose=loose)
+                    problems=tuple(problems), loose=loose, server_keys=keys, server_groups=names)
+
+
+def _defined(data):
+    """手写文件里写了哪些键、哪些组名：写了就以手写的为准（哪怕写错了、是空的），页面上存的同一项不生效。"""
+    keys = {key for key in ("site_url", "mail") if key in data}
+    alerts = data.get("alerts")
+    if "alerts" in data and not isinstance(alerts, dict):
+        keys.update(("alerts.token", "alerts.clients"))       # 写坏了：令牌、来源都算服务器上的
+    elif isinstance(alerts, dict):
+        keys.update(f"alerts.{name}" for name in ("token", "clients") if name in alerts)
+    raw = data.get("groups")
+    names = frozenset()
+    if isinstance(raw, dict):
+        names = frozenset(" ".join(str(name).split()) for name in raw)
+    elif "groups" in data and raw not in (None, "", {}):
+        keys.add("groups")                                   # groups 整个写坏了：页面上的组都不生效
+    return frozenset(keys), names
 
 
 def _text(value) -> str:
@@ -263,8 +313,8 @@ def client_allowed(settings: Settings, host) -> bool:
 
 
 def public() -> dict:
-    """页面上看得到的：有没有配、收件组的名字和人数、告警入口开没开、报告链接的地址、哪里写得不对。
-    SMTP 主机、账号、授权码、收件地址、告警令牌一概不出现。"""
+    """摘要：有没有配、收件组的名字和人数、告警入口开没开、报告链接的地址、哪里写得不对（计划、告警规则的表单和顶上的状态用）。
+    这里没有发件服务器、账号和收件地址；要看、要改的那份在 automation_page.view()。授权码、告警令牌哪里都没有值。"""
     s = load()
     return {"file": s.path, "exists": s.exists, "problems": list(s.problems), "loose": s.loose,
             "mail": {"configured": s.mail is not None, "security": s.mail.security if s.mail else ""},

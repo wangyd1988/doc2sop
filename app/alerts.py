@@ -1,7 +1,7 @@
 """告警触发 SOP（docs/自动执行.md「告警触发」）。
 
-入口 POST /api/alerts/hook：不走网页的 Basic 认证，只认服务器配置文件里的告警令牌（alerts.token，Authorization: Bearer）。
-没配令牌时整个入口关着：不管什么请求都回 404，和不存在的地址一模一样。配了 alerts.clients 时，先看 TCP 对端地址
+入口 POST /api/alerts/hook：不走网页的 Basic 认证，只认配好的告警令牌（页面上生成的，或服务器配置文件里的 alerts.token；Authorization: Bearer）。
+没配令牌时整个入口关着：不管什么请求都回 404，和不存在的地址一模一样。配了来源地址（alerts.clients）时，先看 TCP 对端地址
 （和 MCP_CLIENTS 同样的做法），不在名单里一律 403，令牌都不看。
 
 防跨站中间件照常管这里：Alertmanager、curl 不带 Origin / Referer，照常放行；浏览器从别的网站发来的（带了对不上的 Origin）

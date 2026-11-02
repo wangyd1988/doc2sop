@@ -4756,6 +4756,30 @@ def page_propose_approve(payload, caller=""):
     return {**_approved(approved, spec["type"]), "id": item["id"]}
 
 
+VERIFY_ACTION_MAX, VERIFY_TARGET_MAX = 40, 120
+_VERIFY_BAD_TEXT = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def page_verify(payload, caller=""):
+    """只核对审批口令，什么都不改：应用自己存的、由口令把关的设置（自动执行的发件邮箱、收件组、告警令牌……），
+    存之前先请这里核对。和批准共用输错计数、锁定，照样记一行 [approval]（action、target、结果、caller，不记口令）。
+    OPS_PAGE_CONFIG=off 时回 403，不核对：同一个开关把页面上的配置整个关掉。action、target 不合规回 400，不算一次尝试。"""
+    _page_writable()
+    texts = {}
+    for field, limit in (("action", VERIFY_ACTION_MAX), ("target", VERIFY_TARGET_MAX)):
+        value = payload.get(field)
+        if not isinstance(value, str):
+            raise ConfigError(f"缺少 {field}（文本）")
+        value = value.strip()
+        if len(value) > limit or _VERIFY_BAD_TEXT.search(value):
+            raise ConfigError(f"{field} 最多 {limit} 个字，不能有换行之类的控制字符")
+        texts[field] = value
+    if not texts["action"]:
+        raise ConfigError("action 不能是空的")
+    check_passphrase(payload.get("passphrase"), texts["action"], texts["target"], caller)
+    return {"ok": True}
+
+
 def _mcp_tool_name(server_id, raw_name):
     """server 上的原名 → 发给模型的函数名：server__原名，原名按确定性规则转小写下划线。"""
     slug = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(raw_name)).lower()
@@ -9215,6 +9239,9 @@ class Handler(BaseHTTPRequestHandler):
                                     "directory": str(_scripts_dir())})
         if self.path == "/tools/approval":
             return self._send(200, {"approval": approval_status()})
+        if self.path == "/tools/approval/verify":
+            # 应用探测有没有「只核对口令」的接口（老工具服务回 404）、页面配置开没开。不碰口令，不记日志
+            return self._send(200, {"page_config": page_config_enabled()})
         if self.path in ("/tools/review", "/tools/review?wait=0"):
             # 页面审批要看的全部：待审申请（带完整内容、风险提示、自动检查）、要重新确认的脚本、审批口令的状态。
             # 「待审批」页最多等 3 秒；?wait=0 是工作台和导航徽标用的：没做完的检查不等，照样交给后台去做
@@ -9235,9 +9262,10 @@ class Handler(BaseHTTPRequestHandler):
     # 页面审批的写操作：批准、重新确认脚本、提交并立即批准要审批口令（工具服务核对），拒绝不要；
     # 设置口令：还没设时直接设，已经设了要旧口令；「检查一下」（草稿，不入队）和「重新检查」只试探、不改任何东西，限频
     # 页面上配置主机与数据源（/tools/config/…）：扩大能力的要口令，关闭对外开放、扫描 host key、检查连通、生成安装包不要
+    # 只核对口令（/tools/approval/verify）：应用自己存的设置（自动执行的邮件、收件组、告警令牌），扩大能力的先来这里核对
     PAGE_ACTIONS = {"/tools/approve": page_approve, "/tools/reject": page_reject,
                     "/tools/trust": page_trust, "/tools/propose-approve": page_propose_approve,
-                    "/tools/set-passphrase": page_set_passphrase,
+                    "/tools/set-passphrase": page_set_passphrase, "/tools/approval/verify": page_verify,
                     "/tools/check": page_check, "/tools/recheck": page_recheck,
                     "/tools/config/connection-save": page_connection_save,
                     "/tools/config/connection-delete": page_connection_delete,

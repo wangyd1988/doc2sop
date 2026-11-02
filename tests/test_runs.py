@@ -349,7 +349,7 @@ CREATE TABLE IF NOT EXISTS feedback (id INTEGER PRIMARY KEY AUTOINCREMENT,
         """新加的东西全是表（CREATE TABLE IF NOT EXISTS）：没有 ALTER、没有 DROP。"""
         self.assertNotIn("ALTER", graph.AUTOMATION_SCHEMA.upper())
         self.assertNotIn("DROP", graph.AUTOMATION_SCHEMA.upper())
-        self.assertEqual(graph.AUTOMATION_SCHEMA.count("CREATE TABLE IF NOT EXISTS"), 8)
+        self.assertEqual(graph.AUTOMATION_SCHEMA.count("CREATE TABLE IF NOT EXISTS"), 9)   # 第 9 张：automation_changes
 
 
 if __name__ == "__main__":

@@ -399,7 +399,10 @@ class TestMailApiTests(unittest.TestCase):
         status = self.client.get("/api/automation", auth=self.auth).json()
         self.assertTrue(status["mail"]["configured"])
         self.assertNotIn("secret-code-xyz", repr(status))
-        self.assertNotIn("ops@example.com", repr(status))
+        # 收件地址、发件账号现在在 settings 里看得到（要改就得看得见）；摘要里照旧只有组名和人数，授权码哪里都没有
+        self.assertEqual(status["settings"]["groups"], [{"name": "运维值班", "addresses": ["ops@example.com"], "source": "server"}])
+        self.assertEqual(status["settings"]["mail"]["password"], {"state": "server", "set_at": ""})
+        self.assertNotIn("ops@example.com", repr({k: v for k, v in status.items() if k != "settings"}))
 
 
 if __name__ == "__main__":

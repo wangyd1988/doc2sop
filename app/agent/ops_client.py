@@ -255,6 +255,64 @@ def config_bundle(name: str) -> dict:
         raise
 
 
+# --- 只核对审批口令（应用自己存的设置：自动执行的发件邮箱、收件组、告警令牌） ---------------------------------
+
+OLD_SERVICE_VERIFY = "工具服务较旧：升级 ops_readonly.py（和 ops_exec.py 一起拷）后才能在页面上改；现在只能看"
+VERIFY_REFUSALS = (400, 403, 409, 423, 429)
+VERIFY_TIMEOUT = 20
+
+
+def verify_support(timeout=5) -> dict:
+    """工具服务有没有「只核对口令」的接口、页面配置开没开。reason 为空才能在页面上改；不碰口令。"""
+    if not enabled():
+        return {"supported": False, "reason": "没有配工具服务（OPS_URL / OPS_TOKEN），核对不了审批口令：页面上只能看"}
+    try:
+        data = _request("/tools/approval/verify", timeout=timeout)
+    except OpsUnavailable as exc:
+        if exc.status == 404:
+            return {"supported": False, "reason": OLD_SERVICE_VERIFY}
+        return {"supported": False, "reason": f"连不上工具服务（{exc}）：页面上暂时只能看"}
+    if not isinstance(data, dict) or not isinstance(data.get("page_config"), bool):
+        return {"supported": False, "reason": "工具服务回的内容不对：页面上暂时只能看"}
+    if not data["page_config"]:
+        return {"supported": True, "reason": "页面配置在服务器上关了（OPS_PAGE_CONFIG=off）：页面上只能看"}
+    return {"supported": True, "reason": ""}
+
+
+def verify_passphrase(passphrase: str, action: str, target: str, caller="", timeout=None) -> None:
+    """请工具服务核对审批口令（和批准工具共用输错计数、锁定）。只有 200 且回 {"ok": true} 才算通过，别的都抛 OpsUnavailable：
+    口令不对、锁定、没设口令这些拒绝带着原来的状态码（400 / 403 / 409 / 423 / 429）；老工具服务 404；
+    连不上、超时 503；其余（5xx、令牌不对、回的不是 JSON 或字段不对）502——一律不算通过。口令不进任何输出。"""
+    if not enabled():
+        raise OpsUnavailable("没有配工具服务，核对不了审批口令：没有改", status=503)
+    payload = json.dumps({"passphrase": passphrase, "action": action, "target": target}).encode("utf-8")
+    request = urllib.request.Request(OPS_URL.rstrip("/") + "/tools/approval/verify", payload,
+                                     {"X-Ops-Token": OPS_TOKEN, "Content-Type": "application/json",
+                                      **(_caller_headers(caller) or {})})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout or VERIFY_TIMEOUT) as response:
+            status, body = response.status, response.read(64 * 1024)
+    except urllib.error.HTTPError as exc:
+        try:
+            data = json.loads(exc.read(64 * 1024) or b"{}")
+        except Exception:   # 不是 JSON，或者读到一半连接断了
+            data = {}
+        detail = data.get("error") if isinstance(data, dict) and isinstance(data.get("error"), str) else ""
+        if exc.code in VERIFY_REFUSALS:
+            raise OpsUnavailable(detail[:300] or f"工具服务拒绝了（{exc.code}）", status=exc.code) from None
+        if exc.code == 404:
+            raise OpsUnavailable(OLD_SERVICE_VERIFY, status=404) from None
+        raise OpsUnavailable(f"工具服务核对口令时出错（HTTP {exc.code}）：没有改", status=502) from None
+    except Exception as exc:   # 连不上、超时、连接被重置
+        raise OpsUnavailable(f"连不上工具服务（{why(exc)}），没有核对口令：没有改", status=503) from None
+    try:
+        data = json.loads(body)
+    except ValueError:
+        raise OpsUnavailable("工具服务回的不是 JSON：没有改", status=502) from None
+    if status != 200 or not isinstance(data, dict) or data.get("ok") is not True:
+        raise OpsUnavailable("工具服务的回复不对，不算核对通过：没有改", status=502)
+
+
 def execute(name: str, args: dict) -> dict:
     """Run one read-only tool. Never raises: failures come back as text."""
     caller = _caller.get()

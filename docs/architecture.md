@@ -236,10 +236,11 @@ SOP 不只在有人问的时候跑（用法见 [`自动执行.md`](自动执行.
 定时：`schedules` 的后台线程每 20 秒看一遍（`SCHEDULER`，默认开），时刻按北京时间（固定 UTC+8）算、库里存 UTC；
 每个计划时刻先在 `sop_slots` 里占一行（主键冲突的不执行），发版切换时新旧两份同时在跑也只执行一次。迟到 10 分钟以内照常，
 更晚的记一条「错过」、不补跑。告警：`/api/alerts/hook` 是挂在路由表上的 ASGI 端点，不经 FastAPI 的 Basic 依赖，
-只认服务器配置文件里的告警令牌；没配令牌时回 404。邮件和告警令牌在 `AUTOMATION_FILE`（默认 `DATA_DIR/automation.yaml`），
-按修改时间热加载，页面上只看得到收件组的名字。
+只认配好的告警令牌；没有令牌时回 404。邮件、收件组、告警令牌在页面上填（`automation_page`：扩大能力的请工具服务
+`/tools/approval/verify` 核对审批口令，由应用写 `DATA_DIR` 下的 `automation.page.json` 和只写不读的 `automation.page-secrets.json`），
+或手写在 `AUTOMATION_FILE`（默认 `DATA_DIR/automation.yaml`，写了的键以它为准）；三个文件按 inode、修改时间、大小热加载，合并成一份设置。
 
-同一个 `graph.db` 里多了八张表（`CREATE TABLE IF NOT EXISTS`，老表一列没改，回滚到旧版本时旧代码不碰它们）：
+同一个 `graph.db` 里多了九张表（`CREATE TABLE IF NOT EXISTS`，老表一列没改，回滚到旧版本时旧代码不碰它们）：
 
 | 表 | 存什么 |
 |---|---|
@@ -249,6 +250,7 @@ SOP 不只在有人问的时候跑（用法见 [`自动执行.md`](自动执行.
 | `alert_rules` / `alert_events` | 告警规则；收到的每条告警对上了哪条规则、结果（保留 7 天） |
 | `kb_gaps` / `kb_gap_ignores` | 知识库缺口：从回答和反馈里扫出来的问题、线索、向量；忽略过的代表问题 |
 | `app_state` | 小的键值：知识库缺口扫描到哪了 |
+| `automation_changes` | 页面上改自动执行设置的记录：时间、用户、来源地址、改了什么（不记授权码和令牌），留最近 200 条 |
 
 ## 入库链路
 
@@ -279,9 +281,10 @@ app/
 ├── autorun.py         自动执行：立即执行一次、定时、告警触发都在后台按 SOP 跑一遍（和「▶ 执行」同一套参数）
 ├── schedules.py       定时计划：北京时间的时刻、占时刻防重复、错过不补跑、后台线程（SCHEDULER）
 ├── alerts.py          告警规则与入口 /api/alerts/hook（只认告警令牌，没配时 404）：去重、限频、告警内容当资料
-├── notify.py          执行完发不发邮件、发什么；mailer.py 经 SMTP 发给服务器上配好的收件组（标准库 smtplib）
-├── automation_config.py  服务器上的配置文件（邮件、收件组、告警令牌、报告链接），热加载，页面只看得到收件组的名字
-├── automation_api.py  执行记录、计划、告警规则、测试邮件、知识库缺口的接口，挂告警入口和后台线程
+├── notify.py          执行完发不发邮件、发什么；mailer.py 经 SMTP 发给配好的收件组（标准库 smtplib）
+├── automation_config.py  自动执行的设置：服务器上手写的 automation.yaml 加上页面上填的（手写的优先），热加载
+├── automation_page.py 页面上填的自动执行设置：读写旁路文件、按键合并、判断扩大还是缩小能力、请工具服务核对口令、变更记录
+├── automation_api.py  执行记录、计划、告警规则、自动执行的设置、测试邮件、知识库缺口的接口，挂告警入口和后台线程
 ├── gaps.py            知识库缺口看板：从回答和反馈里找出文档没写的问题，按字面 / 向量归组
 ├── chat_api.py        云上协同（CHAT_BRIDGE_URL）：页面接口（状态、测试推送、推送设置）、挂聊天线程；群聊对话只读、对话列表按来源筛选
 ├── chat_channel.py    聊天线程：长轮询转接程序、白名单、收件表、限频排队、命令（帮助 / 没答好 / 执行 / 误报… / 全文 / 新话题）、流式回复
@@ -338,7 +341,8 @@ deploy/
 │                      页面上配置主机与数据源（/tools/config/…，扩大能力的要审批口令，OPS_PAGE_CONFIG=off 时只读）：
 │                      连接、远程 MCP server、对外开放、主机写进旁路文件 ops_tools.page.yaml，主配置同名优先；
 │                      页面输入的凭据存 page-secrets.json（只写不读、绑定去向，引用不了 ${名字}，每次用都现读现把关）；
-│                      页面主机的私钥由工具服务生成，host key 核对后进 ops_tools.page.known_hosts，安装包存 page-bundles/
+│                      页面主机的私钥由工具服务生成，host key 核对后进 ops_tools.page.known_hosts，安装包存 page-bundles/；
+│                      只核对审批口令（/tools/approval/verify，不写文件）：应用自己存的设置（自动执行的邮件）先来这里核对
 ├── ops_exec.py        命令型工具的执行核心（参数校验、argv、写动词黑名单、超时与输出上限），工具服务在本机执行就用它；
 │                      也是受控模式装在远程主机上的执行器（强制命令 --stdio，按 root 所有的 allowlist.json 执行）。
 │                      只用标准库、兼容 Python 3.6

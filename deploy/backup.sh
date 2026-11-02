@@ -37,8 +37,10 @@ PY
 for db in chat.db playbooks.db graph.db agent_memory.db access.db; do
   [ -f "$DATA/$db" ] && sqlite_copy "$DATA/$db" "$WORK/data/$db"
 done
-# 其余目录与文件直接复制。chat.yaml 是云上协同里谁能用、能查什么（没有密钥）；automation.yaml 里有邮箱授权码和告警令牌，不带
-for item in chroma files vision_cache.json chat.yaml; do
+# 其余目录与文件直接复制。chat.yaml 是云上协同里谁能用、能查什么（没有密钥）；automation.page.json 是页面上填的自动执行设置
+# （发件服务器、收件组、来源地址，不含密钥）。授权码、告警令牌在 automation.page-secrets.json 和手写的 automation.yaml 里，
+# 这两个不进备份包：恢复以后在页面上重输授权码、重新生成告警令牌（automation.yaml 自己另存一份）
+for item in chroma files vision_cache.json chat.yaml automation.page.json; do
   [ -e "$DATA/$item" ] && cp -a "$DATA/$item" "$WORK/data/"
 done
 # 工具配置也带上（宿主机侧，不在 data 里）：主文件、页面改的开关、脚本信任表、批准过的 MCP 工具、待审申请、
