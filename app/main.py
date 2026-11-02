@@ -9,6 +9,7 @@ import re
 import secrets
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
@@ -1302,7 +1303,7 @@ def retrieve_only(body: Question):
 
 
 def _with_stages(fn, *args):
-    """在工作线程里跑 fn，把它经 progress 回调报告的阶段实时吐成 NDJSON 行；fn 的返回值作为生成器返回值。
+    """在工作线程里跑 fn，把它经 progress 回调报告的阶段实时吐成 {"stage": …} 事件；fn 的返回值作为生成器返回值。
 
     检索要几秒到几十秒，这期间要给页面发阶段事件，在生成器里同步调它就发不出去。
     contextvars 复制一份带进线程，LangSmith 的父 run 才跟得上。
@@ -1320,11 +1321,263 @@ def _with_stages(fn, *args):
     while True:
         kind, payload = box.get()
         if kind == "stage":
-            yield json.dumps({"stage": payload}, ensure_ascii=False) + "\n"
+            yield {"stage": payload}
         elif kind == "done":
             return payload
         else:
             raise payload
+
+
+# --- 一轮问答的公共核心：网页的 /api/ask 和群聊都走它 --------------------------------------------------
+#
+# start_turn 做回答之前的事（建对话、开根 run、定这一轮怎么答、图谱里开一条执行、按 SOP 执行的另记执行记录），
+# turn_events 是这一轮的事件流：每个事件是一个 dict，网页上就是 NDJSON 的一行。参数由调用方先核对好。
+
+@dataclass
+class AskTurn:
+    question: str
+    conversation: dict
+    started_new: bool
+    history: list
+    model_name: str
+    answer_mode: str
+    modes_on: bool
+    kb_on: bool
+    mode: str
+    smart: bool
+    allow_web: bool
+    plan_on: bool
+    use_agent: bool
+    overview: bool
+    continuation: bool
+    prefetching: bool
+    force: bool
+    playbook: dict | None
+    execution_id: str
+    run_id: str | None
+    root: object
+
+    @property
+    def conversation_id(self) -> str:
+        return self.conversation["id"]
+
+
+def start_turn(question, conversation_id, history, *, model_name, web, playbook_id, answer_mode, modes_on, kb_on,
+               mode) -> AskTurn:
+    """一轮问答开始：conversation_id 为 None 时新建对话。返回 turn_events 要用的这一轮的全部设定。"""
+    # 「▶ 执行」沿用知识库模式的规则：结论只依据数据和知识库。这一轮仍记成用户当时选的模式
+    smart = answer_mode == "smart" and not playbook_id
+    if smart:
+        mode = "agentic"   # 查不查、查几次知识库由模型决定
+
+    # Create the conversation first so the trace carries its real id from the very first turn.
+    started_new = conversation_id is None
+    conversation = ({"id": conversation_id} if conversation_id
+                    else conversations.create(question))
+    conversation_id = conversation["id"]
+
+    root = start_root_run(question, conversation_id)
+    # Tools are opt-in and degrade gracefully: nothing to bind (no ops endpoint, web off) means plain RAG.
+    allow_web = AGENT_MODE != "off" and web and web_search.enabled()
+    plan_on = PLAN_TOOL
+    use_agent = AGENT_MODE != "off" and registry.has_tools(allow_web, kb_tools=kb_on, plan=plan_on)
+    if not use_agent:
+        kb_on = plan_on = False
+    # 检索模式只在知识类工具绑上时才有意义；forced 遇到已知不支持 tool_choice 的模型直接按 prefetch 走
+    if not kb_on or (mode == "forced" and agent_loop.forced_unsupported(model_name)):
+        mode = "prefetch"
+    # 「知识库里有什么」答案来自文档目录；「继续」是在回应上一轮——两者都不检索、也不强制检索。
+    # agentic 去掉这两条正则：确认语靠对话记忆接着做，概览问题模型自己调 kb_catalog。
+    overview = mode != "agentic" and is_overview(question)
+    continuation = mode != "agentic" and is_continuation(question, history)
+    prefetching = mode == "prefetch" and not (overview or continuation)
+    force = mode == "forced" and not (overview or continuation)
+    playbook = playbooks.get(playbook_id) if plan_on and playbook_id else None
+    # 图谱里的这一轮：工具的完整返回、最终结论质量、人工反馈都挂在它下面
+    execution_id = graph.start_execution(conversation_id, question, playbook_id)
+    # 「▶ 执行」的这一轮另记一条 SOP 执行记录（同一个 id）：回答结束后按 SOP 输出格式解析结论（runs.py）。
+    # 旁路：记不下来不影响回答
+    run_id = None
+    if playbook_id:
+        try:
+            book = playbooks.get(playbook_id)
+            run_id = runs.create(book, "web", run_id=execution_id, execution_id=execution_id, status="running",
+                                 conversation_id=conversation_id, params=runs.params_from_question(book, question))
+        except Exception:
+            log.warning("failed to start the run record for %s", execution_id, exc_info=True)
+    return AskTurn(question=question, conversation=conversation, started_new=started_new, history=history,
+                   model_name=model_name, answer_mode=answer_mode, modes_on=modes_on, kb_on=kb_on, mode=mode,
+                   smart=smart, allow_web=allow_web, plan_on=plan_on, use_agent=use_agent, overview=overview,
+                   continuation=continuation, prefetching=prefetching, force=force, playbook=playbook,
+                   execution_id=execution_id, run_id=run_id, root=root)
+
+
+def turn_events(turn: AskTurn):
+    """事件：conversation, stage…, sources, stage, tool activity, thinking, then answer fragments.
+
+    检索放在流里做：首行先发出去，等待期间页面能看到「改写 → 检索 → 重排 → 思考」在推进，
+    而不是对着一个转圈等十几秒。代价是检索失败不能再回 502，只能作为 error 事件发出。
+    forced / agentic 模式不预检索，sources 是空的；补查到的片段随 kb_sources 追加。
+    """
+    question, conversation, conversation_id, history = (turn.question, turn.conversation, turn.conversation_id,
+                                                        turn.history)
+    model_name, answer_mode, modes_on, kb_on, mode = (turn.model_name, turn.answer_mode, turn.modes_on, turn.kb_on,
+                                                      turn.mode)
+    execution_id, run_id, root = turn.execution_id, turn.run_id, turn.root
+    answer, failure, tool_calls, web_hits, kb_hits, message_id = "", None, [], [], [], None
+    search_query, hits = question, []
+    started = time.monotonic()
+    retrieved_at = first_token_at = None
+
+    def line(**event):
+        return event
+
+    def fallback(emit):
+        """forced 模式退回 prefetch：照预检索的方式改写、检索一次（在 Agent 循环里调）。"""
+        nonlocal search_query
+        if history:
+            emit(("stage", "rewrite"))
+        search_query = rewrite_question(question, history)
+        return retrieve(search_query, progress=lambda stage: emit(("stage", stage)))
+
+    try:
+        # 知识类工具打开时，首行带上这一轮实际的检索模式（forced 遇到不支持 tool_choice 的模型会降成 prefetch），
+        # 评测据此核对跑的是不是它要的模式；关着时首行和以前一样
+        first = {"conversation": conversation, "model": model_name, "execution_id": execution_id}
+        if kb_on:
+            first["retrieval_mode"] = mode
+        # 智能模式打开了才带上这一轮的回答模式（页面、评测据此核对）；没打开时首行和以前一样
+        if modes_on:
+            first["answer_mode"] = answer_mode
+        yield line(**first)
+        try:
+            with traced_under(root):
+                if turn.prefetching:
+                    if history:
+                        yield line(stage="rewrite")
+                    search_query = rewrite_question(question, history)
+                    hits = yield from _with_stages(retrieve, search_query)
+                    if not kb_on:
+                        # 片段 id 只给知识类工具用；关着时来源和以前一字不差
+                        hits = [{k: v for k, v in hit.items() if k != "id"} for hit in hits]
+        except Exception as exc:
+            failure = f"检索失败：{exc.__class__.__name__}"
+            yield line(error=failure)
+            return
+        retrieved_at = time.monotonic()
+        yield line(sources=hits)
+        conversations.add_message(conversation_id, "user", question, mode=answer_mode)
+        context = (catalog_context() if turn.overview
+                   else (CONTINUATION_KB if kb_on else CONTINUATION) if turn.continuation
+                   else as_context(hits, ids=kb_on) if turn.prefetching
+                   else None)
+        yield line(stage="think")
+
+        if turn.use_agent:
+            # The agent decides for itself whether the live environment is
+            # needed; events stream out as they happen so the UI can show it.
+            try:
+                with traced_under(root):
+                    for kind, payload in agent_loop.run(question, context, history,
+                                                        allow_web=turn.allow_web,
+                                                        thread_id=conversation_id,
+                                                        model=model_name,
+                                                        execution_id=execution_id,
+                                                        kb_tools=kb_on, plan=turn.plan_on, hits=hits,
+                                                        force_search=turn.force,
+                                                        prefetch=fallback if turn.force else None,
+                                                        playbook=turn.playbook, smart=turn.smart):
+                        if kind == "delta":
+                            answer += payload
+                            first_token_at = first_token_at or time.monotonic()
+                        elif kind == "error":
+                            failure = payload
+                        elif kind == "tool_call":
+                            call = {"tool": payload["tool"], "args": payload.get("args") or {}}
+                            if payload.get("category"):
+                                call["category"] = payload["category"]
+                            tool_calls.append(call)
+                        elif kind == "tool_result" and tool_calls:
+                            # 结果按顺序贴回最近一个还没有结果的调用，回放时能一起看到
+                            for call in reversed(tool_calls):
+                                if "preview" not in call:
+                                    call.update(preview=payload.get("preview", ""),
+                                                lines=payload.get("lines", 0))
+                                    break
+                        elif kind == "web_sources":
+                            web_hits.extend(payload)
+                        elif kind == "kb_sources":
+                            kb_hits.extend(payload)
+                        elif kind == "sources":
+                            # forced 模式退回 prefetch 时的预检索结果：和平时的 sources 一样整体替换
+                            hits, retrieved_at = list(payload), time.monotonic()
+                        yield {kind: payload}
+            except Exception as exc:
+                failure = f"工具调用流程失败：{exc.__class__.__name__}"
+                yield line(error=failure)
+        else:
+            messages = build_messages(question, context, history)
+            try:
+                # Re-attach to the root run: this body runs after the response returned.
+                with traced_under(root):
+                    for kind, fragment in stream_answer(messages, model=model_name):
+                        if kind == "delta":
+                            answer += fragment
+                            first_token_at = first_token_at or time.monotonic()
+                        yield {kind: fragment}
+            except Exception as exc:
+                failure = f"大模型调用失败：{exc.__class__.__name__}"
+                yield line(error=failure)
+
+        if answer.strip():
+            # 补查到的片段和预检索片段一起存进来源，回放对话照常显示
+            message_id = conversations.add_message(conversation_id, "assistant", answer,
+                                                   hits + kb_hits + web_hits, model=model_name,
+                                                   tools=tool_calls, mode=answer_mode)
+    finally:
+        try:
+            graph.finish_execution(execution_id, answer, failed=failure is not None,
+                                   message_id=message_id)
+            # 自由排查调过数据类工具并答完了：后台看看值不值得沉淀为 SOP，不占这个请求
+            if turn.use_agent and message_id is not None and any(registry.observes_system(c["tool"])
+                                                                  for c in tool_calls):
+                grow.schedule(execution_id, answer, tool_specs)
+        except Exception:
+            log.warning("failed to finish execution %s", execution_id, exc_info=True)
+        if run_id:
+            try:
+                runs.finish(run_id, answer, failure)
+            except Exception:
+                log.warning("failed to finish the run record %s", run_id, exc_info=True)
+        # 新对话这一轮什么都没答出来（检索或模型失败）：不在历史里留一个空对话。页面按同一规则忘掉它的 id。
+        if turn.started_new and message_id is None:
+            conversations.delete(conversation_id)
+        now = time.monotonic()
+        log.info("ask %s: retrieve=%s first_token=%s total=%.1fs tools=%d model=%s%s%s%s",
+                 conversation_id[:8],
+                 f"{retrieved_at - started:.1f}s" if retrieved_at else "-",
+                 f"{first_token_at - started:.1f}s" if first_token_at else "-",
+                 now - started, len(tool_calls), model_name,
+                 f" kb={mode}+{len(kb_hits)}" if kb_on else "",
+                 f" answer={answer_mode}" if modes_on else "",
+                 f" failure={failure}" if failure else "")
+        outputs = {"answer": answer, "search_query": search_query,
+                   "sources": len(hits), "web_sources": len(web_hits),
+                   "model": model_name, "tools_used": [c["tool"] for c in tool_calls]}
+        if kb_on:
+            outputs.update(retrieval_mode=mode, kb_sources=len(kb_hits))
+        if modes_on:
+            outputs["answer_mode"] = answer_mode
+        finish_root_run(root, outputs=outputs, error=failure)
+
+
+def ndjson(events):
+    """事件流 → NDJSON 一行一行。连接断开时把事件流也关掉：它的 finally 要收尾（图谱、执行记录、空对话、日志）。"""
+    try:
+        for event in events:
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+    finally:
+        events.close()
 
 
 @app.post("/api/ask")
@@ -1350,202 +1603,11 @@ def ask(payload: Question, x_eval_token: str | None = Header(default=None)):
         if payload.retrieval_mode is not None or payload.kb_tools is not None:
             raise HTTPException(400, "智能模式由模型决定查不查知识库，不能再按请求指定检索模式或知识类工具")
     kb_on, mode = retrieval_switches(payload, x_eval_token)
-    # 「▶ 执行」沿用知识库模式的规则：结论只依据数据和知识库。这一轮仍记成用户当时选的模式
-    smart = answer_mode == "smart" and not payload.playbook_id
-    if smart:
-        mode = "agentic"   # 查不查、查几次知识库由模型决定
-
     history = conversations.recent_history(conversation_id) if conversation_id else []
-    # Create the conversation first so the trace carries its real id from the very first turn.
-    started_new = conversation_id is None
-    conversation = ({"id": conversation_id} if conversation_id
-                    else conversations.create(question))
-    conversation_id = conversation["id"]
-
-    root = start_root_run(question, conversation_id)
-    # Tools are opt-in and degrade gracefully: nothing to bind (no ops endpoint, web off) means plain RAG.
-    allow_web = AGENT_MODE != "off" and payload.web and web_search.enabled()
-    plan_on = PLAN_TOOL
-    use_agent = AGENT_MODE != "off" and registry.has_tools(allow_web, kb_tools=kb_on, plan=plan_on)
-    if not use_agent:
-        kb_on = plan_on = False
-    # 检索模式只在知识类工具绑上时才有意义；forced 遇到已知不支持 tool_choice 的模型直接按 prefetch 走
-    if not kb_on or (mode == "forced" and agent_loop.forced_unsupported(model_name)):
-        mode = "prefetch"
-    # 「知识库里有什么」答案来自文档目录；「继续」是在回应上一轮——两者都不检索、也不强制检索。
-    # agentic 去掉这两条正则：确认语靠对话记忆接着做，概览问题模型自己调 kb_catalog。
-    overview = mode != "agentic" and is_overview(question)
-    continuation = mode != "agentic" and is_continuation(question, history)
-    prefetching = mode == "prefetch" and not (overview or continuation)
-    force = mode == "forced" and not (overview or continuation)
-    playbook = playbooks.get(payload.playbook_id) if plan_on and payload.playbook_id else None
-    # 图谱里的这一轮：工具的完整返回、最终结论质量、人工反馈都挂在它下面
-    execution_id = graph.start_execution(conversation_id, question, payload.playbook_id)
-    # 「▶ 执行」的这一轮另记一条 SOP 执行记录（同一个 id）：回答结束后按 SOP 输出格式解析结论（runs.py）。
-    # 旁路：记不下来不影响回答
-    run_id = None
-    if payload.playbook_id:
-        try:
-            book = playbooks.get(payload.playbook_id)
-            run_id = runs.create(book, "web", run_id=execution_id, execution_id=execution_id, status="running",
-                                 conversation_id=conversation_id, params=runs.params_from_question(book, question))
-        except Exception:
-            log.warning("failed to start the run record for %s", execution_id, exc_info=True)
-
-    def stream():
-        """NDJSON: conversation, stage…, sources, stage, tool activity, thinking, then answer fragments.
-
-        检索放在流里做：首行先发出去，等待期间页面能看到「改写 → 检索 → 重排 → 思考」在推进，
-        而不是对着一个转圈等十几秒。代价是检索失败不能再回 502，只能作为 error 事件发出。
-        forced / agentic 模式不预检索，sources 是空的；补查到的片段随 kb_sources 追加。
-        """
-        answer, failure, tool_calls, web_hits, kb_hits, message_id = "", None, [], [], [], None
-        search_query, hits = question, []
-        started = time.monotonic()
-        retrieved_at = first_token_at = None
-
-        def line(**event):
-            return json.dumps(event, ensure_ascii=False) + "\n"
-
-        def fallback(emit):
-            """forced 模式退回 prefetch：照预检索的方式改写、检索一次（在 Agent 循环里调）。"""
-            nonlocal search_query
-            if history:
-                emit(("stage", "rewrite"))
-            search_query = rewrite_question(question, history)
-            return retrieve(search_query, progress=lambda stage: emit(("stage", stage)))
-
-        try:
-            # 知识类工具打开时，首行带上这一轮实际的检索模式（forced 遇到不支持 tool_choice 的模型会降成 prefetch），
-            # 评测据此核对跑的是不是它要的模式；关着时首行和以前一样
-            first = {"conversation": conversation, "model": model_name, "execution_id": execution_id}
-            if kb_on:
-                first["retrieval_mode"] = mode
-            # 智能模式打开了才带上这一轮的回答模式（页面、评测据此核对）；没打开时首行和以前一样
-            if modes_on:
-                first["answer_mode"] = answer_mode
-            yield line(**first)
-            try:
-                with traced_under(root):
-                    if prefetching:
-                        if history:
-                            yield line(stage="rewrite")
-                        search_query = rewrite_question(question, history)
-                        hits = yield from _with_stages(retrieve, search_query)
-                        if not kb_on:
-                            # 片段 id 只给知识类工具用；关着时来源和以前一字不差
-                            hits = [{k: v for k, v in hit.items() if k != "id"} for hit in hits]
-            except Exception as exc:
-                failure = f"检索失败：{exc.__class__.__name__}"
-                yield line(error=failure)
-                return
-            retrieved_at = time.monotonic()
-            yield line(sources=hits)
-            conversations.add_message(conversation_id, "user", question, mode=answer_mode)
-            context = (catalog_context() if overview
-                       else (CONTINUATION_KB if kb_on else CONTINUATION) if continuation
-                       else as_context(hits, ids=kb_on) if prefetching
-                       else None)
-            yield line(stage="think")
-
-            if use_agent:
-                # The agent decides for itself whether the live environment is
-                # needed; events stream out as they happen so the UI can show it.
-                try:
-                    with traced_under(root):
-                        for kind, payload in agent_loop.run(question, context, history,
-                                                            allow_web=allow_web,
-                                                            thread_id=conversation_id,
-                                                            model=model_name,
-                                                            execution_id=execution_id,
-                                                            kb_tools=kb_on, plan=plan_on, hits=hits,
-                                                            force_search=force,
-                                                            prefetch=fallback if force else None,
-                                                            playbook=playbook, smart=smart):
-                            if kind == "delta":
-                                answer += payload
-                                first_token_at = first_token_at or time.monotonic()
-                            elif kind == "error":
-                                failure = payload
-                            elif kind == "tool_call":
-                                call = {"tool": payload["tool"], "args": payload.get("args") or {}}
-                                if payload.get("category"):
-                                    call["category"] = payload["category"]
-                                tool_calls.append(call)
-                            elif kind == "tool_result" and tool_calls:
-                                # 结果按顺序贴回最近一个还没有结果的调用，回放时能一起看到
-                                for call in reversed(tool_calls):
-                                    if "preview" not in call:
-                                        call.update(preview=payload.get("preview", ""),
-                                                    lines=payload.get("lines", 0))
-                                        break
-                            elif kind == "web_sources":
-                                web_hits.extend(payload)
-                            elif kind == "kb_sources":
-                                kb_hits.extend(payload)
-                            elif kind == "sources":
-                                # forced 模式退回 prefetch 时的预检索结果：和平时的 sources 一样整体替换
-                                hits, retrieved_at = list(payload), time.monotonic()
-                            yield json.dumps({kind: payload}, ensure_ascii=False) + "\n"
-                except Exception as exc:
-                    failure = f"工具调用流程失败：{exc.__class__.__name__}"
-                    yield line(error=failure)
-            else:
-                messages = build_messages(question, context, history)
-                try:
-                    # Re-attach to the root run: this body runs after the response returned.
-                    with traced_under(root):
-                        for kind, fragment in stream_answer(messages, model=model_name):
-                            if kind == "delta":
-                                answer += fragment
-                                first_token_at = first_token_at or time.monotonic()
-                            yield json.dumps({kind: fragment}, ensure_ascii=False) + "\n"
-                except Exception as exc:
-                    failure = f"大模型调用失败：{exc.__class__.__name__}"
-                    yield line(error=failure)
-
-            if answer.strip():
-                # 补查到的片段和预检索片段一起存进来源，回放对话照常显示
-                message_id = conversations.add_message(conversation_id, "assistant", answer,
-                                                       hits + kb_hits + web_hits, model=model_name,
-                                                       tools=tool_calls, mode=answer_mode)
-        finally:
-            try:
-                graph.finish_execution(execution_id, answer, failed=failure is not None,
-                                       message_id=message_id)
-                # 自由排查调过数据类工具并答完了：后台看看值不值得沉淀为 SOP，不占这个请求
-                if use_agent and message_id is not None and any(registry.observes_system(c["tool"])
-                                                                 for c in tool_calls):
-                    grow.schedule(execution_id, answer, tool_specs)
-            except Exception:
-                log.warning("failed to finish execution %s", execution_id, exc_info=True)
-            if run_id:
-                try:
-                    runs.finish(run_id, answer, failure)
-                except Exception:
-                    log.warning("failed to finish the run record %s", run_id, exc_info=True)
-            # 新对话这一轮什么都没答出来（检索或模型失败）：不在历史里留一个空对话。页面按同一规则忘掉它的 id。
-            if started_new and message_id is None:
-                conversations.delete(conversation_id)
-            now = time.monotonic()
-            log.info("ask %s: retrieve=%s first_token=%s total=%.1fs tools=%d model=%s%s%s%s",
-                     conversation_id[:8],
-                     f"{retrieved_at - started:.1f}s" if retrieved_at else "-",
-                     f"{first_token_at - started:.1f}s" if first_token_at else "-",
-                     now - started, len(tool_calls), model_name,
-                     f" kb={mode}+{len(kb_hits)}" if kb_on else "",
-                     f" answer={answer_mode}" if modes_on else "",
-                     f" failure={failure}" if failure else "")
-            outputs = {"answer": answer, "search_query": search_query,
-                       "sources": len(hits), "web_sources": len(web_hits),
-                       "model": model_name, "tools_used": [c["tool"] for c in tool_calls]}
-            if kb_on:
-                outputs.update(retrieval_mode=mode, kb_sources=len(kb_hits))
-            if modes_on:
-                outputs["answer_mode"] = answer_mode
-            finish_root_run(root, outputs=outputs, error=failure)
-
-    return StreamingResponse(stream(), media_type="application/x-ndjson")
+    turn = start_turn(question, conversation_id, history, model_name=model_name, web=payload.web,
+                      playbook_id=payload.playbook_id, answer_mode=answer_mode, modes_on=modes_on, kb_on=kb_on,
+                      mode=mode)
+    return StreamingResponse(ndjson(turn_events(turn)), media_type="application/x-ndjson")
 
 
 # 演示场景包：DEMO_PACKS 非空时，模型一配好就在后台把文档和 SOP 导进来（docs/场景包.md）。
