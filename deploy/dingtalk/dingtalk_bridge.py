@@ -980,6 +980,18 @@ class Outbox:
 
 # === Stream 连接 ==============================================================================
 
+def _close(ws):
+    """先礼貌地发 close；连接已经断了的时候 close() 什么都不做，所以再 shutdown 一次，确保 socket 关掉。"""
+    try:
+        ws.close(timeout=1)
+    except Exception:
+        pass
+    try:
+        ws.shutdown()
+    except Exception:
+        pass
+
+
 class Link:
     """一条 Stream 连接（一个线程）。机器人消息交给 bridge.on_callback 后回 ack；系统 ping 原样带回 opaque；
     disconnect 时通知 bridge 马上另开一条，自己继续收，直到服务端断开（最多 DRAIN_MAX 秒）。"""
@@ -1025,7 +1037,7 @@ class Link:
             raise
         status = getattr(getattr(ws, "handshake_response", None), "status", 0)
         if status != 101:
-            ws.close()
+            _close(ws)
             raise PlatformError(f"Stream 握手返回 HTTP {status}（不跟重定向）")
         ws.settimeout(self.READ_TICK)
         return ws
@@ -1045,10 +1057,7 @@ class Link:
             reason = self._loop()
         finally:
             if self.ws is not None:
-                try:
-                    self.ws.close(timeout=1)
-                except Exception:
-                    pass
+                _close(self.ws)
             self.closed.set()
             if self.ws is not None:
                 self.bridge.link_down(self, reason)
