@@ -119,7 +119,7 @@ flowchart LR
 
 ```
 外部智能体（Claude Code、Copilot、Cursor…）
- │  Streamable HTTP + 令牌（Authorization: Bearer）；生产上前面放反向代理和 TLS
+ │  Streamable HTTP + 令牌（Authorization: Bearer）；对外时走 HTTPS（内置 TLS 或反向代理，来源地址见 app/peer.py）
  ▼
 /mcp  TokenGate：先看来源地址（MCP_CLIENTS）· 页面上的总开关（关着一律 403，不碰令牌库）· 只认令牌（不认 Basic）· 按令牌限流、限会话数 → 官方 MCP SDK 的会话管理器
  │  工具：知识类 kb_* / sop_*、宿主机标了 export 的数据工具（照样转给工具服务 /exec，带 X-Ops-Caller）
@@ -275,6 +275,8 @@ SOP 不只在有人问的时候跑（用法见 [`自动执行.md`](自动执行.
 ```
 app/
 ├── main.py            HTTP API 与鉴权
+├── serve.py           启动器（镜像的 CMD）：不配 TLS 时等同 uvicorn 命令；内置 TLS、本机明文口（LOCAL_HTTP_PORT）、启动前检查（--check）
+├── peer.py            来源地址：最外层中间件，可信代理（TRUSTED_PROXIES）、经没登记的代理转来的请求记成 untrusted-proxy
 ├── mcp_server.py      对外 MCP 出口 /mcp（MCP_ENABLED）：令牌校验、类别 × 出口、提示词、变化通知、「对外接入」接口（总开关、删令牌、清除审计）
 ├── access.py          对外接入的令牌（只存哈希）、调用审计、按令牌限流、页面上的总开关和只增不删的操作记录（SQLite access.db）
 ├── approval.py        应用自己把关的改动共用：请求体手动解析、按来源限频、请工具服务核对审批口令（只有 200 + ok 才算通过）
@@ -365,6 +367,7 @@ deploy/
 ├── sandbox/           计算沙箱：sandbox_service.py（宿主机 systemd 服务，127.0.0.1 + 令牌，每次执行一个 gVisor 一次性容器，
 │                      镜像和限制写死）、Dockerfile + requirements.txt（标准库 + 锁定哈希的 PyYAML）、security_check.py（真实环境安全用例）
 ├── backup.sh          每日备份
+├── make-tls-certs.sh  没有域名时的 HTTPS：生成带名字约束的私有 CA、签带 IP 的服务器证书（CA 私钥不进 TLS_DIR）
 ├── ccwork/            云上协同转接程序 ccwork_bridge.py（宿主机 systemd，收 MQTT、发 HTTPS，本地接口 127.0.0.1:8796）和它的
 │                      单元、环境文件、推送目标示例；crypto_vectors.py（加解密对照数据）、check_upstream.sh（官方开发包有新提交就提醒）
 ├── dingtalk/          钉钉转接程序 dingtalk_bridge.py（宿主机 systemd，出站连钉钉 Stream、发 HTTPS，本地接口 127.0.0.1:8795）和它的
