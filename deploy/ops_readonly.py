@@ -35,6 +35,7 @@ import contextlib
 import datetime
 import glob
 import hashlib
+import http.client
 import importlib.util
 import io
 import ipaddress
@@ -2004,7 +2005,8 @@ def refresh(force=False):
     for problem in problems:
         print(f"[config] {problem}", flush=True)
     counts = [(len(page.get(kind) or {}), label) for kind, label in
-              (("connections", "连接"), ("servers", "MCP server"), ("hosts", "主机"), ("export", "对外开放设置"))]
+              (("connections", "连接"), ("servers", "MCP server"), ("hosts", "主机"), ("export", "对外开放设置"),
+               ("clusters", "K8s 集群"))]
     shown = "、".join(f"{label} {count}" for count, label in counts if count)
     print(f"[config] 已加载 {len(tools)} 个工具定义，"
           f"{len(overrides)} 个被页面覆盖"
@@ -2228,6 +2230,12 @@ def _input_schema(spec, target=None):
         properties[TARGET] = target[1]
         if target[2]:
             required.append(TARGET)
+    cluster = _cluster_target(spec)
+    if cluster is not None:
+        # 页面上加了 K8s 集群时 kubectl 工具多出来的 cluster（没有页面集群时这一项不出现，/tools 一个字节都不变）
+        properties[CLUSTER] = cluster[1]
+        if cluster[2]:
+            required.append(CLUSTER)
     schema = {"type": "object", "properties": properties}
     if required:
         schema["required"] = required
@@ -2278,7 +2286,7 @@ def available_tools():
         if not (spec["enabled"] and _runnable(spec)):
             continue
         target = _host_target(spec)
-        params = spec["params"] if target is None else {**spec["params"], TARGET: target[0]}
+        params = _with_cluster(spec, spec["params"] if target is None else {**spec["params"], TARGET: target[0]})
         entry = {"desc": spec["desc"], "params": params}
         if spec.get("type") == "mcp":
             # 应用侧有 input_schema 就按它生成完整的 pydantic 模型（嵌套、枚举、必填都在）
@@ -2314,7 +2322,7 @@ def describe_tools():
     for name, spec in all_tools().items():
         target = _host_target(spec) if spec["enabled"] else None
         item = {"desc": spec["desc"],
-                "params": spec["params"] if target is None else {**spec["params"], TARGET: target[0]},
+                "params": _with_cluster(spec, spec["params"] if target is None else {**spec["params"], TARGET: target[0]}),
                 "label": spec.get("label", ""),
                 "group": spec.get("group", ""),
                 "binary": spec["binary"],
@@ -7259,7 +7267,15 @@ def _run_local(spec, args):
 
 
 def _run_command(spec, args):
-    """命令型、脚本型工具：没配主机清单就在本机跑（老行为）；配了就按 target 选主机。"""
+    """命令型、脚本型工具：没配主机清单就在本机跑（老行为）；配了就按 target 选主机。
+    页面上加了 K8s 集群时，kubectl 工具填了 cluster（或只有它能用）就带着那个集群的临时 kubeconfig 在本机跑。"""
+    if _cluster_target(spec) is not None:
+        args = dict(args or {})
+        chosen = _cluster_choice(spec, args.pop(CLUSTER, None))
+        if isinstance(chosen, dict):
+            return chosen
+        if chosen:
+            return _run_on_cluster(spec, args, chosen)
     cfg = _hosts()
     if cfg is None:
         if _stray_target(spec, args):
@@ -7490,8 +7506,8 @@ def run_tool(name, args):
 # 宿主机上不想让页面改这些：/etc/ops-readonly.env 里写 OPS_PAGE_CONFIG=off（页面只读，写接口回 403）。
 
 PAGE_FORMAT = 1
-PAGE_KINDS = ("connections", "mcp_servers", "export", "hosts")
-PAGE_LIMITS = {"connections": 50, "mcp_servers": 20, "hosts": 50}
+PAGE_KINDS = ("connections", "mcp_servers", "export", "hosts", "clusters")
+PAGE_LIMITS = {"connections": 50, "mcp_servers": 20, "hosts": 50, "clusters": 20}
 PAGE_CONN_TYPES = ("http", "postgres", "mysql")
 PAGE_CONN_FIELDS = {
     "http": ("name", "type", "label", "base", "auth", "auth_header", "external"),
@@ -7500,12 +7516,13 @@ PAGE_CONN_FIELDS = {
 PAGE_MCP_FIELDS = ("id", "label", "url", "protocol", "timeout", "auth", "auth_header", "external")
 PAGE_HOST_FIELDS = ("name", "address", "port", "user", "os", "mode", "groups", "tools", "from")
 PAGE_EXPORT_FIELDS = ("tool", "on", "fp")
+PAGE_CLUSTER_FIELDS = ("name", "label", "server", "ca")
 PAGE_AUTHS = ("none", "bearer", "header")
 # 「指定请求头」这几个不能用：它们由协议和传输层管
 PAGE_RESERVED_HEADERS = MCP_RESERVED_HEADERS + ("transfer-encoding", "connection", "te", "upgrade", "user-agent",
                                                 "proxy-authorization")
 PAGE_SECRETS_MAX = 256 * 1024
-PAGE_SECRET_KEY = re.compile(r"^(connection|mcp):[a-z][a-z0-9_]{0,30}$")
+PAGE_SECRET_KEY = re.compile(r"^((connection|mcp):[a-z][a-z0-9_]{0,30}|cluster:[a-z][a-z0-9-]{0,30})$")
 # 令牌至少 8 个字符：工具输出里的回显靠 _scrub 盖住，它只处理 6 个字符以上的值
 PAGE_BEARER = re.compile(r"[\x21-\x7e]{8,8192}")
 PAGE_HEADER_VALUE = re.compile(r"[\x21-\x7e][\x20-\x7e]{6,8190}[\x21-\x7e]")
@@ -7838,11 +7855,15 @@ def _page_secret_records():
                 and re.fullmatch(r"[0-9a-f]{16}", str(record.get("id", "")))):
             records[key] = {"dest": record["dest"], "id": record["id"], "value": record["value"],
                             "set_at": str(record.get("set_at") or "")[:40]}
+            for meta in ("expires", "subject"):      # 集群令牌：从 JWT 里解出的到期时间和账号（只给页面看）
+                if isinstance(record.get(meta), str) and record[meta].isprintable():
+                    records[key][meta] = record[meta][:200]
     return records, ""
 
 
-def _page_secret_change(key, dest=None, value=None):
+def _page_secret_change(key, dest=None, value=None, meta=None):
     """设一条凭据（value 给了，绑定去向 dest），或者删掉（value 是 None）。返回删掉了没有（设的时候是 False）。
+    meta：和凭据一起记下、可以给页面看的说明（集群令牌的到期时间、账号）。
     凭据文件有问题时不写：先在宿主机上处理，免得把别的凭据弄丢。"""
     records, problem = _page_secret_records()
     if problem:
@@ -7854,7 +7875,8 @@ def _page_secret_change(key, dest=None, value=None):
             return False
     else:
         records[key] = {"dest": dest, "id": secrets.token_hex(8), "value": value,
-                        "set_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
+                        "set_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+                        **{name: text for name, text in (meta or {}).items() if text}}
     text = json.dumps({"format": PAGE_FORMAT, "secrets": records}, ensure_ascii=False, indent=1) + "\n"
     _write_private(_page_secrets_file(), text)
     return removed
@@ -7866,6 +7888,8 @@ def _page_dest(holder):
     key = holder["page_secret"]["key"]
     if key.startswith("mcp:"):
         parts = ["mcp", key[4:], holder["url"]]
+    elif key.startswith("cluster:"):
+        parts = ["cluster", holder["name"], holder["server"], holder["ca_sha256"]]
     elif holder["type"] == "http":
         parts = ["connection", holder["name"], "http", holder["base"]]
     else:
@@ -7877,7 +7901,7 @@ def _page_dest(holder):
 
 def _page_owner(holder):
     kind, _, name = holder["page_secret"]["key"].partition(":")
-    return f"{'连接' if kind == 'connection' else 'MCP server'} {name}"
+    return f"{ {'connection': '连接', 'mcp': 'MCP server', 'cluster': 'K8s 集群'}.get(kind, kind)} {name}"
 
 
 def _page_secret_state(holder, records, problem):
@@ -7892,6 +7916,9 @@ def _page_secret_state(holder, records, problem):
         state = "set" if record["dest"] == _page_dest(holder) else "stale"
     holder["page_secret"].update(id=record["id"] if record and state == "set" else "", state=state,
                                  set_at=record["set_at"] if record else "")
+    if holder["page_secret"]["key"].startswith("cluster:"):
+        holder["page_secret"].update(expires=(record or {}).get("expires", "") if state == "set" else "",
+                                     subject=(record or {}).get("subject", "") if state == "set" else "")
 
 
 def _page_secret_view(holder):
@@ -7979,7 +8006,7 @@ def _load_page(problems, connections, broken, servers, hosts):
     返回 readable（旁路文件读不读得了：读不了时页面上不能写，免得盖掉手改的内容）、connections、servers、
     hosts（全部页面主机，含还没核对 host key 的）、export、entries（原始条目，给页面的修改表单）、skipped（没加载的条目）、
     main_hosts（只有主配置的主机清单，算加、删主机的影响用）。"""
-    out = {"readable": True, "connections": {}, "servers": {}, "hosts": {}, "export": {}, "skipped": [],
+    out = {"readable": True, "connections": {}, "servers": {}, "hosts": {}, "export": {}, "clusters": {}, "skipped": [],
            "entries": {kind: {} for kind in PAGE_KINDS}, "main_hosts": hosts,
            "main_connections": sorted(set(connections) | set(broken)), "main_mcp_servers": sorted(servers)}
     document, problem = _read_page_document()
@@ -7993,7 +8020,7 @@ def _load_page(problems, connections, broken, servers, hosts):
     if unknown:
         problems.append(f"页面配置里有不认识的部分 {'、'.join(unknown)[:200]}，已忽略")
     records, secret_problem = {}, ""
-    if document.get("connections") or document.get("mcp_servers"):
+    if document.get("connections") or document.get("mcp_servers") or document.get("clusters"):
         records, secret_problem = _page_secret_records()
         if secret_problem:
             problems.append(secret_problem)
@@ -8051,6 +8078,16 @@ def _admit_page_entry(kind, entry, out, connections, broken, servers, main_hosts
         if len(out["hosts"]) >= PAGE_LIMITS["hosts"]:
             raise ConfigError(f"页面上最多加 {PAGE_LIMITS['hosts']} 台主机，{name} 没有加载")
         out["hosts"][name] = host
+        return name
+    if kind == "clusters":
+        cluster = _check_page_cluster(entry)
+        name = cluster["name"]
+        if name in out["clusters"]:
+            raise ConfigError(f"页面配置里 K8s 集群 {name} 写了两次")
+        if len(out["clusters"]) >= PAGE_LIMITS["clusters"]:
+            raise ConfigError(f"页面上最多加 {PAGE_LIMITS['clusters']} 个 K8s 集群，{name} 没有加载")
+        _page_secret_state(cluster, records, secret_problem)
+        out["clusters"][name] = cluster
         return name
     tool, record = _check_page_export(entry)
     if tool in out["export"]:
@@ -9035,7 +9072,7 @@ def page_host_trust(payload, caller=""):
             raise Conflict(f"{name} 已经登记过 host key（{shown}）。host key 变了先查清原因（重装？有人冒充？），确认无误再勾「替换」")
         _page_confirm(payload, "confirm_impact", impact, "登记之后这些工具的 target 会变")
         _page_ssh_tools()
-        check_passphrase(payload.get("passphrase"), "核对 host key", name, caller)
+        ticket = _onboard_use(payload, name, "核对 host key", caller, host, "trust")
         scan = _page_probe(f"核对 host key {name}", caller, lambda done: (_page_scan_checks(host, done), ""))
         found = next((check.get("keys") for check in scan.get("checks") or [] if check.get("keys")), None)
         if found is None:
@@ -9046,6 +9083,7 @@ def page_host_trust(payload, caller=""):
             raise Conflict("指纹对不上重新扫描到的任何一个 host key，没有登记：核对的不是这台主机，或者中间有人冒充")
         keytype, blob, digest = chosen["type"], chosen["key"], chosen["fingerprint"]
         _write_known_hosts(name, keytype, blob, _page_known_hosts())
+        _onboard_update(ticket, trusted=True)
         refresh(force=True)
         _monitor.wake()
         _page_change("核对 host key", name, f"登记了 {keytype} {digest}" + ("（替换了原来的）" if pinned else ""), caller)
@@ -9084,6 +9122,7 @@ def page_host_delete(payload, caller=""):
                 os.unlink(path_of())
         refresh(force=True)
         _page_change("删除主机", name, "私钥、登记的 host key、安装包一起删了", caller)
+    _onboard_drop(name)
     return {"deleted": name, "revoke": _page_revoke(host) if host else [], "impact": impact}
 
 
@@ -9125,6 +9164,150 @@ def page_host_bundle(payload, caller=""):
     return {"bundle": info}
 
 
+# ---- 页面上的动作：用账号密码添加机器（一个对话框走完）-------------------------------------------------------------
+# 保存主机、扫描 host key → 人核对指纹后登记 → 用密码安装 → 检查连通。中间要等人去核对指纹，一个请求做不完；
+# 页面又不能留着审批口令一次次重发（那样就核对了好几次）。所以第一步（host-onboard）核对一次口令后，发一张「添加流程的授权」：
+#   - 32 字节随机数，只回给页面一次；这里只存它的 sha256（内存里，不落盘），比较用 compare_digest；工具服务重启就没了。
+#   - 绑定：这台主机、当时的条目（地址、端口、执行账号、模式、系统、出口地址）、来源 IP、口令文件（口令一改就失效）；15 分钟。
+#   - 只能代替口令做三件事，都只限这台主机：核对 host key（登记成功就用完）、用密码安装（照旧限频、被拒锁定）、只改出口地址。
+#   - 页面审批锁定中一律不认；票据不对、过期不计口令的输错次数（它们本来就不是口令）。
+ONBOARD_TTL = 15 * 60
+ONBOARD_MAX = 5
+_onboard = {}                         # 主机名 → {digest, fp, source, stamp, expires, at, trusted}
+_onboard_lock = threading.Lock()
+
+
+class TicketRefused(ApprovalRefused):
+    """添加流程的授权不认（没有、对不上、过期、条目变了……）：页面退回去要审批口令。不计口令的输错次数。"""
+
+    def __init__(self, message):
+        super().__init__(409, message)
+        self.extra = {"ticket_refused": True}
+
+
+def _onboard_fp(host):
+    basis = json.dumps([host["address"], host["port"], host["user"], host["mode"], host["os"], list(host["from"])],
+                       ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()
+
+
+def _onboard_digest(ticket):
+    return hashlib.sha256(ticket.encode("utf-8", "replace")).hexdigest()
+
+
+def _onboard_issue(name, host, caller):
+    ticket = secrets.token_urlsafe(32)
+    now = time.time()
+    with _onboard_lock:
+        for stale in [key for key, record in _onboard.items() if record["expires"] <= now]:
+            del _onboard[stale]
+        _onboard[name] = {"digest": _onboard_digest(ticket), "fp": _onboard_fp(host), "source": _caller_source(caller),
+                          "stamp": _approval_stamp(), "expires": now + ONBOARD_TTL, "at": time.strftime("%H:%M:%S"),
+                          "trusted": False}
+        while len(_onboard) > ONBOARD_MAX:
+            del _onboard[min(_onboard, key=lambda key: _onboard[key]["expires"])]
+    return ticket
+
+
+def _onboard_drop(name):
+    with _onboard_lock:
+        _onboard.pop(name, None)
+
+
+def _onboard_use(payload, name, action, caller, host, purpose):
+    """请求里带了 ticket：核对票据（不碰口令，也不计输错次数）；没带：照旧核对审批口令。返回票据记录（没用票据是 None）。"""
+    ticket = payload.get("ticket")
+    if ticket in (None, ""):
+        check_passphrase(payload.get("passphrase"), action, name, caller)
+        return None
+    minutes = _lock_minutes_left()
+    if minutes:
+        _approval_log(action, name, f"没有认添加流程的授权（页面审批锁定中，{minutes} 分钟后解锁）", caller)
+        raise _locked_refusal(minutes)
+    with _onboard_lock:
+        record = _onboard.get(name)
+        why, drop = "", True
+        if record is None:
+            why, drop = "已经没有了（用完、作废，或者工具服务重启过）", False
+        elif not isinstance(ticket, str) or len(ticket) > 200 or \
+                not secrets.compare_digest(_onboard_digest(ticket), record["digest"]):
+            why, drop = "对不上", False
+        elif record["expires"] <= time.time():
+            why = "过期了"
+        elif record["source"] != _caller_source(caller):
+            why = "不是从发它的那个地址来的"
+        elif record["stamp"] != _approval_stamp():
+            why = "失效了（审批口令改过）"
+        elif host is None or record["fp"] != _onboard_fp(host):
+            why = "失效了（主机的设置变了）"
+        elif purpose == "trust" and record["trusted"]:
+            why, drop = "已经用来登记过 host key", False
+        if why:
+            if drop:
+                _onboard.pop(name, None)
+            _approval_log(action, name, f"没有认添加流程的授权（{why}）", caller)
+            raise TicketRefused(f"添加流程的授权{why}：输审批口令再继续")
+        _approval_log(action, name, f"用添加流程的授权（口令在 {record['at']} 核对过）", caller)
+        return record
+
+
+def _onboard_update(record, **changes):
+    if record is not None:
+        with _onboard_lock:
+            record.update(changes)
+
+
+def page_host_onboard(payload, caller=""):
+    """用账号密码添加机器的第一步（要口令）：和「添加主机」同一套校验、保存、生成私钥、扫描 host key；口令核对一次，
+    成功后发一张「添加流程的授权」，后面登记 host key、用密码安装、改出口地址都用它，不再要口令。只收 Linux 的新主机。"""
+    _page_writable()
+    raw = payload.get("host")
+    if not isinstance(raw, dict):
+        raise ConfigError("缺少主机的内容")
+    if payload.get("original"):
+        raise ConfigError("用账号密码添加只能加新主机：改已有的主机在主机对话框里改")
+    if str(raw.get("os") or "linux").strip().lower() != "linux":
+        raise ConfigError("用账号密码添加只支持 Linux 主机：别的系统用「添加主机（分步）」")
+    support = host_install_support()
+    if not support["supported"]:
+        raise ConfigError(f"{support['why']}：用「添加主机（分步）」，照页面上的命令手工安装")
+    result = page_host_save({"host": raw, "passphrase": payload.get("passphrase")}, caller)
+    host = _page_host(result["saved"])
+    result["ticket"] = _onboard_issue(result["saved"], host, caller)
+    result["ticket_minutes"] = ONBOARD_TTL // 60
+    return result
+
+
+def page_host_from(payload, caller=""):
+    """把页面主机的出口地址改成一个地址（要口令或添加流程的授权）：用密码安装第 0 步报出目标主机看到的来源地址和填的不一样时，
+    用户确认它就是工具服务的出口后点「改成它并重试」。只认单个 IP（不放宽成网段），整个替换掉原来的出口地址。"""
+    _page_writable()
+    name = str(payload.get("name") or "").strip()
+    raw = str(payload.get("address") or "").strip()
+    try:
+        address = ipaddress.ip_address(raw)
+    except ValueError:
+        raise ConfigError("出口地址要是单个 IP 地址（不是网段，也不是主机名）") from None
+    shown = str(address)
+    with _page_lock:
+        all_tools()
+        host = _page_host(name)
+        document = _page_document()
+        entries = document["hosts"]
+        index = _page_index(entries, "name", name)
+        if index is None:
+            raise NotFound(f"页面上没有主机 {name[:40]}")
+        record = _onboard_use(payload, name, "修改出口地址", caller, host, "from")
+        entry = {**entries[index], "from": [shown]}
+        changed = _check_page_host(entry)
+        entries[index] = entry
+        _page_write(document)
+        refresh(force=True)
+        _onboard_update(record, fp=_onboard_fp(changed))
+        _page_change("修改出口地址", name, f"{', '.join(host['from'])} → {shown}（用密码安装时目标主机看到的来源地址）", caller)
+    return {"saved": name, "from": [shown], "item": _page_host_view(name)}
+
+
 # ---- 页面上的动作：用主机密码自动安装 ----------------------------------------------------------------------------
 # 页面加的主机，核对登记了 host key 以后，可以输一次目标主机的登录账号和密码，由这里登录一次，把页面上给人手工执行的
 # 那几步（建受限账号、放 restrict 的公钥、装执行器和白名单）原样执行掉。密码只用这一次：
@@ -9146,11 +9329,12 @@ INSTALL_SECRET_MIN = 6                # 密码短于这个长度时输出里替�
 INSTALL_OPENSSH = (8, 4)              # SSH_ASKPASS_REQUIRE 从 OpenSSH 8.4 起才有
 INSTALL_RUN = 's=$(cat) || exit 90; exec </dev/null; eval "$s"'
 # 远端命令（不含密码）：root 直接执行；sudo 先 -v 验证（密码从 stdin 第一行来），再 -n 执行，最后 -k 清掉时间戳。
+# 执行脚本的 sh 的 $1 是目标主机看到的来源地址（SSH_CONNECTION 的第一段；sudo 会清掉环境变量，所以按参数带进去）。
 # 退出码：96 读不到密码那一行、95 sudo 验证没过（密码不对或这个账号不能 sudo）、94 sudo 不缓存验证结果、90 读不到脚本
-INSTALL_ROOT_COMMAND = "exec /bin/sh -c '" + INSTALL_RUN + "'"
+INSTALL_ROOT_COMMAND = "exec /bin/sh -c '" + INSTALL_RUN + "' doc2sop \"${SSH_CONNECTION%% *}\""
 INSTALL_SUDO_COMMAND = (
-    "exec /bin/sh -c 'IFS= read -r p || exit 96; printf \"%s\\n\" \"$p\" | sudo -S -p \"\" -v || exit 95; p=; "
-    "sudo -n true || exit 94; sudo -n -- /bin/sh -c \"s=\\$(cat) || exit 90; exec </dev/null; eval \\\"\\$s\\\"\"; "
+    "exec /bin/sh -c 'c=${SSH_CONNECTION%% *}; IFS= read -r p || exit 96; printf \"%s\\n\" \"$p\" | sudo -S -p \"\" -v || exit 95; p=; "
+    "sudo -n true || exit 94; sudo -n -- /bin/sh -c \"s=\\$(cat) || exit 90; exec </dev/null; eval \\\"\\$s\\\"\" doc2sop \"$c\"; "
     "r=$?; sudo -k; exit $r'")
 _install_running = threading.Lock()   # 同一时刻只跑一个
 _install_guard = threading.Lock()
@@ -9332,12 +9516,40 @@ def _install_ssh_argv(binary, host, login, known_hosts, command):
     return out + ["-p", str(host["port"]), "-l", login, "--", host["address"], command]
 
 
+def _source_check(host, mark):
+    """第 0 步（只读）的前半：目标主机看到的来源地址（$1，来自 SSH_CONNECTION）在不在这台主机的出口地址里。
+    不在就什么都不改、停下：装好了 authorized_keys 的 from= 也不认它。IPv4 按网段算（shell 算术）；IPv6 只核对
+    单个地址，写成网段的不拦（shell 里算不可靠）；拿不到来源地址（SSH_CONNECTION 是空的）也不拦。"""
+    v4, v6, v6_nets = [], [], False
+    for item in host["from"]:
+        network = ipaddress.ip_network(item, strict=False)
+        if network.version == 4:
+            v4.append((int(network.netmask), int(network.network_address)))
+        elif network.num_addresses == 1:
+            v6.append(str(network.network_address))
+        else:
+            v6_nets = True
+    out = ["src=$1", "case $src in *[!0-9A-Fa-f:.]*) src=;; esac", "ok=", "[ -n \"$src\" ] || ok=y"]
+    if v4:
+        out += ["a=${src#::ffff:}", "case $a in", "  *[!0-9.]*|'') ;;",
+                "  *) o=$IFS; IFS=.; set -- $a; IFS=$o",
+                "     if [ $# = 4 ]; then",
+                "       n=$(( ($1 << 24) + ($2 << 16) + ($3 << 8) + $4 ))"]
+        out += [f"       [ $(( n & {mask} )) = {net} ] && ok=y" for mask, net in v4]
+        out += ["     fi;;", "esac"]
+    out += [f"[ \"$src\" = '{address}' ] && ok=y" for address in v6]
+    if v6_nets:
+        out.append("case $src in *:*) ok=y;; esac")
+    out += [f"echo \"{mark} source $src\"", f"[ -n \"$ok\" ] || {{ echo '{mark} source-mismatch'; exit 0; }}"]
+    return out
+
+
 def _install_script(host, install, nonce, installer):
-    """在目标主机上（root）执行的脚本：第 0 步只读地看账号在不在，然后逐行执行页面上给的建账号命令、安装包里 install.sh 的原文。
-    每一步前后打带随机标记的行，按标记切出每一步的输出和退出码；第一个失败就停。"""
+    """在目标主机上（root）执行的脚本：第 0 步只读地看来源地址对不对、账号在不在，然后逐行执行页面上给的建账号命令、
+    安装包里 install.sh 的原文。每一步前后打带随机标记的行，按标记切出每一步的输出和退出码；第一个失败就停。"""
     user, line = host["user"], install["authorized_keys"]
     mark = f"@@doc2sop-{nonce}"
-    out = ["exec 2>&1", "skip=",
+    out = ["exec 2>&1"] + _source_check(host, mark) + ["skip=",
            f"if id -u {user} >/dev/null 2>&1; then",
            f"  f=~{user}/.ssh/authorized_keys",
            f"  if [ -f \"$f\" ] && [ ! -L \"$f\" ] && [ \"$(stat -c %u \"$f\" 2>/dev/null)\" = 0 ] && [ \"$(cat \"$f\")\" = '{line}' ]; then",
@@ -9446,7 +9658,7 @@ def page_host_install(payload, caller=""):
         raise RateLimited("另一台主机正在用密码安装：等它做完再试")
     try:
         _install_rate(name, consume=False)
-        check_passphrase(payload.get("passphrase"), "用密码安装", name, caller)
+        _onboard_use(payload, name, "用密码安装", caller, host, "install")
         _install_rate(name, consume=True)
         installer, bundle = None, None
         if host["mode"] == "guarded":
@@ -9486,7 +9698,7 @@ def _install_run(host, login, password, sudo, known_hosts, install, installer, b
              {"key": "login", "title": f"用密码登录 {login}"}]
     if sudo:
         steps.append({"key": "sudo", "title": "sudo 验证（同一个密码），之后以 root 执行"})
-    steps.append({"key": "account?", "title": f"看账号 {host['user']} 在不在（只读）"})
+    steps.append({"key": "account?", "title": f"核对目标主机看到的来源地址，看账号 {host['user']} 在不在（只读）"})
     for index, command in enumerate(install["account"], 1):
         steps.append({"key": str(index), "title": "建账号、放公钥", "command": command})
     if installer is not None:
@@ -9545,10 +9757,15 @@ def _install_run(host, login, password, sudo, known_hosts, install, installer, b
         if step["key"] in ("connect", "login", "sudo"):
             step["status"] = "ok"
     sections, current, account, finished = {}, None, None, False
+    source, mismatch = None, False
     for raw in _decode(out).splitlines():
         if raw.startswith(mark + " "):
             words = raw[len(mark) + 1:].split()
-            if words[:1] == ["account"] and len(words) == 2:
+            if words[:1] == ["source"] and len(words) <= 2:
+                source = words[1] if len(words) == 2 and re.fullmatch(r"[0-9A-Fa-f:.]{1,45}", words[1]) else ""
+            elif words == ["source-mismatch"]:
+                mismatch = True
+            elif words[:1] == ["account"] and len(words) == 2:
                 account = words[1]
             elif words[:1] == ["begin"] and len(words) == 2:
                 current = words[1]
@@ -9563,6 +9780,14 @@ def _install_run(host, login, password, sudo, known_hosts, install, installer, b
         if current is not None:
             sections[current]["lines"].append(raw)
     check_step = next(step for step in steps if step["key"] == "account?")
+    if source:
+        result["source"] = source
+    if mismatch and source:
+        result["source_mismatch"] = True
+        return fail("account?", "source",
+                    f"目标主机看到的来源地址是 {source}，不在这台主机的出口地址（{', '.join(host['from'])}）里：装好了也连不上"
+                    f"（authorized_keys 的 from= 不认它）。什么都没改。确认 {source} 就是工具服务这台机器的出口地址，再把出口地址改成它重试；"
+                    f"不是的话先别改，查清楚（中间有跳板或代理？连错了机器？）")
     if account is None:
         shown, hidden = _install_shown(_decode(out) + stderr, password)
         check_step.update(output=shown, hidden=hidden)
@@ -9571,7 +9796,8 @@ def _install_run(host, login, password, sudo, known_hosts, install, installer, b
         return fail("account?", "account-exists",
                     f"账号 {host['user']} 已经存在，而且不是这里建的（authorized_keys 和页面上那一行不一致）：什么都没改。"
                     f"换一个执行账号名，或者确认它是上次留下的、在目标主机上撤销后重试")
-    check_step.update(status="ok", text="不在，从头建" if account == "absent" else "已经是这台主机要的样子（公钥一致），跳过建账号几步")
+    check_step.update(status="ok", text=(f"来源地址 {source}，在出口地址里；" if source else "") + (
+        "账号不在，从头建" if account == "absent" else "账号已经是这台主机要的样子（公钥一致），跳过建账号几步"))
     for step in steps:
         if not step["key"].isdigit():
             continue
@@ -9592,6 +9818,620 @@ def _install_run(host, login, password, sudo, known_hosts, install, installer, b
                     f"远端中途结束了（退出码 {code}）")
     result["ok"] = True
     return result
+
+
+# ---- 页面上的 K8s 集群 ---------------------------------------------------------------------------------------------
+# 名字、API Server 地址（只认 https）、CA 证书（PEM，必填：没有跳过证书校验）写在旁路文件的 clusters 段；只读令牌在 page-secrets.json
+# 的 cluster:<名字>，只写不读，去向是（名字、地址、CA 的 sha256），地址或 CA 一变就作废。也可以贴一份 kubeconfig，由这里取出这三样：
+# 只认令牌认证。exec 插件、auth-provider（要在工具服务上跑程序换令牌）、客户端证书和私钥（吊销不了，k3s、kubeadm 默认给的就是集群管理员的）、
+# 用户名密码、指向服务器文件的路径、跳过证书校验、代理一律拒绝。
+# 加了集群以后，kubectl 型工具（argv 里没有 --kubeconfig、--server、--token、--as 这类身份参数的）多一个参数 cluster：填了就在工具服务
+# 这台机器上，用只含这个集群和令牌的临时 kubeconfig 跑（放在内存盘 /dev/shm，用完就删）；没加集群时这个参数不出现。
+
+CLUSTER = "cluster"
+CLUSTER_NAME = re.compile(r"^[a-z][a-z0-9-]{0,30}$")
+CLUSTER_CA_MAX = 64 * 1024
+CLUSTER_CA_CERTS = 10
+KUBECONFIG_MAX = 256 * 1024
+CLUSTER_TIMEOUT = 8
+CLUSTER_EXPIRY_WARN = 14 * 86400
+PEM_CERT = re.compile(r"-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]+?)-----END CERTIFICATE-----")
+SA_HINT = ("改用只读 ServiceAccount 的令牌：在集群上 kubectl apply 页面上「在集群上建只读账号」里的那份 YAML（和 deploy/k8s-readonly.yaml 一样，"
+           "view 加几个集群级只读资源，读不了 Secret），再执行 kubectl -n doc2sop create token ops-readonly --duration=2160h，把输出的令牌贴进来")
+
+
+def _cluster_label(owner, raw):
+    """显示名：和别处的显示名同一个规矩（最多 MAX_LABEL 个字、没有控制字符）。超了、带了就拒绝，不悄悄截掉。"""
+    text = "" if raw is None else str(raw).strip()
+    if len(text) > MAX_LABEL:
+        raise ConfigError(f"{owner} 的显示名不能超过 {MAX_LABEL} 个字")
+    if any(not ch.isprintable() for ch in text):
+        raise ConfigError(f"{owner} 的显示名里不能有换行之类的控制字符")
+    return text
+
+
+def _cluster_server(owner, raw):
+    text = _page_url(owner, "server（API Server 地址）", raw).rstrip("/")
+    if not text.startswith("https://"):
+        raise ConfigError(f"{owner} 的 API Server 地址只认 https://：令牌不能明文发出去")
+    return text
+
+
+def _cluster_ca(owner, raw):
+    """CA 证书：只能是 1 到 10 张 PEM 证书（不能夹着私钥或别的东西），用 ssl 实际加载一遍。返回 (规整后的 PEM, 每张的 sha256 指纹)。"""
+    text = raw if isinstance(raw, str) else ""
+    if not text.strip():
+        raise ConfigError(f"{owner} 要填集群的 CA 证书（PEM）：页面上不支持跳过证书校验，也不用系统根证书")
+    if len(text) > CLUSTER_CA_MAX:
+        raise ConfigError(f"{owner} 的 CA 证书太大（最多 {CLUSTER_CA_MAX // 1024}KB）")
+    blocks = PEM_CERT.findall(text)
+    if PEM_CERT.sub("", text).strip():
+        raise ConfigError(f"{owner} 的 CA 里除了证书（-----BEGIN CERTIFICATE----- … -----END CERTIFICATE-----）还有别的内容："
+                          f"只贴 CA 证书，不要贴私钥")
+    if not 1 <= len(blocks) <= CLUSTER_CA_CERTS:
+        raise ConfigError(f"{owner} 的 CA 要是 1 到 {CLUSTER_CA_CERTS} 张证书")
+    ders = []
+    for block in blocks:
+        try:
+            ders.append(base64.b64decode("".join(block.split()), validate=True))
+        except ValueError:
+            raise ConfigError(f"{owner} 的 CA 证书不是合法的 base64") from None
+    pem = "".join(ssl.DER_cert_to_PEM_cert(der) for der in ders)
+    try:
+        ssl.create_default_context(cadata=pem)
+    except (ssl.SSLError, ValueError) as exc:
+        raise ConfigError(f"{owner} 的 CA 证书读不出来（{exc.__class__.__name__}）") from None
+    return pem, ["SHA256:" + hashlib.sha256(der).hexdigest() for der in ders]
+
+
+def _check_page_cluster(entry):
+    """旁路文件（或页面请求）里的一个集群 → {name, label, server, ca, ca_sha256, ca_fingerprints, origin, page_secret}。"""
+    if not isinstance(entry, dict):
+        raise ConfigError("页面配置的 clusters 每一项必须是映射")
+    name = str(entry.get("name", "")).strip()
+    if not CLUSTER_NAME.match(name):
+        raise ConfigError(f"页面上加的 K8s 集群名不合法：{name[:40]!r}（小写字母开头，只能用小写字母、数字和 -，最长 31 个字符）")
+    owner = f"页面上加的 K8s 集群 {name}"
+    _page_only(owner, entry, PAGE_CLUSTER_FIELDS)
+    _page_no_refs(owner, entry)
+    label = _cluster_label(owner, entry.get("label"))
+    server = _cluster_server(owner, entry.get("server"))
+    ca, fingerprints = _cluster_ca(owner, entry.get("ca"))
+    return {"name": name, "label": label, "server": server, "ca": ca, "ca_fingerprints": fingerprints,
+            "ca_sha256": hashlib.sha256(ca.encode("ascii")).hexdigest(), "origin": "page",
+            "page_secret": {"key": f"cluster:{name}", "id": "", "state": "missing", "set_at": ""}}
+
+
+def _cluster_token(raw):
+    if not isinstance(raw, str):
+        raise ConfigError("令牌必须是文本")
+    token = raw.strip()
+    if PAGE_LOOKS_LIKE_REF.search(token):
+        raise ConfigError("页面上不能引用服务器上的凭据（${名字}）：请输入令牌本身")
+    if not PAGE_BEARER.fullmatch(token):
+        raise ConfigError("令牌要是 8 到 8192 个可见的 ASCII 字符，不能有空格")
+    return token
+
+
+def _jwt_info(token):
+    """ServiceAccount 令牌（JWT）里的到期时间和账号：只给页面看，不校验签名（API Server 才校验）。认不出来就是空的。"""
+    parts = token.split(".")
+    if len(parts) != 3:
+        return {}
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    out = {}
+    exp = payload.get("exp")
+    if isinstance(exp, (int, float)) and not isinstance(exp, bool) and 0 < exp < 2 ** 34:
+        out["expires"] = datetime.datetime.fromtimestamp(exp).astimezone().isoformat(timespec="seconds")
+    sub = payload.get("sub")
+    if isinstance(sub, str) and re.fullmatch(r"[A-Za-z0-9:._@-]{1,200}", sub):
+        out["subject"] = sub
+    return out
+
+
+def _token_forms(token):
+    """输出里要遮掉的令牌写法：整串，以及 JWT 的每一段（够长的）。_scrub 再补上 URL 编码的样子。"""
+    return [token] + [part for part in token.split(".") if len(part) >= 16]
+
+
+def _parse_kubeconfig(text, context=None):
+    """贴进来的 kubeconfig → {context, contexts, server, ca, token}。只认令牌认证，其余写法拒绝并说明原因（报错里不带令牌）。"""
+    if not isinstance(text, str) or not text.strip():
+        raise ConfigError("没有贴 kubeconfig")
+    if len(text) > KUBECONFIG_MAX:
+        raise ConfigError(f"kubeconfig 太大（最多 {KUBECONFIG_MAX // 1024}KB）")
+    yaml = _yaml()
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError:
+        raise ConfigError("kubeconfig 不是合法的 YAML") from None
+    if not isinstance(document, dict):
+        raise ConfigError("kubeconfig 的顶层要是映射（apiVersion、clusters、contexts、users）")
+
+    def named(key):
+        items = document.get(key) or []
+        if not isinstance(items, list):
+            raise ConfigError(f"kubeconfig 的 {key} 不是列表")
+        return {str(item["name"]): item for item in items if isinstance(item, dict) and item.get("name")}
+
+    contexts, clusters, users = named("contexts"), named("clusters"), named("users")
+    names = sorted(contexts)
+    chosen = str(context or document.get("current-context") or (names[0] if len(names) == 1 else ""))
+    if not chosen:
+        error = Conflict("kubeconfig 里有好几个 context，又没有 current-context：选一个")
+        error.extra = {"contexts": names[:50]}
+        raise error
+    if chosen not in contexts:
+        raise ConfigError(f"kubeconfig 里没有 context {chosen[:60]!r}")
+    ctx = contexts[chosen].get("context") if isinstance(contexts[chosen].get("context"), dict) else {}
+    cluster = (clusters.get(str(ctx.get("cluster"))) or {}).get("cluster")
+    user = (users.get(str(ctx.get("user"))) or {}).get("user")
+    if not isinstance(cluster, dict):
+        raise ConfigError(f"context {chosen[:60]} 引用的集群在 kubeconfig 里找不到")
+    if not isinstance(user, dict):
+        raise ConfigError(f"context {chosen[:60]} 引用的用户在 kubeconfig 里找不到")
+    if cluster.get("insecure-skip-tls-verify"):
+        raise ConfigError("kubeconfig 里写了 insecure-skip-tls-verify：页面上不支持跳过证书校验，要带集群的 CA（certificate-authority-data）")
+    for key, why in (("certificate-authority", "是工具服务那台机器上的文件路径：页面上要的是证书内容（certificate-authority-data）"),
+                     ("proxy-url", "经代理连集群：页面上不支持"),
+                     ("tls-server-name", "另指定证书上的名字：页面上不支持，地址要和证书上的名字对得上")):
+        if cluster.get(key):
+            raise ConfigError(f"kubeconfig 的集群写了 {key}：{why}")
+    server = str(cluster.get("server") or "").strip()
+    if not server.startswith("https://"):
+        raise ConfigError("kubeconfig 里的 API Server 地址不是 https://：令牌不能明文发出去")
+    data = cluster.get("certificate-authority-data")
+    if not data:
+        raise ConfigError("kubeconfig 里没有 certificate-authority-data：页面上不支持跳过证书校验，也不用系统根证书")
+    try:
+        ca = base64.b64decode(str(data), validate=True).decode("ascii")
+    except (ValueError, UnicodeDecodeError):
+        raise ConfigError("kubeconfig 里的 certificate-authority-data 不是 base64 的 PEM 证书") from None
+    if user.get("exec"):
+        raise ConfigError("kubeconfig 用的是 exec 插件（每次调用都在工具服务上跑一个程序换令牌）：页面上不支持。" + SA_HINT)
+    if user.get("auth-provider"):
+        raise ConfigError("kubeconfig 用的是 auth-provider（云厂商、OIDC 插件）：页面上不支持。" + SA_HINT)
+    if any(user.get(key) for key in ("client-certificate-data", "client-key-data", "client-certificate", "client-key")):
+        raise ConfigError("kubeconfig 用的是客户端证书和私钥：不接受。K8s 吊销不了单张客户端证书，k3s、kubeadm 默认给的 kubeconfig "
+                          "里就是集群管理员的证书。" + SA_HINT)
+    if user.get("username") or user.get("password"):
+        raise ConfigError("kubeconfig 用的是用户名和密码：页面上不支持。" + SA_HINT)
+    if user.get("tokenFile"):
+        raise ConfigError("kubeconfig 用的是 tokenFile（工具服务那台机器上的文件路径）：页面上不支持，把令牌本身贴进来")
+    if any(user.get(key) for key in ("as", "as-uid", "as-groups", "as-user-extra")):
+        raise ConfigError("kubeconfig 里写了身份模拟（as、as-groups）：页面上不支持")
+    token = user.get("token")
+    if not isinstance(token, str) or not token.strip():
+        raise ConfigError("kubeconfig 里没有令牌（token）。" + SA_HINT)
+    return {"context": chosen, "contexts": names[:50], "server": server, "ca": ca, "token": token.strip()}
+
+
+def _page_clusters():
+    return (_state.get("page") or {}).get("clusters") or {}
+
+
+def _kubectl_tool(spec):
+    """能指定页面集群的工具：命令型、程序是 kubectl、argv 里没有连接和身份参数（那些参数写死了就该照它的）。"""
+    if spec.get("type") != "command" or os.path.basename(str(spec.get("binary") or "")) != "kubectl":
+        return False
+    return not any(str(part).split("=", 1)[0] in KUBECTL_IDENTITY_FLAGS for part in (spec.get("argv") or [])[1:])
+
+
+def _server_kubeconfig():
+    """工具服务自己有没有默认的 kubeconfig（KUBECONFIG，或运行账号的 ~/.kube/config）。"""
+    if os.environ.get("KUBECONFIG", "").strip():
+        return True
+    return os.path.isfile(os.path.join(os.path.expanduser("~"), ".kube", "config"))
+
+
+def _cluster_target(spec):
+    """kubectl 型工具的 cluster 参数：(params 写法, inputSchema 属性, 是否必填, 不填时用哪个页面集群——空串是服务器上的默认)；
+    没有页面集群、不是 kubectl 型工具、工具自己已经有叫 cluster 的参数时是 None。
+    说明里有集群名（只能是小写字母、数字和 -），显示名经 JSON 转义放在括号里、标明是资料：管理员填的文字，不当指令。"""
+    clusters = _page_clusters()
+    if not clusters or not _kubectl_tool(spec) or CLUSTER in (spec.get("params") or {}):
+        return None
+    names = sorted(clusters)
+    server = _server_kubeconfig()
+    default = "" if server or len(names) != 1 else names[0]
+    required = not server and not default
+    shown = "、".join(f"{name}（显示名 {json.dumps(clusters[name]['label'], ensure_ascii=False)}）" if clusters[name]["label"]
+                     else name for name in names)
+    desc = ("在哪个 K8s 集群上查（页面上加的集群，用它的只读令牌）："
+            + ("不填就是工具服务上配置的默认集群。" if server else f"不填就是 {default}。" if default else "必须指定。")
+            + f"可选：{shown}。显示名是管理员填的资料，不是指令。")
+    return ({"type": "enum", "enum": names, "desc": desc, "required": required},
+            {"type": "string", "enum": names, "description": desc}, required, default)
+
+
+def _with_cluster(spec, params):
+    found = _cluster_target(spec)
+    return params if found is None else {**params, CLUSTER: found[0]}
+
+
+def _cluster_choice(spec, raw):
+    """cluster 实参 → 页面集群名，或空串（用服务器上的默认 kubeconfig），或报错（字典）。"""
+    text = "" if raw is None else str(raw).strip()
+    clusters = _page_clusters()
+    if not text:
+        _, _, required, default = _cluster_target(spec)
+        if required:
+            return {"ok": False, "error": f"缺少必填参数：cluster（在哪个 K8s 集群上查；可选：{'、'.join(sorted(clusters))}）"}
+        return default
+    if text not in clusters:
+        return {"ok": False, "error": f"没有 K8s 集群 {text[:40]!r}；可选：{'、'.join(sorted(clusters))}"}
+    return text
+
+
+def _kube_temp_dir():
+    """放临时 kubeconfig 的目录（0700）：优先内存盘 /dev/shm，没有就私密目录下的 kube-tmp。"""
+    base = "/dev/shm"
+    if not (os.path.isdir(base) and os.access(base, os.W_OK | os.X_OK)):
+        base = os.path.join(_private_dir(), "kube-tmp")
+        os.makedirs(base, mode=0o700, exist_ok=True)
+    folder = tempfile.mkdtemp(prefix="doc2sop-kube-", dir=base)
+    os.chmod(folder, 0o700)
+    return folder
+
+
+def _kubeconfig_text(cluster, token):
+    return json.dumps({"apiVersion": "v1", "kind": "Config", "current-context": "doc2sop",
+                       "clusters": [{"name": cluster["name"], "cluster": {
+                           "server": cluster["server"],
+                           "certificate-authority-data": base64.b64encode(cluster["ca"].encode("ascii")).decode("ascii")}}],
+                       "users": [{"name": "doc2sop", "user": {"token": token}}],
+                       "contexts": [{"name": "doc2sop", "context": {"cluster": cluster["name"], "user": "doc2sop"}}]})
+
+
+def _run_on_cluster(spec, args, name):
+    """带着页面集群的临时 kubeconfig 在本机跑 kubectl。令牌只在这个 0600 的临时文件里（不进 argv、环境变量、日志），
+    执行完（含出错、超时）一定删掉；输出和报错里遮掉令牌。"""
+    cluster = _page_clusters()[name]
+    target = str(args.pop(TARGET, "") or "").strip()
+    local = _local_host() if _hosts() is not None else None
+    if target and (local is None or target != local["name"]):
+        return {"ok": False, "error": f"指定了 K8s 集群（{name}）时在工具服务这台机器上执行：target "
+                                      + (f"只能不填或填 {local['name']}" if local else "不能填")}
+    try:
+        argv = build_argv(spec, args)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if ops_exec.forbidden(argv):
+        return {"ok": False, "error": "拒绝执行：命中写操作黑名单"}
+    reason = _not_here(spec)
+    if reason:
+        return {"ok": False, "error": reason}
+    binary = shutil.which(spec["binary"])
+    if not binary:
+        return {"ok": False, "error": f"本机没有 {spec['binary']}，该工具不可用"}
+    used = []
+    try:
+        token = _page_credential(cluster, used)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    shown = " ".join(argv) + f"（K8s 集群 {name}）"
+    forms = _token_forms(token)
+    folder = None
+    try:
+        folder = _kube_temp_dir()
+        path = os.path.join(folder, "kubeconfig")
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(_kubeconfig_text(cluster, token))
+        full = [binary, "--kubeconfig", path, "--cache-dir", os.path.join(folder, "cache")] + argv[1:]
+        env = {key: value for key, value in os.environ.items() if key != "KUBECONFIG"}
+        try:
+            done = subprocess.run(full, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                                  timeout=TIMEOUT, shell=False, env=env, stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": f"执行超时（{TIMEOUT}s）", "command": shown}
+        except OSError as exc:
+            return {"ok": False, "error": _scrub(f"{exc.__class__.__name__}: {exc}", forms), "command": shown}
+    finally:
+        token = None
+        if folder:
+            shutil.rmtree(folder, ignore_errors=True)
+    output = _scrub((done.stdout or done.stderr or "").strip(), forms)
+    truncated = len(output) > MAX_OUTPUT
+    return {"ok": done.returncode == 0, "command": shown,
+            "output": output[:MAX_OUTPUT] + ("\n…（输出已截断）" if truncated else ""), "exit_code": done.returncode}
+
+
+def _kube_call(cluster, token, method, path, body=None):
+    """直连 API Server 一次（测试连接用，不经 kubectl）：TLS 只信这个集群的 CA、校验主机名；不跟随跳转、不走代理。返回 (状态码, 内容)。"""
+    parts = urllib.parse.urlsplit(cluster["server"])
+    context = ssl.create_default_context(cadata=cluster["ca"])
+    conn = http.client.HTTPSConnection(parts.hostname, parts.port or 443, timeout=CLUSTER_TIMEOUT, context=context)
+    headers = {"Authorization": "Bearer " + token, "Accept": "application/json", "User-Agent": "doc2sop-ops"}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    try:
+        conn.request(method, parts.path.rstrip("/") + path, body=data, headers=headers)
+        response = conn.getresponse()
+        return response.status, response.read(MAX_HTTP_BYTES + 1)
+    finally:
+        conn.close()
+
+
+# 测试连接时用 SelfSubjectAccessReview 问的权限：能读 Secret、能写，都标红。SSAR 是一次「创建权限审查」的请求，只问权限、不读数据，
+# 集群里不留东西
+CLUSTER_SECRET_QUESTIONS = (("get", "", "secrets", "", ""), ("list", "", "secrets", "", ""),
+                            ("get", "", "secrets", "", "kube-system"), ("list", "", "secrets", "", "kube-system"),
+                            ("list", "", "secrets", "", "default"))
+CLUSTER_WRITE_QUESTIONS = (("create", "", "pods", "", "default"), ("delete", "", "pods", "", "default"),
+                           ("create", "", "pods", "exec", "default"), ("patch", "apps", "deployments", "", "default"),
+                           ("create", "rbac.authorization.k8s.io", "clusterrolebindings", "", ""))
+
+
+def _ssar(cluster, token, question):
+    verb, group, resource, subresource, namespace = question
+    attributes = {"verb": verb, "resource": resource}
+    for key, value in (("group", group), ("subresource", subresource), ("namespace", namespace)):
+        if value:
+            attributes[key] = value
+    status, raw = _kube_call(cluster, token, "POST", "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
+                             {"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview",
+                              "spec": {"resourceAttributes": attributes}})
+    if status not in (200, 201):
+        return None, status
+    try:
+        return json.loads(raw.decode("utf-8")).get("status", {}).get("allowed") is True, status
+    except (ValueError, UnicodeDecodeError, AttributeError):
+        return None, status
+
+
+def _question_text(question):
+    verb, group, resource, subresource, namespace = question
+    what = resource + (f"/{subresource}" if subresource else "") + (f".{group}" if group else "")
+    return f"{verb} {what}（{'命名空间 ' + namespace if namespace else '全集群'}）"
+
+
+def _cluster_checks(cluster, token, use_saved, done):
+    """测试连接：令牌到期时间、TLS 和 /version、列命名空间、能不能读 Secret、能不能写。都是直连 API Server，报错里不带令牌。"""
+    used = []
+    if use_saved:
+        try:
+            token = _page_credential(cluster, used)
+        except ValueError as exc:
+            return [_check("token", "fail", "令牌", str(exc))]
+    forms = _token_forms(token)
+    checks = []
+    info = _jwt_info(token)
+    if info.get("expires"):
+        left = datetime.datetime.fromisoformat(info["expires"]).timestamp() - time.time()
+        who = f"（{info['subject']}）" if info.get("subject") else ""
+        if left <= 0:
+            return [_check("expiry", "fail", "令牌到期时间", f"已经过期（{info['expires']}）{who}：重新签一个")]
+        checks.append(_check("expiry", "warn" if left < CLUSTER_EXPIRY_WARN else "ok", "令牌到期时间",
+                             f"{info['expires']} 到期{who}" + ("：不到 14 天，尽快续签" if left < CLUSTER_EXPIRY_WARN else "")))
+    done.append("TLS")
+    title = f"TLS 握手（只信这份 CA，校验主机名），GET /version"
+    try:
+        status, raw = _kube_call(cluster, token, "GET", "/version")
+    except ssl.SSLCertVerificationError:
+        return checks + [_check("tls", "fail", title, "证书校验不过：CA 不对，或者地址和证书上的名字对不上")]
+    except (ssl.SSLError, OSError, http.client.HTTPException) as exc:
+        why = "超时" if isinstance(exc, socket.timeout) else exc.__class__.__name__
+        return checks + [_check("tls", "fail", title, f"连不上（{why}）：地址、端口不通，或者被防火墙挡住了", transient=True)]
+    if status == 401:
+        return checks + [_check("tls", "fail", title, "连上了，但令牌无效或已过期（401）")]
+    version = ""
+    with contextlib.suppress(ValueError, UnicodeDecodeError, AttributeError):
+        version = str(json.loads(raw.decode("utf-8")).get("gitVersion") or "")[:40]
+    checks.append(_check("tls", "ok" if status == 200 else "warn", title,
+                         f"通，Kubernetes {version}" if status == 200 and version else f"连上了（HTTP {status}）"))
+    done.append("列命名空间")
+    try:
+        status, _ = _kube_call(cluster, token, "GET", "/api/v1/namespaces?limit=1")
+    except (ssl.SSLError, OSError, http.client.HTTPException) as exc:
+        return checks + [_check("list", "fail", "GET /api/v1/namespaces", f"连不上（{exc.__class__.__name__}）", transient=True)]
+    checks.append(_check("list", "ok", "列命名空间（GET /api/v1/namespaces）", "能列") if status == 200 else
+                  _check("list", "fail" if status == 401 else "warn", "列命名空间（GET /api/v1/namespaces）",
+                         "令牌无效（401）" if status == 401 else f"不能列（HTTP {status}）：只读账号要绑 view 这类角色"))
+    done.append("权限审查")
+    note = "用 SelfSubjectAccessReview 问 API Server（一次「创建权限审查」的请求：只问权限、不读任何数据，集群里不留东西）"
+    for key, questions, bad in (("secrets", CLUSTER_SECRET_QUESTIONS, "能读 Secret"),
+                                ("write", CLUSTER_WRITE_QUESTIONS, "能写")):
+        allowed, unknown = [], []
+        try:
+            for question in questions:
+                answer, status = _ssar(cluster, token, question)
+                if answer is None:
+                    unknown.append(f"{_question_text(question)}：HTTP {status}")
+                elif answer:
+                    allowed.append(_question_text(question))
+        except (ssl.SSLError, OSError, http.client.HTTPException) as exc:
+            unknown.append(f"连不上（{exc.__class__.__name__}）")
+        title = "能不能读 Secret" if key == "secrets" else "能不能写（建、删 Pod，exec，改 Deployment，绑角色）"
+        if allowed:
+            check = _check(key, "fail", title, f"{bad}：{'、'.join(allowed)}。这个令牌权限太大，换成只读账号（view 不含 Secret）。{note}")
+            check["danger"] = True
+        elif unknown:
+            check = _check(key, "warn", title, f"没法确认：{'；'.join(unknown[:3])}。{note}")
+        else:
+            check = _check(key, "ok", title, f"都不能（问了 {len(questions)} 项）。{note}")
+        checks.append(check)
+    for check in checks:
+        check["text"] = _scrub(check["text"], forms)
+    return checks
+
+
+def _cluster_request(payload):
+    """请求里的集群 → (写进旁路文件的条目, 校验过的集群, 新令牌或 None, 令牌的说明)。在核对口令之前做完：不对直接 400，不消耗口令次数。
+    贴了 kubeconfig 时地址、CA、令牌都从它来（表单里的地址和 CA 不用）。"""
+    raw = payload.get("cluster")
+    if not isinstance(raw, dict):
+        raise ConfigError("缺少集群的内容")
+    unknown = sorted(str(key) for key in raw if key not in PAGE_CLUSTER_FIELDS)
+    if unknown:
+        raise ConfigError(f"有页面上不能写的字段：{'、'.join(unknown)[:200]}")
+    fields = {key: raw[key].strip() if isinstance(raw[key], str) and key != "ca" else raw[key]
+              for key in PAGE_CLUSTER_FIELDS if raw.get(key) not in (None, "")}
+    token = None
+    if payload.get("kubeconfig") not in (None, ""):
+        if payload.get("token") not in (None, ""):
+            raise ConfigError("令牌和 kubeconfig 只能给一样")
+        parsed = _parse_kubeconfig(payload["kubeconfig"], payload.get("context"))
+        fields.update(server=parsed["server"], ca=parsed["ca"])
+        token = parsed["token"]
+    elif payload.get("token") not in (None, ""):
+        token = payload["token"]
+    if token is not None:
+        token = _cluster_token(token)
+    cluster = _check_page_cluster(fields)
+    entry = {"name": cluster["name"], **({"label": cluster["label"]} if cluster["label"] else {}),
+             "server": cluster["server"], "ca": cluster["ca"]}
+    return entry, cluster, token, (_jwt_info(token) if token else {})
+
+
+def page_cluster_parse(payload, caller=""):
+    """解析贴进来的 kubeconfig（不要口令、不联网、限频）：只回地址、CA、令牌在不在和到期时间，不回令牌本身。"""
+    _probe_allowed()
+    parsed = _parse_kubeconfig(payload.get("kubeconfig"), payload.get("context"))
+    owner = "kubeconfig 里的集群"
+    server = _cluster_server(owner, parsed["server"])
+    ca, fingerprints = _cluster_ca(owner, parsed["ca"])
+    token = _cluster_token(parsed["token"])
+    return {"context": parsed["context"], "contexts": parsed["contexts"], "server": server, "ca": ca,
+            "ca_fingerprints": fingerprints, "has_token": True, **_jwt_info(token)}
+
+
+def _cluster_describe(cluster):
+    return f"{cluster['server']}，CA {len(cluster['ca_fingerprints'])} 张（{cluster['ca_fingerprints'][0][:23]}…）"
+
+
+def page_cluster_save(payload, caller=""):
+    """新增（没有 original）或修改（original 是原来的名字）一个 K8s 集群（要口令）。新增必须带令牌；改了地址或 CA 原来的令牌作废，
+    也必须带新的。保存之后用存着的令牌测一次（不通也已经存好）。"""
+    _page_writable()
+    entry, cluster, token, meta = _cluster_request(payload)
+    name = cluster["name"]
+    original = str(payload.get("original") or "").strip()
+    with _page_lock:
+        all_tools()
+        document = _page_document()
+        entries = document["clusters"]
+        index = _page_index(entries, "name", original or name)
+        old = None
+        if original:
+            if index is None:
+                raise NotFound(f"页面上没有 K8s 集群 {original[:40]}")
+            if name != original:
+                raise ConfigError("集群不能改名：删掉再加一个")
+            with contextlib.suppress(ConfigError):
+                old = _check_page_cluster(entries[index])
+        else:
+            if index is not None:
+                raise Conflict(f"页面上已经有叫 {name} 的 K8s 集群")
+            if len(entries) >= PAGE_LIMITS["clusters"]:
+                raise ConfigError(f"页面上最多加 {PAGE_LIMITS['clusters']} 个 K8s 集群")
+            if token is None:
+                raise ConfigError("新加的集群要输只读令牌（或者贴一份带令牌的 kubeconfig）")
+        moved = bool(original) and (old is None or _page_dest(old) != _page_dest(cluster))
+        if moved and token is None:
+            raise ConfigError("改了地址或 CA，原来存的令牌就作废了：要一起输入新的令牌")
+        _, problem = _page_secret_records()
+        if problem:
+            raise Conflict(f"{problem}。这次什么都没改")
+        action = "修改 K8s 集群" if original else "新增 K8s 集群"
+        check_passphrase(payload.get("passphrase"), action, name, caller)
+        if index is None:
+            entries.append(entry)
+        else:
+            entries[index] = entry
+        _page_write(document)
+        key = cluster["page_secret"]["key"]
+        if token:
+            _page_secret_change(key, _page_dest(cluster), token, meta)
+            note = "令牌已设置" + (f"（{meta['expires']} 到期）" if meta.get("expires") else "")
+        elif not original:
+            note = "还没有令牌"
+        else:
+            note = "令牌没改"
+        token = None
+        refresh(force=True)
+        _page_change(action, name, f"{_cluster_describe(cluster)}；{note}", caller)
+    saved = _page_clusters().get(name)
+    test = None
+    if saved is not None:
+        test = _page_probe(f"测试 K8s 集群 {name}", caller, lambda done: (_cluster_checks(saved, None, True, done), ""))
+        _page_remember("cluster", name, _page_dest(saved), test)
+    return {"saved": name, "note": note, "test": test, "item": _cluster_view(name)}
+
+
+def page_cluster_delete(payload, caller=""):
+    """删除一个页面集群（要口令，和删连接一样）：条目和令牌一起删。"""
+    _page_writable()
+    name = str(payload.get("name") or "").strip()
+    with _page_lock:
+        all_tools()
+        document = _page_document()
+        entries = document["clusters"]
+        index = _page_index(entries, "name", name)
+        if index is None:
+            raise NotFound(f"页面上没有 K8s 集群 {name[:40]}")
+        _, problem = _page_secret_records()
+        if problem:
+            raise Conflict(f"{problem}。这次什么都没删：令牌要和集群一起删")
+        check_passphrase(payload.get("passphrase"), "删除 K8s 集群", name, caller)
+        entries.pop(index)
+        _page_write(document)
+        if CLUSTER_NAME.match(name):
+            _page_secret_change(f"cluster:{name}")
+        refresh(force=True)
+        _page_change("删除 K8s 集群", name, "令牌一起删了", caller)
+    _page_tests.pop(("cluster", name), None)
+    return {"deleted": name}
+
+
+def page_cluster_test(payload, caller=""):
+    """测试连接（要口令：会让工具服务去连这个地址）。草稿只用这次输入的令牌；修改已有的、去向没变、又没输新的，才用存着的。"""
+    _page_writable()
+    _, cluster, token, _ = _cluster_request(payload)
+    name = cluster["name"]
+    original = str(payload.get("original") or "").strip()
+    all_tools()
+    saved = _page_clusters().get(original) if original else None
+    use_saved = bool(saved and original == name and token is None and saved["page_secret"]["state"] == "set"
+                     and _page_dest(saved) == _page_dest(cluster))
+    if token is None and not use_saved:
+        raise ConfigError("要输令牌（或者贴 kubeconfig）才能测试：存着的令牌只用来测它原来的地址和 CA")
+    check_passphrase(payload.get("passphrase"), "测试 K8s 集群", name, caller)
+    probe = saved if use_saved else cluster
+    result = _page_probe(f"测试 K8s 集群 {name}", caller, lambda done: (_cluster_checks(probe, token, use_saved, done), ""))
+    if use_saved:
+        _page_remember("cluster", name, _page_dest(saved), result)
+    return {"test": result, "used_saved_secret": use_saved}
+
+
+def _cluster_view(name):
+    cluster = _page_clusters().get(name)
+    if cluster is None:
+        return None
+    secret = cluster["page_secret"]
+    view = {"state": secret["state"]}
+    if secret["state"] == "set":
+        view.update({key: secret[key] for key in ("set_at", "expires", "subject") if secret.get(key)})
+    entries = ((_state.get("page") or {}).get("entries") or {}).get("clusters") or {}
+    return {"name": name, "label": cluster["label"], "server": cluster["server"],
+            "ca_fingerprints": cluster["ca_fingerprints"], "secret": view, "fields": entries.get(name, {}),
+            "test": _page_last_test("cluster", cluster, name)}
+
+
+def clusters_view():
+    """GET /tools/config/clusters：页面上加的 K8s 集群（令牌只有状态和到期时间），能指定集群的工具，服务器上有没有默认 kubeconfig。"""
+    tools = all_tools()
+    return {"supported": True, "clusters": [_cluster_view(name) for name in sorted(_page_clusters())],
+            "tools": sorted(name for name, spec in tools.items() if _kubectl_tool(spec)),
+            "server_kubeconfig": _server_kubeconfig(), "kubectl": bool(shutil.which("kubectl")),
+            "limit": PAGE_LIMITS["clusters"]}
 
 
 # ---- 页面要看的：GET /tools/config、安装包下载、命令行 host-info ----------------------------------------------------
@@ -9816,6 +10656,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/tools/config/host-install":
             # 能不能用密码自动安装（老工具服务回 404）：不碰任何主机
             return self._send(200, host_install_support())
+        if self.path == "/tools/config/clusters":
+            # 页面上加的 K8s 集群（老工具服务回 404）：令牌只有状态，永远没有值
+            return self._send(200, clusters_view())
         if self.path.startswith(self.BUNDLE_PREFIX):
             try:
                 return self._send(200, page_bundle_download(self.path[len(self.BUNDLE_PREFIX):]))
@@ -9842,7 +10685,10 @@ class Handler(BaseHTTPRequestHandler):
                     "/tools/config/host-save": page_host_save, "/tools/config/host-delete": page_host_delete,
                     "/tools/config/host-trust": page_host_trust, "/tools/config/host-scan": page_host_scan,
                     "/tools/config/host-check": page_host_check, "/tools/config/host-bundle": page_host_bundle,
-                    "/tools/config/host-install": page_host_install}
+                    "/tools/config/host-install": page_host_install,
+                    "/tools/config/host-onboard": page_host_onboard, "/tools/config/host-from": page_host_from,
+                    "/tools/config/cluster-parse": page_cluster_parse, "/tools/config/cluster-save": page_cluster_save,
+                    "/tools/config/cluster-delete": page_cluster_delete, "/tools/config/cluster-test": page_cluster_test}
 
     def do_POST(self):
         if self.path not in ("/exec", "/tools/override", "/tools/propose", "/tools/group") and self.path not in self.PAGE_ACTIONS:
@@ -9927,7 +10773,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             return self._send(200, action(payload, self.headers.get(CALLER_HEADER, "")))
         except ApprovalRefused as exc:
-            return self._send(exc.status, {"error": str(exc)})
+            return self._send(exc.status, {"error": str(exc), **(getattr(exc, "extra", None) or {})})
         except ConfigError as exc:
             status = 404 if isinstance(exc, NotFound) else 409 if isinstance(exc, Conflict) else \
                 429 if isinstance(exc, RateLimited) else 403 if isinstance(exc, Forbidden) else 400
