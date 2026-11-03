@@ -169,6 +169,13 @@ class ResolveTests(unittest.TestCase):
         # 代理忘了传 X-Forwarded-For、也没有别的转发头：Host 不是本机，一样认出来
         self.assertEqual(resolved(TRUST_LOCAL, client=("127.0.0.1", 9), host="kb.example.com")["client"][0],
                          peer.UNTRUSTED)
+        # 不在本机的代理（负载均衡、另一台 nginx）没带 X-Forwarded-For：不能把它自己的地址当来源（名单里常有它的网段）
+        lb = peer.parse_trusted("10.0.0.5")
+        for headers in ((("X-Real-IP", "203.0.113.9"),), ()):
+            with self.subTest(headers=headers):
+                self.assertEqual(resolved(lb, client=("10.0.0.5", 9), host="kb.example.com", headers=headers)["client"][0],
+                                 peer.UNTRUSTED)
+        self.assertEqual(peer.events()["untrusted"]["peer"], "10.0.0.5")
 
     def test_odd_peers(self):
         for client in (("testclient", 50000), None, ("", 0)):

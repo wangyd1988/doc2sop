@@ -7,7 +7,8 @@ request.client.host 也是对的；新代码用 address() / is_local() / transpo
 
 - 对端在 TRUSTED_PROXIES 里（写错、写 * 或 0.0.0.0/0 时导入就报错，app/serve.py 据此拒绝启动）：X-Forwarded-For
   从右往左跳过可信的项，第一个不可信的就是客户端；X-Forwarded-Proto 只认 http / https，取最右一个（离应用最近的代理
-  写的）。可信代理只带 Forwarded / X-Real-IP、不带 X-Forwarded-For，或者 X-Forwarded-For 里认不出地址：按「来源不明」处理。
+  写的）。登记的代理没带 X-Forwarded-For（只带 Forwarded / X-Real-IP，或者什么都没带——本机对端、Host 是本机的除外），
+  或者 X-Forwarded-For 里认不出地址：按「来源不明」处理。
 - 配错的识别：对端是回环地址、又不是登记过的代理转来的（不在名单里，或在名单里却没带 X-Forwarded-For），并且
   ① 带了任何转发头，或 ② Host 不是 127.0.0.1、::1、localhost（或者没有 Host）——这种请求多半是本机的反向代理、
   TCP 转发（realm、stunnel……）转进来的公网请求。来源一律记成 UNTRUSTED（不是 IP），「只收本机」、MCP_CLIENTS、
@@ -194,10 +195,17 @@ def resolve(scope, networks=None) -> None:
             _note("untrusted", peer, "可信代理给的 X-Forwarded-For 里认不出客户端地址")
         scope["client"] = (found or UNTRUSTED, 0)
         return
+    if trusted:
+        # 登记的代理却没带 X-Forwarded-For：不知道真实客户端是谁。只有本机对端、没带任何转发头、Host 也是本机的
+        # （经 SSH 隧道、本机 curl，代理和应用在同一台机器时）才照常算它自己
+        host = (headers.get(b"host") or [""])[0]
+        if forwarded or not is_loopback(peer) or not local_host(host):
+            _note("untrusted", peer, "登记的代理没带 X-Forwarded-For（只认这个头）")
+            scope["client"] = (UNTRUSTED, port)
+        return
     if is_loopback(peer):
         if forwarded:
-            why = ("登记的代理没带 X-Forwarded-For（只认这个头）" if trusted else "带了 " + "、".join(forwarded))
-            _note("untrusted", peer, why)
+            _note("untrusted", peer, "带了 " + "、".join(forwarded))
             scope["client"] = (UNTRUSTED, port)
         elif not local_host((headers.get(b"host") or [""])[0]):
             _note("untrusted", peer, "Host 不是本机地址（%s）" % (host_name((headers.get(b"host") or [""])[0])[:64] or "没有 Host"))
