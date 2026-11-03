@@ -10,11 +10,32 @@ from app import runs
 from app.agent import modes
 from app.config import BOT_NAME
 
-# 群聊、私聊的回答在系统提示词末尾多这一段（只在这个渠道加，网页的提示词不变）
-CHAT_RULES = """
+PLATFORM_NAMES = {"ccwork": "云上协同", "dingtalk": "钉钉"}
 
-**这次回答会发到云上协同的群聊或私聊里**：先给结论，尽量 800 字以内；少用表格（按 SOP 执行时的逐步表格照旧）；
+
+def platform_name(platform="ccwork") -> str:
+    """面向用户的平台名。认不出（或没有）的按云上协同：它是先有的，那条路上的字一个都不变。"""
+    return PLATFORM_NAMES.get(platform or "ccwork", PLATFORM_NAMES["ccwork"])
+
+
+def chat_rules(platform="ccwork") -> str:
+    """群聊、私聊的回答在系统提示词末尾多这一段（只在这个渠道加，网页的提示词不变）。"""
+    return f"""
+
+**这次回答会发到{platform_name(platform)}的群聊或私聊里**：先给结论，尽量 800 字以内；少用表格（按 SOP 执行时的逐步表格照旧）；
 不要写「点击按钮」「在页面上打开」这类网页上的操作。"""
+
+
+CHAT_RULES = chat_rules("ccwork")
+
+
+def platform_mismatch(bridge_platform, config_platform) -> str:
+    """转接程序和 chat.yaml 不是同一个平台时，页面、日志里的说明。"""
+    if not config_platform:
+        return "chat.yaml 的 platform 写错了：聊天和推送都停着"
+    return (f"转接程序是{PLATFORM_NAMES.get(bridge_platform, bridge_platform)}的，"
+            f"chat.yaml 是{PLATFORM_NAMES.get(config_platform, config_platform)}的"
+            f"（platform: {config_platform}）：聊天和推送都停着。换平台时要一起改 chat.yaml，并重新选推送目标")
 
 STATUS_SEARCH = "🔎 正在查知识库…"
 STATUS_WEB = "🌐 正在搜索网页…"
@@ -238,7 +259,7 @@ def run_lines(run, site_url="") -> list:
     return [head + "　" + report_ref(run, site_url), FEEDBACK_HINT]
 
 
-def help_text(scope, titles, *, group, web, contact="") -> str:
+def help_text(scope, titles, *, group, web, contact="", platform="ccwork") -> str:
     """「帮助」：这里能查什么、怎么问、命令，以及按当前配置的数据去向。"""
     tools = [titles.get(name, name) for name in scope.tools]
     can = (f"回答团队文档里的问题，还能查这些实际数据（只读）：{'、'.join(tools)}" if tools
@@ -253,8 +274,8 @@ def help_text(scope, titles, *, group, web, contact="") -> str:
     if tools:
         lines += ["• 执行 / 执行 2 / 执行 SOP名 参数=值：按 SOP 查一遍（会调用只读工具，结果发在这里）",
                   "• 误报 / 阈值不对 / 漏了一步 / 结论对：给上一次 SOP 执行的结论打分"]
-    flow = ("数据去向：问题和回答经云上协同服务器到 doc2sop 所在的服务器（存在对话记录里，管理员能在网页上看到，目前不自动删除），"
-            "再发给模型网关和它后面的模型服务商")
+    flow = (f"数据去向：问题和回答经{platform_name(platform)}服务器到 doc2sop 所在的服务器（存在对话记录里，管理员能在网页上看到，"
+            "目前不自动删除），再发给模型网关和它后面的模型服务商")
     if web:
         flow += "；联网搜索时搜索词会发给搜索服务"
     lines.append(flow + "。")
@@ -304,8 +325,8 @@ def push_text(run, kind, diff, site_url="") -> str:
     return "\n".join(lines)
 
 
-def test_push_text(target) -> str:
-    return (f"这是 {BOT_NAME} 的测试消息，发给推送目标「{target}」。收到它说明云上协同的推送能用："
+def test_push_text(target, platform="ccwork") -> str:
+    return (f"这是 {BOT_NAME} 的测试消息，发给推送目标「{target}」。收到它说明{platform_name(platform)}的推送能用："
             "SOP 自动执行有异常、没跑成、没法判断时，按计划和告警规则上的设置推到这里。")
 
 

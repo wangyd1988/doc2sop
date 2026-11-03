@@ -1,4 +1,5 @@
-"""kb-app 这一侧调转接程序（deploy/ccwork/ccwork_bridge.py）的本机接口（docs/正式部署.md「云上协同」）。
+"""kb-app 这一侧调转接程序（deploy/ccwork/ccwork_bridge.py、deploy/dingtalk/dingtalk_bridge.py）的本机接口
+（docs/正式部署.md「云上协同」「钉钉」）。两个转接程序说同一套协议；同一时刻只连一个（CHAT_BRIDGE_URL 指哪个就是哪个）。
 
 地址只认字面量的 http://127.0.0.1:端口 或 http://[::1]:端口：配错成别的地址时不能把令牌发出去。不走环境代理、
 不跟重定向。每个请求带令牌（X-Chat-Bridge-Token）和协议版本（X-Chat-Bridge-Protocol）。
@@ -7,6 +8,7 @@
 kb-app 拿不到、也用不着原始的会话 ID 去发消息。
 """
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -124,14 +126,45 @@ class Bridge:
         events = payload.get("events")
         return str(payload.get("epoch") or ""), [e for e in events if isinstance(e, dict)] if isinstance(events, list) else []
 
-    def reply_text(self, handle, text, mention=False) -> dict:
-        return self._call("POST", "/reply", {"handle": handle, "text": text, "mention": bool(mention)})
+    def reply_text(self, handle, text, mention=False, fmt=None) -> dict:
+        body = {"handle": handle, "text": text, "mention": bool(mention)}
+        if fmt:                                 # 只在转接程序声明了支持、而且不是纯文本时才带：云上协同的请求体不变
+            body["format"] = fmt
+        return self._call("POST", "/reply", body)
 
     def reply_stream(self, handle, packet) -> dict:
         return self._call("POST", "/reply", {"handle": handle, "stream": packet})
 
-    def push(self, target, text) -> dict:
-        return self._call("POST", "/push", {"target": target, "text": text})
+    def push(self, target, text, fmt=None) -> dict:
+        body = {"target": target, "text": text}
+        if fmt:
+            body["format"] = fmt
+        return self._call("POST", "/push", body)
+
+
+DESCRIBE_TTL = 30.0
+
+
+def describe(bridge, fresh=False) -> dict | None:
+    """转接程序是哪个平台的、支持哪些格式、能不能发（/status，缓存 DESCRIBE_TTL 秒）；连不上是 None。
+    老的转接程序（云上协同）不报 platform、formats：当成 ccwork、只有纯文本。"""
+    cached = getattr(bridge, "_chat_described", None)
+    if cached and not fresh and time.monotonic() - cached[0] < DESCRIBE_TTL:
+        return cached[1]
+    try:
+        status = bridge.status()
+    except BridgeError:
+        return None
+    status = status if isinstance(status, dict) else {}
+    formats = status.get("formats")
+    info = {"platform": str(status.get("platform") or "ccwork"),
+            "formats": tuple(f for f in formats if isinstance(f, str)) if isinstance(formats, list) else ("text",),
+            "send": status.get("send")}
+    try:
+        bridge._chat_described = (time.monotonic(), info)
+    except AttributeError:
+        pass
+    return info
 
 
 # 打开了云上协同时 chat_api.install 配好一个；推送（chat_push）从这里取。关着时是 None：什么都不推、不碰 chat.db

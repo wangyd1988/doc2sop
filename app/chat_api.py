@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Body, HTTPException, Request
 
-from app import alerts, chat_bridge, chat_channel, chat_config, chat_push, chat_store, notify, schedules
+from app import alerts, chat_bridge, chat_channel, chat_config, chat_format, chat_push, chat_store, notify, schedules
 from app.agent import registry, web_search
 from app.chat_bridge import BridgeError
 from app.config import CHAT_BRIDGE_TOKEN, CHAT_BRIDGE_URL, WEB_USER, log
@@ -25,7 +25,8 @@ router = APIRouter()
 TEST_GAP = 60               # 同一个目标的测试消息至少隔多少秒
 TEST_PER_HOUR = 10
 BRIDGE_KEYS = ("enabled", "state", "since", "started_at", "tls", "diagnose", "send", "robot", "conflict", "targets",
-               "target_kinds", "problems", "queue", "kb_app_last_poll", "counters")
+               "target_kinds", "problems", "queue", "kb_app_last_poll", "counters", "platform", "formats",
+               "connections", "reconnects")
 NOTIFY_KINDS = {"schedule": "计划", "rule": "告警规则"}
 _state = {"channel": None, "problem": "", "smart": None}
 
@@ -83,12 +84,16 @@ def chat_status():
     cfg = chat_config.load()
     live, error = _bridge_status()
     channel = _state["channel"]
+    mismatch = []
+    if live and (live.get("platform") or "ccwork") != cfg.platform:
+        mismatch = [chat_format.platform_mismatch(live.get("platform") or "ccwork", cfg.platform)]
     return {"enabled": True, "problem": _state["problem"],
             "bridge": {"reachable": bool(live), "error": error, **{k: live[k] for k in BRIDGE_KEYS if k in live}},
             "channel": channel.status() if channel else None,
             "config": chat_config.public(cfg),
-            "problems": list(cfg.problems) + ([cfg.loose] if cfg.loose else []) + scope_problems(cfg),
-            "unknown": [{**item, "paste": paste_lines(item)} for item in chat_store.unknown_list()],
+            "problems": mismatch + list(cfg.problems) + ([cfg.loose] if cfg.loose else []) + scope_problems(cfg),
+            "unknown": [{**item, "paste": paste_lines(item)} for item in chat_store.unknown_list()
+                        if item["platform"] == cfg.platform],
             "pushes": chat_store.push_recent(10)}
 
 
@@ -118,12 +123,18 @@ def chat_test_push(request: Request, data: dict = Body(...)):
     except BridgeError as exc:
         if exc.status == 404:
             raise HTTPException(400, f"转接程序里没有推送目标「{target}」") from None
+        if exc.status == 409:
+            raise HTTPException(409, str(exc)) from None
         raise HTTPException(502, f"没发出去：{exc}") from None
     return {"sent": not reply.get("held"), "held": bool(reply.get("held")), "target": target}
 
 
 def _notify_view(item) -> dict:
-    return {key: item[key] for key in ("kind", "id", "target", "when", "repeat", "updated_at")}
+    """平台对不上的设置（换平台之前存的）不推：页面上目标显示成空的，旧目标名放在 stale 里提示重新选。"""
+    view = {key: item[key] for key in ("kind", "id", "target", "when", "repeat", "updated_at")}
+    if item.get("platform", "ccwork") != chat_config.load().platform:
+        view.update(target="", stale=item["target"], platform=item.get("platform", ""))
+    return view
 
 
 @router.get("/api/chat/notify")
@@ -153,9 +164,12 @@ def set_chat_notify(kind: str, source_id: str, data: dict = Body(...)):
     live, error = _bridge_status()
     if not live:
         raise HTTPException(503, f"转接程序连不上，没法核对推送目标，稍后再保存（{error}）")
+    platform = live.get("platform") or "ccwork"
+    if platform != chat_config.load().platform:
+        raise HTTPException(409, chat_format.platform_mismatch(platform, chat_config.load().platform))
     if target not in (live.get("targets") or []):
         raise HTTPException(400, f"转接程序里没有推送目标「{target}」：目标在服务器的 targets.yaml 里配，页面上只能选")
-    chat_store.notify_set(kind, source_id, target, when, repeat)
+    chat_store.notify_set(kind, source_id, target, when, repeat, platform)
     log.info("chat push for %s %s set (%s, %s)", kind, source_id, when, repeat)
     return _notify_view(chat_store.notify_get(kind, source_id))
 
@@ -164,6 +178,12 @@ def set_chat_notify(kind: str, source_id: str, data: dict = Body(...)):
 
 def readonly(conversation_id) -> bool:
     return chat_store.owns(conversation_id)
+
+
+def readonly_reason(conversation_id) -> str:
+    """/api/ask 拒绝在群聊对话里续问时的说明：按这条对话的来源平台写（云上协同的和以前一字不差）。"""
+    found = chat_store.source_of(conversation_id) or {}
+    return f"这是{chat_format.platform_name(found.get('platform'))}里的对话，网页上只能查看；要接着问请新建对话"
 
 
 def conversation_list(source="") -> dict:

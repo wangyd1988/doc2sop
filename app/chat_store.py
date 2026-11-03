@@ -5,7 +5,8 @@
     chat_turns      这条对话里的每一次执行（以后按群聊来源清理时，只删这里记着的，绝不碰网页上的对话）
     chat_inbox      收件表：消息键 → 消息和处理状态（已收到 / 处理中 / 完成 / 中断 / 过期），处理完清掉正文
     chat_unknown    没开通的群和人 @ 过它：只记 ID、名字、次数和时间，不记内容
-    chat_notify     计划、告警规则推到哪个目标（旁表：不动计划和规则自己的表，旧版本编辑、删除都碰不到它）
+    chat_notify     计划、告警规则推到哪个目标（旁表：不动计划和规则自己的表，旧版本编辑、删除都碰不到它）；
+                    platform 记保存时是哪个平台的转接程序，换了平台就不推（不会推到另一个平台里同名的目标）
     chat_push_log   每次推送的结果
     chat_state      长轮询的 epoch、编号这类小状态
 
@@ -95,6 +96,7 @@ CREATE TABLE IF NOT EXISTS chat_notify (
   send_repeat TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT '{}',
   updated_at TEXT NOT NULL,
+  platform TEXT NOT NULL DEFAULT 'ccwork',
   PRIMARY KEY (source_kind, source_id)
 );
 CREATE TABLE IF NOT EXISTS chat_push_log (
@@ -104,7 +106,8 @@ CREATE TABLE IF NOT EXISTS chat_push_log (
   target TEXT NOT NULL,
   status TEXT NOT NULL,
   detail TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  platform TEXT NOT NULL DEFAULT 'ccwork'
 );
 CREATE INDEX IF NOT EXISTS chat_push_log_by_run ON chat_push_log(run_id);
 CREATE TABLE IF NOT EXISTS chat_state (
@@ -112,6 +115,11 @@ CREATE TABLE IF NOT EXISTS chat_state (
   value TEXT NOT NULL
 );
 """)
+        # 早先建的库（11-03 之前）这两张表没有 platform：补上，原有的行都是云上协同的
+        for table in ("chat_notify", "chat_push_log"):
+            columns = {row[1] for row in _db().execute(f"PRAGMA table_info({table})")}
+            if "platform" not in columns:
+                _db().execute(f"ALTER TABLE {table} ADD COLUMN platform TEXT NOT NULL DEFAULT 'ccwork'")
         _db().commit()
 
 
@@ -394,7 +402,7 @@ def notify_get(kind, source_id) -> dict | None:
         state = {}
     return {"kind": row["source_kind"], "id": row["source_id"], "target": row["target"], "when": row["send_when"],
             "repeat": row["send_repeat"], "state": state if isinstance(state, dict) else {},
-            "updated_at": row["updated_at"]}
+            "updated_at": row["updated_at"], "platform": row["platform"]}
 
 
 def notify_all() -> list:
@@ -403,16 +411,19 @@ def notify_all() -> list:
     return [notify_get(row["source_kind"], row["source_id"]) for row in rows]
 
 
-def notify_set(kind, source_id, target, when, repeat):
-    """改设置。目标换了，之前「已经提醒过」的状态不再作数（新目标还没收到过）。"""
+def notify_set(kind, source_id, target, when, repeat, platform="ccwork"):
+    """改设置。目标（或平台）换了，之前「已经提醒过」的状态不再作数（新目标还没收到过）。
+    platform 是保存时转接程序的平台：换了平台以后，这条设置不会推到另一个平台里同名的目标。"""
     current = notify_get(kind, source_id)
-    state = current["state"] if current and current["target"] == target else {}
+    state = current["state"] if current and current["target"] == target and current["platform"] == platform else {}
     with conversations.lock:
         _db().execute("INSERT INTO chat_notify (source_kind, source_id, target, send_when, send_repeat, state,"
-                      " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source_kind, source_id) DO UPDATE SET"
-                      " target = excluded.target, send_when = excluded.send_when,"
-                      " send_repeat = excluded.send_repeat, state = excluded.state, updated_at = excluded.updated_at",
-                      (kind, source_id, target, when, repeat, json.dumps(state, ensure_ascii=False), now_iso()))
+                      " updated_at, platform) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source_kind, source_id)"
+                      " DO UPDATE SET target = excluded.target, send_when = excluded.send_when,"
+                      " send_repeat = excluded.send_repeat, state = excluded.state, updated_at = excluded.updated_at,"
+                      " platform = excluded.platform",
+                      (kind, source_id, target, when, repeat, json.dumps(state, ensure_ascii=False), now_iso(),
+                       platform))
         _db().commit()
 
 
@@ -429,10 +440,11 @@ def notify_state(kind, source_id, state):
         _db().commit()
 
 
-def push_log(kind, target, status, detail="", run_id=None):
+def push_log(kind, target, status, detail="", run_id=None, platform="ccwork"):
     with conversations.lock:
-        _db().execute("INSERT INTO chat_push_log (kind, run_id, target, status, detail, created_at)"
-                      " VALUES (?, ?, ?, ?, ?, ?)", (kind, run_id, target, status, str(detail)[:300], now_iso()))
+        _db().execute("INSERT INTO chat_push_log (kind, run_id, target, status, detail, created_at, platform)"
+                      " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                      (kind, run_id, target, status, str(detail)[:300], now_iso(), platform))
         _db().execute("DELETE FROM chat_push_log WHERE id <= (SELECT MAX(id) FROM chat_push_log) - ?",
                       (PUSH_LOG_KEEP,))
         _db().commit()

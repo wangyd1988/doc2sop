@@ -1,6 +1,7 @@
-"""云上协同的推送（docs/正式部署.md「云上协同」）：计划、告警规则的执行结果推到群里；每周的知识库缺口摘要。
+"""群聊机器人的推送（docs/正式部署.md「云上协同」「钉钉」）：计划、告警规则的执行结果推到群里；每周的知识库缺口摘要。
 
 推送只能按名字：名字 → 群 ID 或用户 ID 的对应只写在转接程序的 targets.yaml 里（root 才能改），页面上只能选名字。
+每条推送设置记着保存时的平台；chat.yaml 的 platform、转接程序的平台和它对不上就不推（换平台时不会推到另一个平台里同名的目标）。
 每个计划、告警规则推到哪、什么时候推，存在 chat.db 的旁表 chat_notify 里：不动计划和规则自己的表，也不动邮件的设置。
 推不推沿用邮件那一套规则（notify.decide：有问题时 / 每次；同一个问题每天提醒一次 / 每次 / 恢复前不重复），
 状态和邮件各记各的：邮件没发出去不影响群推送的「已提醒」，反之亦然。转接程序那边每个目标每小时最多 20 条，
@@ -40,6 +41,20 @@ def after_run(run) -> dict | None:
         return None
 
 
+def platform_problem(bridge, platform) -> str:
+    """这条推送（属于 platform 这个平台）现在能不能发：chat.yaml 和转接程序都得是这个平台。能发返回空串。
+    转接程序的平台问不到（连不上）时只看 chat.yaml：真连不上的话推送那一步自己会报错。"""
+    cfg_platform = chat_config.load().platform
+    info = chat_bridge.describe(bridge)
+    remote = info["platform"] if info else cfg_platform
+    if remote != cfg_platform:
+        return chat_format.platform_mismatch(remote, cfg_platform)
+    if platform != cfg_platform:
+        return (f"这条推送设置是{chat_format.platform_name(platform)}的，现在连的是"
+                f"{chat_format.platform_name(cfg_platform)}：请重新选推送目标")
+    return ""
+
+
 def _after_run(bridge, run):
     kind = SOURCE_KINDS.get(run.get("trigger"))
     if not kind or not run.get("source_id"):
@@ -47,6 +62,12 @@ def _after_run(bridge, run):
     setting = chat_store.notify_get(kind, run["source_id"])
     if setting is None or not setting["target"]:
         return None
+    problem = platform_problem(bridge, setting["platform"])
+    if problem:
+        chat_store.push_log("run", setting["target"], "skipped", problem, run_id=run["id"],
+                            platform=setting["platform"])
+        log.warning("run %s: chat push skipped: platform mismatch", run["id"])
+        return {"kind": None, "target": setting["target"], "status": "skipped", "reason": problem}
     now = datetime.now(timezone.utc)
     state = dict(setting["state"])
     rule = {"group": setting["target"], "when": setting["when"], "repeat": setting["repeat"]}
@@ -73,7 +94,8 @@ def _after_run(bridge, run):
             state["sent_at"] = now.isoformat(timespec="seconds")
     state["last"] = signature
     chat_store.notify_state(kind, run["source_id"], state)
-    chat_store.push_log("run", setting["target"], result["status"], result.get("reason", ""), run_id=run["id"])
+    chat_store.push_log("run", setting["target"], result["status"], result.get("reason", ""), run_id=run["id"],
+                        platform=setting["platform"])
     log.info("run %s: chat push (%s) → %s", run["id"], kind, result["status"])      # 目标名可能是人名，只记在推送记录里
     return result
 
@@ -83,12 +105,17 @@ def test_push(target) -> dict:
     bridge = chat_bridge.current()
     if bridge is None:
         raise BridgeError("没有配转接程序", status=503, definite=True)
+    platform = chat_config.load().platform
+    problem = platform_problem(bridge, platform)
+    if problem:
+        chat_store.push_log("test", target, "skipped", problem, platform=platform)
+        raise BridgeError(problem, status=409, definite=True)
     try:
-        reply = bridge.push(target, chat_format.test_push_text(target))
+        reply = bridge.push(target, chat_format.test_push_text(target, platform))
     except BridgeError as exc:
-        chat_store.push_log("test", target, "failed", str(exc))
+        chat_store.push_log("test", target, "failed", str(exc), platform=platform)
         raise
-    chat_store.push_log("test", target, "held" if reply.get("held") else "sent")
+    chat_store.push_log("test", target, "held" if reply.get("held") else "sent", platform=platform)
     return reply
 
 
@@ -114,11 +141,18 @@ def maybe_digest(now=None) -> list:
     for item in cfg.digest:
         if local.isoweekday() != item.weekday or local.hour != item.hour:
             continue
-        key = f"digest:{item.target}:{item.group}"
+        # 云上协同的键和以前一样；别的平台带上平台名：换平台以后同名的目标照样每周发一次，互不影响
+        key = (f"digest:{item.target}:{item.group}" if cfg.platform == "ccwork"
+               else f"digest:{cfg.platform}:{item.target}:{item.group}")
         week = local.strftime("%G-W%V")
         if chat_store.state_get(key) == week:
             continue
         chat_store.state_set(key, week)         # 先记下：发失败也不在这一小时里反复重试
+        problem = platform_problem(bridge, cfg.platform)
+        if problem:
+            chat_store.push_log("digest", item.target, "skipped", problem, platform=cfg.platform)
+            done.append("skipped")
+            continue
         done.append(send_digest(bridge, cfg, item))
     return done
 
@@ -127,25 +161,26 @@ def send_digest(bridge, cfg, item) -> str:
     """缺口看板的前几组。全部缺口只能发给个人：看板汇总了网页、私聊、各个群的问题，直接发到群里会把别处的问题主题带过去；
     要发到群，chat.yaml 里写 group，只汇总这个群自己的问题。"""
     from app import gaps
+    platform = cfg.platform
     if not item.group and target_kinds(bridge).get(item.target) != "user":
         reason = "全部缺口只能发给个人；发到群要写 group，只汇总这个群自己的问题（或者转接程序连不上，认不出目标是个人）"
-        chat_store.push_log("digest", item.target, "skipped", reason)
+        chat_store.push_log("digest", item.target, "skipped", reason, platform=platform)
         log.warning("chat digest skipped: whole-board digest needs a personal target or a group scope")
         return "skipped"
     only = chat_store.conversations_of_chat(item.group) if item.group else None
     groups = gaps.board(embed=False, only=only)["groups"][:DIGEST_GROUPS]
     if not groups:
-        chat_store.push_log("digest", item.target, "skipped", "这一周没有缺口")
+        chat_store.push_log("digest", item.target, "skipped", "这一周没有缺口", platform=platform)
         return "skipped"
     scope = cfg.groups.get(item.group)
     text = chat_format.digest_text(groups, scope.name if scope else "")
     try:
         reply = bridge.push(item.target, text)
     except BridgeError as exc:
-        chat_store.push_log("digest", item.target, "failed", str(exc))
+        chat_store.push_log("digest", item.target, "failed", str(exc), platform=platform)
         log.warning("chat digest not sent: %s", exc)
         return "failed"
     status = "held" if reply.get("held") else "sent"
-    chat_store.push_log("digest", item.target, status, f"{len(groups)} 组")
+    chat_store.push_log("digest", item.target, status, f"{len(groups)} 组", platform=platform)
     log.info("chat digest → %s (%d groups)", status, len(groups))
     return status

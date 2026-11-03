@@ -1,9 +1,12 @@
-"""云上协同：谁能用、能查什么（docs/正式部署.md「云上协同」）。
+"""群聊机器人（云上协同、钉钉）：谁能用、能查什么（docs/正式部署.md「云上协同」「钉钉」）。
 
 写在服务器上的 chat.yaml（CHAT_FILE，默认 DATA_DIR/chat.yaml）里。页面上只看得到名字、开了哪些工具、哪里写得不对，
 拿到网页密码的人不能给自己开通群、开数据工具。文件不在 = 谁也没开通。里面没有密钥（推送目标的 ID 在转接程序的
 targets.yaml 里），进备份。改了不用重启：每次用到时看一眼修改时间和大小，变了就重新读。
 
+    platform: dingtalk         # 这份白名单是给哪个平台的：ccwork（云上协同，不写就是它）或 dingtalk（钉钉）。
+                               # 和 kb-app 连着的转接程序报的平台对不上时，不取消息、不推送：换平台时旧的白名单、
+                               # 推送设置不会被另一个平台「继承」（两边的用户 ID 都是普通字符串，推送目标按名字找）
     robot_name: doc2sop        # 群里 @ 它的名字：从问题里去掉「@doc2sop」
     contact: 王某某             # 没开通时告诉对方找谁（可不填）
     unknown_reply: once        # 没开通的群和人 @ 它：once 每个会话 24 小时回一句；silent 不回
@@ -11,7 +14,7 @@ targets.yaml 里），进备份。改了不用重启：每次用到时看一眼�
     paused: false              # true：开通的群和人一问，只回「暂停服务中」，不调模型
     keep_days: 180             # 占位，暂不自动删（以后只按群聊来源清理，不碰网页上的对话）
     limits: {person_per_hour: 20, group_per_hour: 60, execute_per_hour: 6, context_minutes: 30, max_chars: 3000}
-    groups:                    # 开通的群（组织、部门会话也写在这里）；键是会话 ID
+    groups:                    # 开通的群（组织、部门会话也写在这里）；键是会话 ID（云上协同是数字，钉钉是 cid 开头的）
       "1234567890123": {name: 运维值班群, tools: [host_disk], categories: [运维], mode: kb, web: false}
     people:                    # 开通私聊的人；键是用户 ID
       "u_abc123": {name: 王某某, tools: [host_uptime]}
@@ -48,6 +51,9 @@ SCOPES_MAX = 500
 DIGEST_MAX = 10
 KNOWN = ("robot_name", "contact", "unknown_reply", "markdown", "paused", "keep_days", "limits", "groups", "people",
          "digest")
+TOP_KEYS = KNOWN + ("platform",)
+PLATFORMS = ("ccwork", "dingtalk")              # 不写 platform 就是 ccwork（云上协同）
+PLATFORM_NAMES = {"ccwork": "云上协同", "dingtalk": "钉钉"}
 SCOPE_KEYS = ("name", "tools", "categories", "mode", "web")
 MODES = ("kb", "smart")
 UNKNOWN_REPLIES = ("once", "silent")
@@ -55,6 +61,8 @@ UNKNOWN_REPLIES = ("once", "silent")
 LIMITS = {"person_per_hour": (20, 1, 1000), "group_per_hour": (60, 1, 5000), "execute_per_hour": (6, 0, 100),
           "context_minutes": (30, 1, 1440), "max_chars": (3000, 500, 5000)}
 CHAT_ID = re.compile(r"^[0-9]{1,20}$")          # 和转接程序的 targets.yaml 同一个写法
+DINGTALK_CHAT_ID = re.compile(r"^cid[A-Za-z0-9+/=_-]{4,124}$")     # 钉钉群的 openConversationId
+GROUP_IDS = {"ccwork": CHAT_ID, "dingtalk": DINGTALK_CHAT_ID}
 USER_ID = re.compile(r"^[!-~]{1,64}$")
 TOOL_NAME = re.compile(r"^[^\s\x00-\x1f\x7f]{1,80}$")
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -84,6 +92,7 @@ class Digest:
 class Settings:
     path: str
     exists: bool
+    platform: str = "ccwork"        # 这份白名单是给哪个平台的；空串：写错了，哪个转接程序都对不上
     robot_name: str = ""
     contact: str = ""
     unknown_reply: str = "once"
@@ -162,10 +171,15 @@ def _parse(path, st) -> Settings:
         return _unreadable(path, "最外层要写成「键: 值」", loose)
     problems = []
     halt = False                    # 顶层写错：可能是拼错的 paused、limits，按暂停处理
-    unknown = [str(k) for k in data if k not in KNOWN]
+    unknown = [str(k) for k in data if k not in TOP_KEYS]
     if unknown:
         problems.append(f"不认识的配置项：{'、'.join(unknown[:5])}（只认 {'、'.join(KNOWN)}），先按暂停处理")
         halt = True
+    platform = _text(data.get("platform")) or "ccwork"
+    if platform not in PLATFORMS:
+        # 认不出是哪个平台的白名单：哪个转接程序都对不上，不取消息、不推送
+        problems.append(f"platform 只能是 {' 或 '.join(PLATFORMS)}（不写就是 ccwork），先按暂停处理")
+        platform, halt = "", True
     paused = data.get("paused")
     if paused in (None, ""):
         paused = False
@@ -180,12 +194,13 @@ def _parse(path, st) -> Settings:
     if unknown_reply not in UNKNOWN_REPLIES:
         problems.append("unknown_reply 只能是 once 或 silent，先按 silent（不回）")
         unknown_reply = "silent"
-    groups = _scopes(data.get("groups"), "group", problems)
-    return Settings(path=str(path), exists=True, robot_name=_name(data.get("robot_name"), "robot_name", problems),
+    groups = _scopes(data.get("groups"), "group", problems, platform)
+    return Settings(path=str(path), exists=True, platform=platform,
+                    robot_name=_name(data.get("robot_name"), "robot_name", problems),
                     contact=_name(data.get("contact"), "contact", problems), unknown_reply=unknown_reply,
                     markdown=_flag(data.get("markdown"), "markdown", problems), paused=paused or halt,
                     keep_days=_keep_days(data.get("keep_days"), problems), limits=limits,
-                    groups=groups, people=_scopes(data.get("people"), "person", problems),
+                    groups=groups, people=_scopes(data.get("people"), "person", problems, platform),
                     digest=_digest(data.get("digest"), groups, problems), problems=tuple(problems), loose=loose)
 
 
@@ -247,9 +262,9 @@ def _limits(raw, problems) -> tuple:
     return out, ok
 
 
-def _scopes(raw, kind, problems) -> dict:
+def _scopes(raw, kind, problems, platform="ccwork") -> dict:
     what = "groups" if kind == "group" else "people"
-    if raw in (None, "", {}):
+    if raw in (None, "", {}) or not platform:
         return {}
     if not isinstance(raw, dict):
         problems.append(f"{what} 要写成「ID: 设置」")
@@ -257,7 +272,7 @@ def _scopes(raw, kind, problems) -> dict:
     out = {}
     for key, spec in list(raw.items())[:SCOPES_MAX]:
         ident = str(key).strip()
-        pattern = CHAT_ID if kind == "group" else USER_ID
+        pattern = GROUP_IDS.get(platform, CHAT_ID) if kind == "group" else USER_ID
         if isinstance(key, bool) or not pattern.match(ident):
             problems.append(f"{what} 里有一项（…{ident[-4:]}）不像{'会话' if kind == 'group' else '用户'} ID，没有开通")
             continue
@@ -359,6 +374,7 @@ def public(settings: Settings | None = None) -> dict:
                 "mode": scope.mode, "web": scope.web}
 
     return {"file": s.path, "exists": s.exists, "problems": list(s.problems), "loose": s.loose,
+            "platform": s.platform, "platform_name": PLATFORM_NAMES.get(s.platform, ""),
             "robot_name": s.robot_name, "contact": s.contact, "unknown_reply": s.unknown_reply,
             "markdown": s.markdown, "paused": s.paused, "keep_days": s.keep_days, "limits": dict(s.limits),
             "groups": [view(g) for g in s.groups.values()], "people": [view(p) for p in s.people.values()],

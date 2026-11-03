@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 
-from app import chat_config, chat_format, chat_push, chat_store, conversations, graph, runs, settings
+from app import chat_bridge, chat_config, chat_format, chat_push, chat_store, conversations, graph, runs, settings
 from app.agent import registry, sop_tools, web_search
 from app.chat_bridge import BridgeError, EpochChanged
 from app.config import BOT_NAME, log, why
@@ -40,6 +40,8 @@ LEXICAL_MIN = 0.25
 VERDICTS = {"误报": "false_alarm", "阈值不对": "wrong_threshold", "漏了一步": "missing_step", "结论对": "correct"}
 CHAT_TYPES = ("single", "group", "org", "dept")
 KINDS = ("text", "unsupported", "undecryptable")
+CHAT_ID_MAX = {"dingtalk": 128}         # 会话 ID 的长度上限；别的平台（云上协同）是 64
+REMOTE_RECHECK = 30.0                   # 转接程序的平台和 chat.yaml 对不上、或者只收不发时，隔多久再看一次
 
 _HELP = re.compile(r"^(?:帮助|help|\?|？|使用说明|怎么用)$", re.IGNORECASE)
 _NEW = re.compile(r"^(?:新话题|重新开始)$")
@@ -141,9 +143,11 @@ def clean_event(raw) -> dict | None:
         value = raw.get(key)
         return value[:limit] if isinstance(value, str) else ""
 
+    platform = text("platform", 20) or "ccwork"
     event = {"id": raw.get("id") if isinstance(raw.get("id"), int) else 0, "handle": text("handle", 200),
-             "kind": text("kind", 20), "platform": text("platform", 20) or "ccwork",
-             "chat_type": text("chat_type", 10), "chat_id": text("chat_id", 64), "chat_name": text("chat_name", 100),
+             "kind": text("kind", 20), "platform": platform,
+             "chat_type": text("chat_type", 10), "chat_id": text("chat_id", CHAT_ID_MAX.get(platform, 64)),
+             "chat_name": text("chat_name", 100),
              "sender_id": text("sender_id", 64), "sender_name": text("sender_name", 50),
              "msg_key": text("msg_key", 200), "text": text("text", 20000), "truncated": raw.get("truncated") is True,
              "received_at": text("received_at", 40)}
@@ -213,9 +217,10 @@ class Streamer:
     FINISH_WAIT = 90.0
 
     def __init__(self, bridge, handle, render, status=chat_format.STATUS_SEARCH, clock=time.monotonic,
-                 sleep=time.sleep):
+                 sleep=time.sleep, fmt=None):
         self.bridge, self.handle, self.render = bridge, handle, render
         self.clock, self.sleep = clock, sleep
+        self.fmt = fmt                  # markdown：转接程序声明支持、chat.yaml 也要时才有；否则每包和以前一样
         self.request_id = uuid.uuid4().hex
         self.seq = 1
         self.sent = 0
@@ -292,6 +297,8 @@ class Streamer:
     def _send(self, content, kind) -> bool:
         packet = {"request_id": self.request_id, "seq": self.seq, "type": kind, "message_type": "cover",
                   "content": content}
+        if self.fmt:
+            packet["format"] = self.fmt
         for attempt in range(self.RETRIES + 1):
             try:
                 self.bridge.reply_stream(self.handle, packet)
@@ -400,6 +407,11 @@ class Channel:
         failures = 0
         while not self._stop.is_set():
             self.maintain()
+            hold = self._hold()
+            if hold:
+                self._link("held", hold)
+                self._stop.wait(REMOTE_RECHECK)
+                continue
             try:
                 epoch_now, events = self.bridge.events(epoch, after, POLL_WAIT)
             except EpochChanged as exc:
@@ -438,6 +450,20 @@ class Channel:
             except Exception:
                 log.warning("chat: weekly digest failed", exc_info=True)
 
+    def _hold(self) -> str:
+        """现在不该取消息的原因（空串是可以取）。转接程序的平台和 chat.yaml 的 platform 对不上时不取：换平台时旧的
+        白名单不能放行另一个平台里同 ID 的人。钉钉的转接程序只收不发时也不取（取了答不出去，消息却算处理过了）。
+        转接程序连不上时照常去取，由取的那一步报错、退避。"""
+        info = chat_bridge.describe(self.bridge)
+        if info is None:
+            return ""
+        cfg = chat_config.load()
+        if info["platform"] != cfg.platform:
+            return chat_format.platform_mismatch(info["platform"], cfg.platform)
+        if info["platform"] != "ccwork" and info.get("send") is False:
+            return "转接程序只收不发：先不取消息（打开发送后自动接着取）"
+        return ""
+
     def receive(self, raw):
         """一条消息：先查白名单。没开通的只记 ID 和次数（不记内容），开通的落库后再分派。"""
         event = clean_event(raw)
@@ -445,6 +471,11 @@ class Channel:
             self._count("malformed")
             return
         cfg = chat_config.load()
+        if event["platform"] != cfg.platform:
+            self._count("platform_mismatch")
+            log.info("chat %s %s:%s → dropped (chat.yaml is for %s)", event["platform"], event["chat_type"],
+                     tail(event["chat_id"]), cfg.platform or "?")
+            return
         scope = cfg.scope(event["chat_type"], event["chat_id"], event["sender_id"])
         if scope is None:
             self._count("refused")
@@ -565,13 +596,21 @@ class Channel:
                 self._busy.discard(person)
 
     # --- 回话 ---
+    def _format(self) -> dict:
+        """chat.yaml 写了 markdown: true、而且转接程序声明支持 markdown 时才带 format（云上协同的转接程序不声明：
+        发给它的请求体和以前一样）。返回给 reply_text / Streamer 的关键字参数。"""
+        if not chat_config.load().markdown:
+            return {}
+        info = chat_bridge.describe(self.bridge)
+        return {"fmt": "markdown"} if info and "markdown" in info["formats"] else {}
+
     def _say(self, event, text, mention=False):
         """普通文字回复。群里第一行写明在回谁。发不出去只记日志。"""
         if event["chat_type"] != "single" and not mention:
             asked = chat_format.strip_mention(event["text"], chat_config.load().robot_name)
             text = chat_format.reply_head(event["sender_name"], asked) + "\n" + text
         try:
-            self.bridge.reply_text(event["handle"], text[:TEXT_OUT_MAX], mention)
+            self.bridge.reply_text(event["handle"], text[:TEXT_OUT_MAX], mention, **self._format())
             return True
         except BridgeError as exc:
             log.info("chat reply %s:%s → failed (%s)", event["chat_type"], tail(event["chat_id"]), exc)
@@ -631,19 +670,20 @@ class Channel:
             return "\n".join(part for part in (head, shown + ("\n……" if rest else ""), status) if part)
 
         titles = _titles()
-        streamer = Streamer(self.bridge, event["handle"], render).start()
+        streamer = Streamer(self.bridge, event["handle"], render, **self._format()).start()
         started = self.clock()
         kind = "execute" if playbook else "ask"
         who = event["sender_name"] or tail(event["sender_id"])
+        source = chat_format.platform_name(event["platform"])
         answer, failure, completed, turn, thread_id = "", None, False, None, None
         hits, extra, tools_used = [], [], 0
         try:
             turn = self.start_turn(question, thread["conversation_id"] if thread else None,
-                                   title=f"云上协同·{scope.name}：{question}",
+                                   title=f"{source}·{scope.name}：{question}",
                                    mode="kb" if playbook else scope.mode, web=scope.web and not playbook,
                                    playbook_id=playbook["id"] if playbook else None, tools=scope.tools,
-                                   categories=scope.categories, note=chat_format.CHAT_RULES,
-                                   run_note=f"云上协同·{scope.name}·{who}" if playbook else "")
+                                   categories=scope.categories, note=chat_format.chat_rules(event["platform"]),
+                                   run_note=f"{source}·{scope.name}·{who}" if playbook else "")
         except Exception as exc:
             log.warning("chat: could not start the turn", exc_info=True)
             failure = f"开始回答时出错：{why(exc)}"
@@ -721,7 +761,8 @@ class Channel:
                                            event["sender_id"])
         if command == "help":
             text = chat_format.help_text(scope, _titles(), group=event["chat_type"] != "single",
-                                         web=scope.web and web_search.enabled(), contact=cfg.contact)
+                                         web=scope.web and web_search.enabled(), contact=cfg.contact,
+                                         platform=event["platform"])
         elif command == "new":
             if thread is not None:
                 chat_store.thread_close(thread["id"])

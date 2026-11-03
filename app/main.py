@@ -1694,7 +1694,7 @@ def ask(payload: Question, x_eval_token: str | None = Header(default=None)):
         raise HTTPException(404, "对话不存在，请新建对话")
     if conversation_id and chat is not None and chat.readonly(conversation_id):
         # 网页上在群聊的对话里补问（比如查了库），会成为群里下一次回答的隐藏上下文
-        raise HTTPException(409, "这是云上协同里的对话，网页上只能查看；要接着问请新建对话")
+        raise HTTPException(409, chat.readonly_reason(conversation_id))
     try:
         model_name = models.resolve(payload.model)
     except ValueError as exc:
