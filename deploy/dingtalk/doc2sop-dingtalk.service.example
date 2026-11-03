@@ -1,0 +1,66 @@
+# doc2sop 的钉钉转接程序（deploy/dingtalk/dingtalk_bridge.py）。
+#
+# 安装（root）：
+#   apt install python3-websocket python3-yaml
+#   useradd --system --no-create-home --shell /usr/sbin/nologin doc2sop-dingtalk
+#   install -d -m 755 /opt/doc2sop-dingtalk
+#   install -m 644 deploy/dingtalk/dingtalk_bridge.py /opt/doc2sop-dingtalk/
+#   install -m 600 deploy/dingtalk/dingtalk.env.example /etc/doc2sop-dingtalk.env   # 再编辑开关、用 set-credentials 写凭据
+#   install -d -m 750 -g doc2sop-dingtalk /etc/doc2sop-dingtalk
+#   install -m 640 -g doc2sop-dingtalk deploy/dingtalk/targets.yaml.example /etc/doc2sop-dingtalk/targets.yaml
+#   install -m 644 deploy/dingtalk/doc2sop-dingtalk.service.example /etc/systemd/system/doc2sop-dingtalk.service
+#   systemctl daemon-reload && systemctl enable --now doc2sop-dingtalk
+#
+# 升级：先备份 /opt/doc2sop-dingtalk/dingtalk_bridge.py（带时间戳），再拷新文件，systemctl restart doc2sop-dingtalk。
+# 同一个钉钉应用只在一处连：两处都连着时钉钉会把消息随机分给其中一处。
+
+[Unit]
+Description=doc2sop 钉钉转接程序（出站连钉钉 Stream，本地接口只听 127.0.0.1:8795）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=doc2sop-dingtalk
+Group=doc2sop-dingtalk
+# 开关和凭据：root 600，systemd 以 root 读入后作为环境变量交给进程；进程自己读不到这个文件（见下面 InaccessiblePaths）。
+# kb-app 的 .env 里 CHAT_BRIDGE_TOKEN 填同一个值
+EnvironmentFile=/etc/doc2sop-dingtalk.env
+ExecStart=/usr/bin/python3 -I /opt/doc2sop-dingtalk/dingtalk_bridge.py serve
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+
+# 没有可写的目录：待取队列只在内存里
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+# 用不着的地方一律看不见：kb-app 的数据和 .env、工具服务、沙箱、云上协同的配置与凭据、docker、自己的环境文件
+InaccessiblePaths=-/opt/kb-app -/opt/ops -/etc/ops-readonly -/etc/ops-readonly.env -/etc/doc2sop-sandbox.env
+InaccessiblePaths=-/etc/doc2sop-ccwork.env -/etc/doc2sop-dingtalk.env -/var/lib/docker -/run/docker.sock
+MemoryMax=100M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

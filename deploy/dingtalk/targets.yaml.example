@@ -1,0 +1,12 @@
+# /etc/doc2sop-dingtalk/targets.yaml（root:doc2sop-dingtalk 640；没有密钥；改了不用重启）
+#
+# 推送目标：kb-app（计划、告警规则、每周缺口摘要）只能按这里的名字推送，拿不到也改不了原始 ID。
+# 群的 chat_id 是 cid 开头的会话 ID，个人的 user_id 是企业内的 userId；都从网页「对外接入」页聊天卡片的
+# 「最近 @ 过、还没开通的」里抄。群要先把机器人拉进去，个人要在应用的可见范围里。
+# 每个目标每小时最多 20 条，多的合并成一条。
+targets:
+  # 运维值班群: {chat_id: "cidAbCdEf123456=="}
+  # 王某某: {user_id: "manager1234"}
+
+# 这些发送人（企业内 userId）的消息直接丢掉，不交给 kb-app
+deny_senders: []
