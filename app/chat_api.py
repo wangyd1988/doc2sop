@@ -141,6 +141,7 @@ def _notify_view(item) -> dict:
 def chat_notify():
     live, error = _bridge_status()
     return {"targets": live.get("targets") or [], "target_kinds": live.get("target_kinds") or {}, "error": error,
+            "platform": chat_config.load().platform,
             "when": list(notify.WHEN), "repeat": list(notify.REPEAT),
             "items": [_notify_view(item) for item in chat_store.notify_all()]}
 
@@ -188,7 +189,8 @@ def readonly_reason(conversation_id) -> str:
 
 def conversation_list(source="") -> dict:
     source = source if source in ("web", "chat") else ""
-    return {"conversations": chat_store.list_conversations(source), "chat": True, "source": source or "all"}
+    return {"conversations": chat_store.list_conversations(source), "chat": True, "source": source or "all",
+            "platform": chat_config.load().platform}
 
 
 def conversation_source(conversation_id) -> dict:

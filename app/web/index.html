@@ -1941,18 +1941,22 @@ const toBottom = () => { $('chat').scrollTop = $('chat').scrollHeight; };
 
 /* ---------- Conversations ---------- */
 let convList = [];
-let convSource = '';      // 云上协同打开时的筛选：'' 全部 / web 网页 / chat 云上协同
+let convSource = '';      // 群聊机器人打开时的筛选：'' 全部 / web 网页 / chat 群聊（云上协同或钉钉）
 const CONV_SOURCES = [['', '全部'], ['web', '网页'], ['chat', '云上协同']];
+const CHAT_NAMES = {ccwork: '云上协同', dingtalk: '钉钉'};
+const chatName = p => CHAT_NAMES[p || 'ccwork'] || p;
+let chatPlatform = 'ccwork';      // chat.yaml 的 platform：/api/conversations、/api/chat/status 带回来
 async function loadConvs() {
   const d = await (await fetch('/api/conversations' + (convSource ? '?source=' + convSource : ''))).json();
+  if (d.platform) chatPlatform = d.platform;
   if (!convSource) convList = d.conversations || [];      // 左侧导航的「最近」不跟着筛选变
   const when = t => new Date(t).toLocaleString('zh-CN', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'});
   const filter = d.chat ? `<div class="conv-filter">${CONV_SOURCES.map(([k, v]) =>
-    `<button data-src="${k}" class="${convSource === k ? 'on' : ''}">${v}</button>`).join('')}</div>` : '';
+    `<button data-src="${k}" class="${convSource === k ? 'on' : ''}">${k === 'chat' ? esc(chatName(chatPlatform)) : v}</button>`).join('')}</div>` : '';
   $('histPanel').innerHTML = filter + (d.conversations.length ? d.conversations.map(c =>
     `<div class="conv${c.id === convId ? ' on' : ''}" data-id="${c.id}">
        <div class="meta"><div class="title">${esc(c.title)}</div><div class="sub">${c.source
-         ? `<span class="src" title="云上协同里的对话，网页上只能查看">💬 ${esc(c.source.chat_name)}</span> · ` : ''}${when(c.updated_at)} · ${c.messages} 条</div></div>
+         ? `<span class="src" title="${esc(chatName(c.source.platform))}里的对话，网页上只能查看">💬 ${esc(c.source.chat_name)}</span> · ` : ''}${when(c.updated_at)} · ${c.messages} 条</div></div>
        <button class="del" data-del="${c.id}" title="删除">✕</button></div>`).join('')
     : `<div class="empty">${convSource ? '这一类还没有对话' : '还没有历史对话'}</div>`);
   paintNavRecent();
@@ -1960,7 +1964,7 @@ async function loadConvs() {
 // 群聊的对话在网页上只读：不显示输入框，顶上写明来源（/api/ask 也会回 409）
 function setReadonly(source) {
   $('pg-chat').classList.toggle('readonly', !!source);
-  if (source) $('thread').insertAdjacentHTML('afterbegin', `<div class="ro-note">💬 这是云上协同里的对话（${esc(source.chat_name)}${source.sender_name
+  if (source) $('thread').insertAdjacentHTML('afterbegin', `<div class="ro-note">💬 这是${esc(chatName(source.platform))}里的对话（${esc(source.chat_name)}${source.sender_name
     ? ' · ' + esc(source.sender_name) : ''}），网页上只能查看；要接着问请点「新对话」。</div>`);
 }
 // 左侧导航「对话」下面的最近 5 条：点了直接打开那条对话
@@ -5320,7 +5324,7 @@ async function renderAccess() {
   paintChat();
 }
 
-/* ---------- 云上协同（docs/正式部署.md「云上协同」）：对外接入页最下面一张卡片 ----------
+/* ---------- 群聊机器人（docs/正式部署.md「云上协同」「钉钉」）：对外接入页最下面一张卡片 ----------
    没打开时（/api/chat/status 是 404）什么都不加。谁能用、能查什么、推到哪都在服务器上配，这里只看、只发测试消息。 */
 const CHAT_STATE = {connected: ['ok', '已连接'], connecting: ['warn', '正在连接'], starting: ['off', '没有连'], disconnected: ['bad', '断开了'], problem: ['bad', '有问题']};
 const CHAT_TYPE = {single: '私聊', group: '群', org: '组织', dept: '部门'};
@@ -5332,11 +5336,12 @@ function chatScopes(list, none) {
 }
 function chatCardHtml(s) {
   const b = s.bridge || {}, cfg = s.config || {}, ch = s.channel || {};
-  const st = !b.reachable ? ['bad', '连不上转接程序'] : b.enabled === false ? ['off', '关着（CCWORK_ENABLED=false）'] : (CHAT_STATE[b.state] || ['off', b.state || '—']);
+  const plat = b.platform || cfg.platform || 'ccwork', name = chatName(plat), dir = plat === 'dingtalk' ? 'dingtalk' : 'ccwork';
+  const st = !b.reachable ? ['bad', '连不上转接程序'] : b.enabled === false ? ['off', `关着（${dir.toUpperCase()}_ENABLED=false）`] : (CHAT_STATE[b.state] || ['off', b.state || '—']);
   const kinds = b.target_kinds || {};
   const targets = b.targets || [];
   const problems = [s.problem, b.error, ...(b.problems || []), ...(s.problems || [])].filter(Boolean);
-  return `<div class="card chatcard"><h3>云上协同 <small>群里 @ 机器人、私聊提问；计划和告警的结果推到群里</small></h3>
+  return `<div class="card chatcard"><h3>${esc(name)} <small>群里 @ 机器人、私聊提问；计划和告警的结果推到群里</small></h3>
     <dl><dt>转接程序</dt><dd><span class="pill ${st[0]}">${esc(st[1])}</span>${b.since ? ` 自 ${esc(shortTime(b.since))}` : ''}
         ${b.reachable ? ` · ${b.tls ? '加密连接' : b.diagnose ? '明文连接，只诊断' : '—'} · ${b.send ? '能发消息' : '只收不发'}${b.robot ? ` · 机器人 ${esc(b.robot)}` : ''}` : ''}
         ${b.conflict ? '<div class="note" style="color:var(--danger)">疑似另一处在用同一个机器人</div>' : ''}</dd>
@@ -5359,12 +5364,13 @@ function chatCardHtml(s) {
       `<tr><td data-l="时间">${esc(shortTime(p.created_at))}</td><td data-l="内容">${{run: '执行结果', test: '测试消息', digest: '缺口摘要'}[p.kind] || esc(p.kind)}</td>
         <td data-l="目标">${esc(p.target)}</td><td data-l="结果" class="${p.status === 'failed' ? 'bad' : ''}">${esc(PUSH_STATUS[p.status] || p.status)}${p.detail ? '：' + esc(p.detail) : ''}</td></tr>`).join('')}</table>` : ''}
     <div class="howto">谁能用、能查什么写在服务器上的 <code>${esc(cfg.file || 'chat.yaml')}</code>${cfg.exists ? '' : '（还没有：谁也没开通）'}，改了不用重启；推送目标在转接程序的
-      <code>/etc/doc2sop-ccwork/targets.yaml</code>。群里的回答默认只查文档、不联网、不开数据工具，按群逐个打开。说明见 docs/正式部署.md「云上协同」。</div></div>`;
+      <code>/etc/doc2sop-${dir}/targets.yaml</code>。群里的回答默认只查文档、不联网、不开数据工具，按群逐个打开。说明见 docs/正式部署.md「${esc(name)}」。</div></div>`;
 }
 async function paintChat() {
   const r = await fetch('/api/chat/status').catch(() => null);
   if (!r || !r.ok || mTab !== 'access') return;
   const s = await r.json();
+  chatPlatform = (s.config || {}).platform || chatPlatform;
   const sf = $('msettings').querySelector('.sf');
   if (!sf) return;
   sf.querySelector('.chatcard')?.remove();
@@ -5376,7 +5382,7 @@ $('msettings').addEventListener('click', async e => {
     const target = $('chatTarget').value;
     try {
       const d = await sendJson('POST', '/api/chat/test-push', {target});
-      toast(d.held ? `「${target}」这一小时的推送已到上限，测试消息会合并发出` : `测试消息已发给「${target}」，去云上协同里看看`, 'ok', 6000);
+      toast(d.held ? `「${target}」这一小时的推送已到上限，测试消息会合并发出` : `测试消息已发给「${target}」，去${chatName(chatPlatform)}里看看`, 'ok', 6000);
     } catch (err) { toast(err.message, 'err', 8000); }
     return paintChat();
   }
@@ -5468,7 +5474,7 @@ function catImpactHtml(p) {
   const chat = (p.chat || []).map(c => `<li>${esc(c.name)}（分类 ${esc(c.categories.join('、'))}）：${delta(c)}</li>`).join('');
   return `<div class="icbox"><h4>${head}</h4>${(p.documents || []).length ? `<div class="note">${p.documents.slice(0, 8).map(esc).join('、')}${p.documents.length > 8 ? ` 等 ${p.documents.length} 篇` : ''}</div>` : ''}</div>
     ${tokens ? `<div class="icbox"><h4>对外接入的令牌 <small>白名单跟着改：改名换成新名字，合并、删除只去掉原来的分类</small></h4><ul>${tokens}</ul></div>` : ''}
-    ${chat ? `<div class="icbox warn"><h4>云上协同 chat.yaml <small>在服务器上，页面改不了</small></h4><ul>${chat}</ul>
+    ${chat ? `<div class="icbox warn"><h4>${esc(chatName(chatPlatform))} chat.yaml <small>在服务器上，页面改不了</small></h4><ul>${chat}</ul>
       <div class="note">改完要到服务器上手工改 <code>${esc(p.chat_file || 'chat.yaml')}</code>。</div></div>` : ''}
     ${p.needs_passphrase ? '<div class="icbox warn"><b>有令牌或群会多看到文档</b>（上面标红的），这次改动要输审批口令。</div>' : ''}`;
 }
@@ -5937,15 +5943,17 @@ function notifyRows(n) {
       `<option value="${k}"${(n.repeat || 'daily') === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
     ${groups.length ? '' : '<div class="note" style="margin:-4px 0 10px">服务器上还没有配收件组，现在只能选「不发邮件」（见下面「服务器上的配置文件」）。</div>'}`;
 }
-/* 云上协同的推送（打开了才有）：目标只能选转接程序 targets.yaml 里配好的名字；设置存在旁表里，和邮件各管各的 */
+/* 群聊机器人的推送（打开了才有）：目标只能选转接程序 targets.yaml 里配好的名字；设置存在旁表里，和邮件各管各的。
+   换了平台以前存的设置不再推：目标显示成空的，旧目标名在 stale 里，提示重新选 */
 function chatNotifyRows(kind, id) {
   const c = autoState.chat;
   if (!c) return '';
   const cur = (c.items || []).find(i => i.kind === kind && i.id === id) || {};
   const targets = [...(c.targets || [])];
   if (cur.target && !targets.includes(cur.target)) targets.push(cur.target);     // 目标从配置里删了：照样显示出来
-  return `<div class="frow"><span>推送到云上协同<i>转接程序里配好的目标</i></span><select id="afChat"><option value="">不推送</option>${targets.map(t =>
+  return `<div class="frow"><span>推送到${esc(chatName(c.platform))}<i>转接程序里配好的目标</i></span><select id="afChat"><option value="">不推送</option>${targets.map(t =>
       `<option value="${esc(t)}"${cur.target === t ? ' selected' : ''}>${esc(t)}${(c.target_kinds || {})[t] === 'user' ? '（个人）' : ''}</option>`).join('')}</select></div>
+    ${cur.stale ? `<div class="note" style="margin:-4px 0 10px">之前选的「${esc(cur.stale)}」是${esc(chatName(cur.platform))}的推送目标，换了平台以后不再推，请重新选。</div>` : ''}
     <div class="frow"><span>什么时候推</span><select id="afChatWhen">${Object.entries(NOTIFY_WHEN).map(([k, v]) =>
       `<option value="${k}"${(cur.when || 'problems') === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
     <div class="frow"><span>同一个问题<i>连续出现时</i></span><select id="afChatRepeat">${Object.entries(NOTIFY_REPEAT).map(([k, v]) =>

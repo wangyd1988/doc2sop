@@ -365,7 +365,8 @@ check('MySQL 的 disable 写「不要求加密」（服务器支持时 PyMySQL �
 // 云上协同：对外接入页的卡片、计划和告警规则表单里的推送下拉、对话列表的来源。服务端来的名字、粘贴行、问题一律转义；
 // 没打开时（/api/chat/notify 是 404）表单里没有推送这一项，对话列表没有筛选（由 /api/conversations 带不带 chat 决定）
 const chatCode = [/^const esc = .*$/m, /^const shortTime = .*$/m, /^const NOTIFY_WHEN = .*$/m, /^const NOTIFY_REPEAT = .*$/m,
-  /^const CHAT_STATE = .*$/m, /^const CHAT_TYPE = .*$/m, /^const PUSH_STATUS = .*$/m].map(lineOf)
+  /^const CHAT_STATE = .*$/m, /^const CHAT_TYPE = .*$/m, /^const PUSH_STATUS = .*$/m, /^const CHAT_NAMES = .*$/m,
+  /^const chatName = .*$/m].map(lineOf)
   .concat(['chatScopes', 'chatCardHtml', 'chatNotifyRows'].map(extract)).join('\n');
 const CH = state => new Function('autoState', `${chatCode}\nreturn {chatCardHtml, chatNotifyRows};`)(state);
 const at = '2026-11-02T01:00:00Z';
@@ -395,6 +396,19 @@ check('群聊的对话网页上只读：不显示输入框和「重新回答」�
   html.includes("$('askBtn').disabled || $('pg-chat').classList.contains('readonly')")], [true, true]);
 check('执行记录：触发方式有「💬 群聊」', lineOf(/^const TRIGGER = .*$/m).includes("chat: ['💬', '群聊']"), true);
 check('云上协同的卡片和下拉不用全局的 .box、.ex', /class="(box|ex)"/.test(chatCard + chatRows), false);
+check('不写 platform 时卡片和下拉照旧叫云上协同', [chatCard.includes('<h3>云上协同 <small>'), chatCard.includes('/etc/doc2sop-ccwork/targets.yaml'),
+  chatRows.includes('推送到云上协同<i>')], [true, true, true]);
+const dingCard = CH({}).chatCardHtml({bridge: {reachable: true, enabled: false, platform: 'dingtalk'}, config: {platform: 'dingtalk'},
+  unknown: [], pushes: []});
+check('钉钉：卡片标题、开关名、targets.yaml 路径、说明都换成钉钉', [dingCard.includes('<h3>钉钉 <small>'),
+  dingCard.includes('DINGTALK_ENABLED=false'), dingCard.includes('/etc/doc2sop-dingtalk/targets.yaml'), dingCard.includes('云上协同')],
+  [true, true, true, false]);
+const dingRows = CH({chat: {platform: 'dingtalk', targets: ['值班群'], items: [{kind: 'schedule', id: 's1', target: '', stale: evil,
+  platform: 'ccwork', when: 'always', repeat: 'never'}]}}).chatNotifyRows('schedule', 's1');
+check('钉钉：换平台前存的推送目标不选中，提示重新选（旧名字转义）', [dingRows.includes('推送到钉钉<i>'), dingRows.includes('selected>值班群'),
+  dingRows.includes('是云上协同的推送目标'), dingRows.includes('<img')], [true, false, true, false]);
+check('对话的来源按平台写', [html.includes('${esc(chatName(c.source.platform))}里的对话'), html.includes('这是${esc(chatName(source.platform))}里的对话')],
+  [true, true]);
 
 // ---------- 搜索框：输入法组字期间不搜，组字结束后防抖搜一次；所有搜索框都经 searchInput 接 ----------
 {
@@ -467,7 +481,8 @@ check('云上协同的卡片和下拉不用全局的 .box、.ex', /class="(box|e
 
 // ---------- 对外接入：总开关、删令牌、清除调用记录、操作记录；分类维护的影响预览 ----------
 {
-  const AX = new Function([/^const esc = .*$/m, /^const axTime = .*$/m, /^const AX_CHANGE = .*$/m, /^const TOKEN_STATE = .*$/m].map(lineOf)
+  const AX = new Function([/^const esc = .*$/m, /^const axTime = .*$/m, /^const AX_CHANGE = .*$/m, /^const TOKEN_STATE = .*$/m,
+    /^const CHAT_NAMES = .*$/m, /^const chatName = .*$/m, /^let chatPlatform = .*$/m].map(lineOf)
     .concat(['axCats', 'axSwitchHtml', 'axChangesHtml', 'catImpactHtml', 'catListHtml'].map(extract)).join('\n')
     + `\nconst CAT_NOTE = '网络补充', CAT_DEFAULT = '未分类';\nreturn {axCats, axSwitchHtml, axChangesHtml, catImpactHtml, catListHtml};`)();
   check('白名单：null 是全部、空的是一篇都看不到', [AX.axCats(null), AX.axCats([]).includes('无（分类已删除）'), AX.axCats([evil]).includes('<img')],
