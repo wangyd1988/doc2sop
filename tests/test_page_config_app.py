@@ -289,6 +289,93 @@ class PasswordInstallRelayTests(_App):
         self.assertIn("工具服务较旧", view["password_install"]["why"])
 
 
+class OnboardRelayTests(_App):
+    """用账号密码添加机器：host-onboard 只收本机来的请求，回复不缓存；票据只在那一次回复里，应用不记它；票据不认时 409 带上标记。"""
+    CONFIG = HOSTS_CONFIG
+    HOST = {"name": "web01", "address": "10.0.1.11", "user": "opsread", "from": ["117.72.91.19"]}
+
+    def setUp(self):
+        super().setUp()
+        for patcher in (patch.object(ops, "host_install_support", lambda: {"supported": True, "why": ""}),
+                        patch.dict(ops._onboard, clear=True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_only_local_and_no_store(self):
+        relayed = []
+        with patch.object(ops_client, "config_action", lambda *a, **k: relayed.append(a) or {}):
+            for peer in ("testclient", "10.0.0.5"):
+                with TestClient(app, client=(peer, 50000)) as client:
+                    response = client.post("/api/tools/config/host-onboard", auth=self.auth,
+                                           json={"host": self.HOST, "passphrase": PASS})
+                    self.assertEqual(response.status_code, 403)
+        self.assertEqual(relayed, [])
+        self.assertEqual(ops._approval["failures"], 0)
+        with TestClient(app, client=("127.0.0.1", 50000)) as local, self.assertLogs("kb", level="DEBUG") as logs:
+            response = local.post("/api/tools/config/host-onboard", auth=self.auth, json={"host": self.HOST, "passphrase": PASS})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.headers["cache-control"], "no-store")
+            ticket = response.json()["ticket"]
+            forged = local.post("/api/tools/config/host-trust", auth=self.auth,
+                                json={"name": "web01", "fingerprint": ops.key_fingerprint(HOST_BLOB),
+                                      "confirm_impact": ["gw_disk"], "ticket": "forged"})
+            self.assertEqual(forged.status_code, 409)
+            self.assertTrue(forged.json()["ticket_refused"])
+            moved = local.post("/api/tools/config/host-from", auth=self.auth,
+                               json={"name": "web01", "address": "203.0.113.7", "ticket": ticket})
+            self.assertEqual(moved.status_code, 200, moved.text)
+            self.assertNotEqual(moved.headers.get("cache-control"), "no-store")
+        said = "\n".join(logs.output) + self.printed.getvalue()
+        self.assertNotIn(ticket, said)
+        self.assertNoSecrets(response.text)
+
+
+class ClusterRelayTests(_App):
+    def setUp(self):
+        super().setUp()
+        from tests.test_page_clusters import RO
+        from tests.test_page_config import tls_files
+        self.token = RO
+        self.ca = tls_files(self, self.dir / "tls")["ca"].read_text()
+        patcher = patch.object(ops, "_cluster_checks", lambda cluster, token, use_saved, done: [ops._check("tls", "ok", "TLS", "通")])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_relay_and_view(self):
+        view = self.client.get("/api/tools/config", auth=self.auth).json()["k8s"]
+        self.assertEqual((view["supported"], view["clusters"]), (True, []))
+        cluster = {"name": "prod", "server": "https://127.0.0.1:6443", "ca": self.ca}
+        with self.assertLogs("kb", level="DEBUG") as logs:
+            response = self.post("cluster-save", {"cluster": cluster, "token": self.token, "passphrase": PASS})
+            self.assertEqual(response.status_code, 200, response.text)
+            kubeconfig = ("current-context: c\ncontexts: [{name: c, context: {cluster: k, user: u}}]\n"
+                          "clusters: [{name: k, cluster: {server: 'https://127.0.0.1:6443', certificate-authority-data: QQ==}}]\n"
+                          "users: [{name: u, user: {exec: {command: aws}}}]\n" + "#" * 100_000)   # 比别的请求大，照样能转交
+            refused = self.post("cluster-parse", {"kubeconfig": kubeconfig})
+            self.assertEqual(refused.status_code, 400, refused.text)
+            self.assertIn("exec 插件", refused.text)
+        view = self.client.get("/api/tools/config", auth=self.auth).json()["k8s"]
+        self.assertEqual(view["clusters"][0]["secret"]["state"], "set")
+        for text in (response.text, json.dumps(view), "\n".join(logs.output), self.printed.getvalue()):
+            self.assertNotIn(self.token, text)
+        self.assertIn("'prod'", "\n".join(logs.output))
+        self.assertEqual(self.post("cluster-delete", {"name": "prod"}).status_code, 400)
+        self.assertEqual(self.post("cluster-delete", {"name": "prod", "passphrase": PASS}).status_code, 200)
+
+    def test_an_old_tool_service(self):
+        real = ops_client._request
+
+        def old(path, payload=None, timeout=30, headers=None):
+            if path == "/tools/config/clusters":
+                raise ops_client.OpsUnavailable("Not found", status=404, data={"error": "Not found"})
+            return real(path, payload, timeout, headers)
+
+        with patch.object(ops_client, "_request", old):
+            view = self.client.get("/api/tools/config", auth=self.auth).json()["k8s"]
+        self.assertFalse(view["supported"])
+        self.assertIn("工具服务较旧", view["why"])
+
+
 if __name__ == "__main__":
     logging.disable(logging.CRITICAL)
     unittest.main()

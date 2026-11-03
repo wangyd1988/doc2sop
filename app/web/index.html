@@ -5242,7 +5242,7 @@ function icK8sCard(c, blocked, can) {
       : `<div class="note">页面上还没加集群。${k.server_kubeconfig ? 'kubectl 工具现在用工具服务上配置的 kubeconfig。' : '工具服务上也没有配置 kubeconfig：kubectl 工具现在查不了任何集群。'}</div>`}
     <div class="howto"><b>加了以后：</b>${(k.tools || []).length ? (k.tools || []).map(t => `<code>${esc(t)}</code>`).join('、') : 'kubectl 型工具'}多一个参数 <code>cluster</code>（选集群名），
       ${k.server_kubeconfig ? '不填照旧用工具服务上配置的 kubeconfig' : '只有一个集群时不填就是它，多个时必须指定'}。只认<b>只读 ServiceAccount 的令牌</b>（建法在添加对话框里），
-      令牌只写不读，改了地址或 CA 要重新输入。「测试连接」会问 API Server 这个令牌能不能读 Secret、能不能写，能就标红。${k.kubectl ? '' : ' <b>工具服务那台机器上没有 kubectl：</b>装上以后这些工具才能用。'}</div></div>`;
+      令牌只写不读，改了地址或 CA 要重新输入。「测试连接」会问 API Server 这个令牌能不能读 Secret、能不能写（SelfSubjectAccessReview：一次「权限审查」的创建请求，只问权限、不读数据），能就标红。${k.kubectl ? '' : ' <b>工具服务那台机器上没有 kubectl：</b>装上以后这些工具才能用。'}</div></div>`;
 }
 const IC_K8S_UNSUPPORTED = `<details class="note"><summary>不支持的 kubeconfig 写法和原因</summary><ul class="ax">
   <li><b>exec 插件、auth-provider</b>（云厂商、OIDC）：每次调用都要在工具服务上跑一个程序换令牌，等于让页面决定在服务器上执行什么</li>

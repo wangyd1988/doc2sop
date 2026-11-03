@@ -9961,6 +9961,8 @@ def _parse_kubeconfig(text, context=None):
 
     contexts, clusters, users = named("contexts"), named("clusters"), named("users")
     names = sorted(contexts)
+    if not names:
+        raise ConfigError("kubeconfig 里没有 context：贴完整的 kubeconfig（clusters、users、contexts 都要有）")
     chosen = str(context or document.get("current-context") or (names[0] if len(names) == 1 else ""))
     if not chosen:
         error = Conflict("kubeconfig 里有好几个 context，又没有 current-context：选一个")

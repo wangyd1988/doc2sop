@@ -362,6 +362,42 @@ check('MySQL 的 disable 写「不要求加密」（服务器支持时 PyMySQL �
   [html.includes("['disable', 'disable（不要求加密）'], ['require'"), html.includes('require 只防窃听，不防冒充；跨公网请用 verify')],
   [true, true]);
 
+// 用账号密码添加机器：不是本机打开时说明怎么开隧道（给出 ssh -L 命令），不是灰按钮；票据只在对话框的变量里；指纹要人点了才登记
+const tunnel = new Function('location', `${lineOf(/^const esc = .*$/m)}\n${extract('icCopy')}\n${extract('icTunnelHtml')}\nreturn icTunnelHtml;`)(
+  {hostname: '117.72.91.19', host: '117.72.91.19:8765', port: '8765', protocol: 'http:'})();
+check('隧道说明：给出 ssh -L 命令和本机地址', [tunnel.includes('ssh -N -L 8765:127.0.0.1:8765 root@117.72.91.19'),
+  tunnel.includes('http://127.0.0.1:8765/tools')], [true, true]);
+const tunnelEvil = new Function('location', `${lineOf(/^const esc = .*$/m)}\n${extract('icCopy')}\n${extract('icTunnelHtml')}\nreturn icTunnelHtml;`)(
+  {hostname: evil, host: evil, port: '', protocol: 'https:'})();
+check('隧道说明：地址转义', tunnelEvil.includes('<img'), false);
+check('主机卡片：「用账号密码添加机器」不灰掉（点开说明原因）', /data-ic="host-quick">\+ 用账号密码添加机器</.test(html), true);
+const quick = extract('icQuickDialog');
+check('添加机器：口令只在第一步核对，之后带票据', [/host-onboard', \{host, passphrase: icPass\(wrap\)\}/.test(quick),
+  /ticket \? \{ticket\} : \{passphrase/.test(quick), quick.includes('localStorage'), quick.includes('sessionStorage')], [true, true, false, false]);
+check('添加机器：登记 host key 要人选指纹、点按钮（只有一把时预选，也要点）', [/host-trust', \{name, fingerprint: picked\.value/.test(quick),
+  quick.includes("先选一个指纹")], [true, true]);
+check('添加机器：出口地址对不上时写明「不是工具服务的出口就先别改」，改完重试要重输密码', [quick.includes('就先别改'),
+  /host-from', \{name, address: mismatch/.test(quick), quick.includes('要重新输一次登录密码')], [true, true, true]);
+check('添加机器：密码提交时立刻取出清空', /const password = icTake\(wrap, '\[data-f="password"\]'\)/.test(quick), true);
+
+// K8s 集群：页面里的只读账号 YAML 和仓库里的 deploy/k8s-readonly.yaml 一字不差；服务端来的文字转义；能读 Secret 标红
+const yamlInPage = scripts.join('\n').match(/const K8S_READONLY_YAML = `([\s\S]*?)`;/)[1];
+check('只读账号的 YAML 和 deploy/k8s-readonly.yaml 一致', yamlInPage === fs.readFileSync('deploy/k8s-readonly.yaml', 'utf8').replace(/\r\n/g, '\n'), true);
+check('只读账号的 YAML 不给 secrets', /secrets/.test(yamlInPage.replace(/^#.*$/mg, '')), false);
+const k8sCode = [/^const esc = .*$/m, /^const IC_SECRET = .*$/m].map(lineOf).concat(['setAtText', 'icSecretPill', 'icK8sToken', 'icK8sRow', 'icK8sCard'].map(extract)).join('\n');
+const K8 = new Function(`${k8sCode}\nreturn {icK8sRow, icK8sCard, icK8sToken};`)();
+const k8row = K8.icK8sRow({name: evil, label: evil, server: evil, ca_fingerprints: [evil], secret: {state: 'set', expires: '2020-01-01T00:00:00+08:00', subject: evil},
+  test: {verdict: 'blocked', label: evil, at: evil}});
+check('K8s 集群一行：全部转义', k8row.includes('<img'), false);
+check('K8s 集群一行：过期标红、测试不过标红', [k8row.includes('已过期'), (k8row.match(/pill bad/g) || []).length], [true, 2]);
+check('K8s 集群一行：没口令时修改、测试、删除灰掉', (K8.icK8sRow({name: 'p', server: 's', secret: {state: 'set'}}, '没设口令').match(/disabled/g) || []).length, 3);
+check('K8s 卡片：老工具服务只读、写明原因', [K8.icK8sCard({k8s: {supported: false, why: evil}}, '', true).includes('<img'),
+  K8.icK8sCard({k8s: {supported: false, why: '工具服务较旧'}}, '', true).includes('data-ic='),
+  K8.icK8sCard({k8s: {supported: true, clusters: [], tools: [evil]}}, '', true).includes('<img')], [false, false, false]);
+check('K8s：不支持的写法写明原因（含客户端证书）', ['exec 插件', 'auth-provider', '客户端证书和私钥', 'insecure-skip-tls-verify'].every(t => html.includes(t)), true);
+check('K8s：页面上写清权限审查「只问权限、不读数据」', html.includes('只问权限、不读数据') || html.includes('不读任何数据'), true);
+check('K8s：令牌框不让浏览器记住', html.includes('<input type="password" data-f="token" autocomplete="new-password"'), true);
+
 // 云上协同：对外接入页的卡片、计划和告警规则表单里的推送下拉、对话列表的来源。服务端来的名字、粘贴行、问题一律转义；
 // 没打开时（/api/chat/notify 是 404）表单里没有推送这一项，对话列表没有筛选（由 /api/conversations 带不带 chat 决定）
 const chatCode = [/^const esc = .*$/m, /^const shortTime = .*$/m, /^const NOTIFY_WHEN = .*$/m, /^const NOTIFY_REPEAT = .*$/m,
