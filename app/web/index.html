@@ -4490,7 +4490,7 @@ async function icRun(wrap, button, work) {
     return null;
   } finally {
     buttons.forEach(b => { b.disabled = b.dataset.was === '1'; });
-    button.textContent = label;
+    if (button.textContent === '处理中…') button.textContent = label;   // 处理过程中换了文字的（分步对话框的下一步）不改回去
   }
 }
 // 试探（测试、扫描、检查连通）的结果。名额紧时会还在排队：这里不会自动刷新，请人过一会儿再点
