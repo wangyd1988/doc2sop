@@ -959,6 +959,8 @@ table.pt .rx { display: block; font-size: 11px; color: var(--muted); font-family
 .sf .card h3 .add { margin-left: auto; font-size: 12.5px; padding: 5px 12px; border-radius: 8px; background: var(--user-bg); color: #fff; }
 .sf .card h3 .add:disabled { opacity: .45; cursor: not-allowed; }
 .sf .card h3 .add + .ro { margin-left: 0; }
+.sf .card h3 .add + .add { margin-left: 0; }
+.sf .card h3 .add.alt { background: transparent; color: var(--text); border: 1px solid var(--border); }
 .sf .warn-t { color: #b45309; }
 .sf table.ax .ops.col { flex-direction: column; align-items: stretch; }
 .sf table.ax .ops button:disabled { opacity: .45; cursor: not-allowed; }
@@ -1017,6 +1019,8 @@ table.pt .rx { display: block; font-size: 11px; color: var(--muted); font-family
   .dlg.ic { max-height: 92vh; }
   .dlg.ic .grid2 { grid-template-columns: 1fr; }
   .sf table.ax.stack .ops.col { flex-direction: row; }
+  .sf .card h3:has(.add + .add) { flex-wrap: wrap; row-gap: 6px; }
+  .sf .card h3 .add + .add { margin-left: auto; }
 }
 
 .scrim { display: none; }
@@ -4217,7 +4221,7 @@ const IC_STEP = {verify: ['warn', '待核对 host key'], check: ['', '待检查�
 const IC_SECRET = {none: ['off', '不带凭据'], set: ['ok', '已设置'], missing: ['', '未设置'], stale: ['bad', '要重新输入（去向变过）'], unreadable: ['bad', '凭据文件有问题']};
 const IC_MODE = {guarded: '受控（强制命令 + 白名单）', direct: '直连（只读靠账号权限）'};
 const IC_MODE_SHORT = {guarded: '受控', direct: '直连'};
-const IC_KIND = {connections: 'conn', mcp_servers: 'mcp', hosts: 'host'};
+const IC_KIND = {connections: 'conn', mcp_servers: 'mcp', hosts: 'host', clusters: 'cluster'};
 let infra = null;                    // 最近一次读到的 {t, s, p, c}
 const icScans = {}, icChecks = {};   // 主机名 → 最近一次扫描到的 host key、「检查连通」的结果（只在这个页面里）
 
@@ -4392,10 +4396,13 @@ function paintInfra() {
     ${live && blocked ? `<div class="banner">${esc(blocked)}</div>` : ''}
     ${can ? `<div class="howto" style="margin:0 0 14px">审批口令等同工具服务那台机器的 root（能批准以 root 运行的命令），只经 SSH 隧道打开页面再输：<code>ssh -N -L 8765:127.0.0.1:8765 root@宿主机</code>，再开 <code>http://127.0.0.1:8765</code>。
       页面上加的连接只能用这里输入的凭据，引用不了服务器上的 <code>\${名字}</code>；凭据存好以后只看得到「已设置」，改了地址就要重新输入。</div>` : ''}
-    <div class="card"><h3>主机 <small>命令型工具在哪些机器上跑</small>${add('host', '添加主机')}</h3>
+    <div class="card"><h3>主机 <small>命令型工具在哪些机器上跑</small>${live ? `<button class="add" data-ic="host-quick">+ 用账号密码添加机器</button>${
+        add('host', '添加主机（分步）').replace('class="add"', 'class="add alt"')}` : add('host', '添加主机')}</h3>
       ${hostMode.configured || hosts.length ? table(['名称', '账号与地址', '方式', '状态', '分组', ''], hosts.map(h => icHostRow(h, hostMode.default, live)).join(''), '还没有主机。')
         : '<div class="note">没有配置主机清单：命令型工具都在工具服务所在的这台机器上跑。</div>'}
-      <div class="howto"><b>在页面上加一台：</b>填表（要口令；私钥在工具服务这边生成，不经过页面）→ 去目标主机的控制台上核对 host key 指纹、确认（要口令，不会自动信任）→
+      <div class="howto"><b>最省事：</b>「用账号密码添加机器」——填名字、地址、目标主机的登录账号和密码，在一个对话框里保存、核对 host key 指纹（你确认了才登记）、
+        用密码自动安装、检查连通；审批口令只输一次，密码只用一次、不保存。只在经 SSH 隧道打开的页面上能用（点开会告诉你怎么开隧道）。<br>
+        <b>分步加：</b>填表（要口令；私钥在工具服务这边生成，不经过页面）→ 去目标主机的控制台上核对 host key 指纹、确认（要口令，不会自动信任）→
         照着在目标主机上以 root 建账号、装执行器，或者经 SSH 隧道打开页面后「用密码自动安装」（要口令；密码只用一次、不保存，工具服务不持有目标主机的 root 凭据）→ 检查连通。主配置里的主机照旧在宿主机上用
         <code>ops_readonly.py enroll / push / status</code>。</div></div>
     <div class="card"><h3>连接 <small>接口和数据库的地址、凭据</small>${add('conn', '添加连接')}</h3>
@@ -4406,6 +4413,7 @@ function paintInfra() {
       ${table(['名称', '地址', '状态', '凭据', ''], servers.map(x => icMcpRow(x, blocked)).join(''), '还没有 MCP server。')}
       <div class="howto"><b>页面上能加：</b>远程 server（Streamable HTTP），发现的工具自动进「待审批」，批准后才能用。
         <b>只能在服务器上：</b>本机子进程（stdio）——要在服务器上放程序文件；页面上不给这个入口，少一条以 root 长驻运行程序的路。</div></div>
+    ${live ? icK8sCard(c, blocked, can) : ''}
     <div class="card"><h3>对外开放的数据工具 <small>外部智能体经 MCP 能调哪些</small><span class="ro">${o.access?.enabled ? '对外接入已打开' : '对外接入没打开'}</span></h3>
       <div class="note">对外开放只在 MCP 打开时才有用：打开以后，外部智能体凭对外接入的令牌就能调这个工具。打开要审批口令，关闭不要。
         主配置里写了 <code>export: true</code> 的也能在这里关（记在页面配置里，不改主配置）。</div>
@@ -4943,6 +4951,409 @@ async function icCheckMain(name) {
     icReload();
   } catch (e) { toast('没检查成：' + e.message, 'err', 6000); }
 }
+/* ---- 用账号密码添加机器：一个对话框走完 ----
+   ① 保存主机、扫描 host key（要口令，只核对这一次；工具服务回一张「添加流程的授权」，只在这个对话框的变量里，关掉就丢）
+   ② 把指纹给人看，人点了「指纹一致，登记」才登记（绝不自动）③ 用密码安装（密码只用一次）④ 检查连通。
+   每一步的结果都显示出来，失败停在那一步，可以重试；授权失效（过期、口令改过、锁定中……）就退回输审批口令。
+   只在经 SSH 隧道打开的页面上能用：不是本机打开时，对话框里写清为什么、怎么开隧道。 */
+const IC_Q_STEP = {wait: ['', '没做'], run: ['', '进行中…'], ok: ['ok', '✓ 完成'], fail: ['bad', '✗ 没成'], ask: ['warn', '等你确认']};
+function icTunnelHtml() {
+  const port = location.port || (location.protocol === 'https:' ? '443' : '80');
+  const host = location.hostname.includes(':') ? `[${location.hostname}]` : location.hostname;
+  return `<div class="sum">这个页面现在是经 <code>${esc(location.host)}</code> 打开的，不是本机地址。用账号密码添加机器要把目标主机的登录密码（往往是 root 的）和审批口令发给服务器，
+      明文经过网络不安全，所以只在经 SSH 隧道打开的页面上能用（服务器只收本机来的这类请求）。</div>
+    ${icCopy('① 在你自己的电脑上开一个隧道（Windows 的 PowerShell、macOS / Linux 的终端都行；登录服务器用你平时的 SSH 账号，窗口别关）',
+      `ssh -N -L 8765:127.0.0.1:${port} root@${host}`)}
+    ${icCopy('② 在浏览器里打开下面这个地址（网页密码照旧），再点「用账号密码添加机器」', 'http://127.0.0.1:8765/tools')}
+    <div class="note">隧道里传的东西是加密的；本机的 8765 端口被占用时，把两处的 8765 换成别的端口。</div>`;
+}
+function icQuickDialog() {
+  const c = infra.c, ap = approvalInfo(), pw = c.password_install || {};
+  const why = icBlocked(c, ap) || (!pw.supported ? (pw.why || '工具服务较旧，没有这个功能') : '');
+  const close = '<button type="button" class="btn pri" data-dlgcancel>知道了</button>';
+  if (!pw.local) return icDialog('用账号密码添加机器', icTunnelHtml() + (why ? `<div class="icbox warn">另外：${esc(why)}</div>` : ''), close);
+  if (why) return icDialog('用账号密码添加机器', `<div class="icbox warn"><h4>现在用不了</h4>${esc(why)}</div>
+    <div class="note">也可以用「添加主机（分步）」，照页面上给的命令在目标主机上手工安装。</div>`, close);
+  const froms = [...new Set((c.hosts || []).filter(h => h.origin === 'page').flatMap(h => h.from || []))];
+  const step = (n, title, body) => `<div class="step" data-qstep="${n}"><h4>${title}<span class="pill" data-qstate></span></h4><div data-qbody>${body}</div></div>`;
+  const body = `<div class="sum">填好以后点「开始」：工具服务保存这台主机、扫描它的 host key；你核对指纹点了「登记」，它再用这里的账号和密码登录一次，
+      把建受限账号、放公钥、装执行器这几步做掉，然后检查连通。密码只用这一次：不保存、不进日志。审批口令只输这一次。</div>
+    <div data-qform>
+      <div class="grid2">
+        <label class="fld">名字<input data-f="name" maxlength="63" placeholder="比如 web01（小写字母或数字开头）"></label>
+        <label class="fld">地址<input data-f="address" placeholder="10.0.1.11 或主机名"></label>
+        <label class="fld">SSH 端口<input data-f="port" inputmode="numeric" placeholder="22"></label>
+        <label class="fld">模式<select data-f="mode">${icOpt('guarded', '受控（强制命令 + 白名单，建议）', 'guarded')}${icOpt('direct', '直连（只读靠账号权限）', '')}</select></label>
+        <label class="fld">登录账号<input data-f="login" value="root" autocomplete="off" spellcheck="false" autocapitalize="off">
+          <span class="hint">root，或者能 sudo 的普通账号（sudo 用同一个密码）</span></label>
+        <label class="fld">登录密码<input type="password" data-f="password" autocomplete="new-password" spellcheck="false" autocapitalize="off">
+          <span class="hint">只用来登录这一次，用完就丢</span></label>
+      </div>
+      <details${froms.length ? '' : ' open'}><summary class="note">更多：执行账号、工具服务的出口地址、分组</summary>
+        <div class="grid2">
+          <label class="fld">执行账号（工具服务以后用它登录）<input data-f="user" value="opsread"></label>
+          <label class="fld">分组<input data-f="groups" placeholder="逗号分开（可以不填）"></label>
+        </div>
+        <label class="fld">工具服务的出口地址<input data-f="from" value="${esc(froms.join(', '))}" placeholder="目标主机看到的来源 IP，比如 117.72.91.19">
+          <span class="hint">写进 authorized_keys 的 from=：只认这个地址连进来（有 NAT 时是公网出口地址）。拿不准就先填一个：安装的第一步会核对目标主机看到的来源地址，对不上会停下来问你。</span></label>
+      </details>
+      <div class="icbox warn" data-direct hidden>直连模式：只读完全靠账号权限，账号能做的事模型都能做。只在账号本身就只读、又装不了执行器的主机上用。</div>
+    </div>
+    <div class="steps">
+      ${step(1, '① 保存主机，扫描 host key', '<div class="note">点「开始」后做。</div>')}
+      ${step(2, '② 核对指纹，登记 host key', '<div class="note">扫到以后在这里选。</div>')}
+      ${step(3, '③ 用密码安装', '<div class="note">登记以后自动开始。</div>')}
+      ${step(4, '④ 检查连通', '<div class="note">装好以后自动检查。</div>')}
+    </div>
+    <div data-passwrap>${icPassHtml()}</div>`;
+  const wrap = icDialog('用账号密码添加机器', body,
+    '<button type="button" class="btn" data-dlgcancel>关闭</button><button type="button" class="btn warn" data-act="next">开始</button>');
+  let ticket = null, name = '', stage = 1, keys = [], impact = [], mismatch = '';
+  const next = wrap.querySelector('[data-act="next"]');
+  const box = n => wrap.querySelector(`[data-qstep="${n}"]`);
+  const mark = (n, state, html) => {
+    const [cls, text] = IC_Q_STEP[state];
+    const pill = box(n).querySelector('[data-qstate]');
+    pill.className = 'pill ' + cls;
+    pill.textContent = text;
+    box(n).classList.toggle('on', state === 'run' || state === 'ask' || state === 'fail');
+    if (html !== undefined) box(n).querySelector('[data-qbody]').innerHTML = html;
+  };
+  const sync = () => { wrap.querySelector('[data-direct]').hidden = icField(wrap, 'mode').value !== 'direct'; };
+  icField(wrap, 'mode').addEventListener('change', sync);
+  const passwrap = wrap.querySelector('[data-passwrap]');
+  const auth = () => ticket ? {ticket} : {passphrase: icPass(wrap, '添加流程的授权失效了：输审批口令再继续')};
+  wrap.icConflict = data => {
+    if (data.ticket_refused) { ticket = null; passwrap.hidden = false; }
+    if (data.confirm_impact) { impact = data.confirm_impact; paintKeys(); }
+  };
+  const label = () => {
+    next.textContent = {1: '开始', 2: '指纹一致，登记并安装', 3: mismatch ? `改成 ${mismatch} 并重试` : '重试安装', 4: '重新检查', 5: '完成'}[stage];
+  };
+  const paintKeys = () => {
+    const radios = keys.map((k, i) => `<label><input type="radio" name="qfp" value="${esc(k.fingerprint)}"${keys.length === 1 && i === 0 ? ' checked' : ''}>${esc(k.type)} ${esc(k.fingerprint)}</label>`).join('');
+    mark(2, 'ask', `<div class="note">去目标主机的控制台上（不经过这条网络）执行 <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code>，和下面扫到的对一下，选一致的那一个再点「指纹一致，登记并安装」。
+      没法去控制台也可以直接选——那就等于相信这次扫到的就是它。工具服务会重新扫一次，只登记和你选的一致的那一把；不会自动信任。</div>
+      <div class="keys">${radios}</div><div data-impact>${icImpactConfirm(impact, '登记以后这台主机进主机清单，这些工具的 target 会变')}</div>`);
+  };
+  const scanned = scan => {
+    keys = icScanKeys(scan);
+    if (keys.length) return paintKeys();
+    const text = scan && scan.state === 'done' ? (scan.checks || []).map(k => k.text).join('；') : '还在排队：过一会儿再点「重新扫描」';
+    mark(2, 'fail', `<div class="err">没扫到 host key：${esc(text)}</div><div class="acts"><button type="button" class="btn" data-qrescan>重新扫描</button></div>`);
+  };
+  wrap.addEventListener('click', e => {
+    const b = e.target.closest('[data-qrescan]');
+    if (!b || b.disabled) return;
+    icRun(wrap, b, async () => { scanned((await postJson('/api/tools/config/host-scan', {name})).scan); });
+  });
+  const install = async () => {
+    const password = icTake(wrap, '[data-f="password"]');
+    const login = icField(wrap, 'login').value.trim();
+    if (!login) throw new Error('要填登录账号');
+    if (!password) throw new Error(stage === 3 ? '要重新输一次登录密码（上一次用过就丢了），再点按钮' : '要输登录密码');
+    mark(3, 'run', '<div class="note">正在登录目标主机、执行安装（最多一分钟）…</div>');
+    stage = 3;
+    if (mismatch) {
+      await postJson('/api/tools/config/host-from', {name, address: mismatch, ...auth()});
+      mismatch = '';
+    }
+    let r;
+    try { r = await postJson('/api/tools/config/host-install', {name, login, password, ...auth()}); }
+    catch (err) { mark(3, 'fail', `<div class="err">${esc(err.message)}</div>`); label(); throw err; }
+    const inst = r.install || {};
+    if (!inst.ok) {
+      mismatch = inst.source_mismatch ? inst.source : '';
+      mark(3, 'fail', icPwResultHtml(inst) + (mismatch ? `<div class="icbox warn"><h4>出口地址对不上</h4>目标主机看到的来源地址是 <code>${esc(mismatch)}</code>。
+        如果它就是工具服务这台机器的出口地址，重新输一次登录密码，点「改成 ${esc(mismatch)} 并重试」（只改成这一个地址，不放宽成网段）。
+        <b>如果这个地址不是工具服务这台机器的出口，就先别改</b>，查清楚（中间有跳板或代理？连错了机器？）再说。</div>`
+        : '<div class="note">修好原因后重新输一次登录密码，点「重试安装」；或者关掉对话框，到主机对话框里照命令手工执行。</div>'));
+      label();
+      return;
+    }
+    mark(3, 'ok', icPwResultHtml(inst));
+    stage = 4;
+    const ok = r.check && r.check.state === 'done' && r.check.verdict === 'ok';
+    if (r.check) icChecks[name] = r.check;
+    mark(4, ok ? 'ok' : 'fail', r.check ? icProbeHtml(r.check, '重新检查') + icToolStates(r.check, name) : '<div class="note">还在排队：点「重新检查」。</div>');
+    if (ok) stage = 5;
+    label();
+    icReload();
+  };
+  next.onclick = e => icRun(wrap, e.currentTarget, async () => {
+    if (stage === 1) {
+      const split = key => icField(wrap, key).value.split(/[\s,，、]+/).filter(Boolean);
+      const host = {name: icField(wrap, 'name').value.trim(), address: icField(wrap, 'address').value.trim(), os: 'linux',
+                    user: icField(wrap, 'user').value.trim(), mode: icField(wrap, 'mode').value, groups: split('groups'), from: split('from')};
+      if (icField(wrap, 'port').value.trim()) host.port = icField(wrap, 'port').value.trim();
+      if (!icField(wrap, 'login').value.trim() || !icField(wrap, 'password').value) throw new Error('要填登录账号和登录密码（第 ③ 步用）');
+      if (!host.from.length) throw new Error('要填工具服务的出口地址（在「更多」里）');
+      mark(1, 'run');
+      let r;
+      try { r = await postJson('/api/tools/config/host-onboard', {host, passphrase: icPass(wrap)}); }
+      catch (err) { mark(1, 'fail', `<div class="err">${esc(err.message)}</div>`); throw err; }
+      ticket = r.ticket || null;
+      name = r.saved;
+      passwrap.hidden = true;
+      wrap.querySelectorAll('[data-qform] input:not([data-f="password"]):not([data-f="login"]), [data-qform] select').forEach(i => { i.disabled = true; });
+      mark(1, 'ok', `<div class="note">已保存 <code>${esc(name)}</code>，生成了它的私钥（不经过页面）。授权 ${esc(r.ticket_minutes || 15)} 分钟内有效，之后要输审批口令。</div>`);
+      impact = r.projected_impact || [];
+      stage = 2;
+      label();
+      icReload();
+      return scanned(r.scan);
+    }
+    if (stage === 2) {
+      const picked = wrap.querySelector('input[name="qfp"]:checked');
+      if (!picked) throw new Error(keys.length ? '先选一个指纹：和目标主机控制台上显示的一致的那一个' : '还没扫到 host key：先「重新扫描」');
+      if (!icField(wrap, 'password').value) throw new Error('要输登录密码（第 ③ 步用）');
+      await postJson('/api/tools/config/host-trust', {name, fingerprint: picked.value, confirm_impact: icConfirmed(wrap, impact).map(i => i.tool), ...auth()});
+      mark(2, 'ok', `<div class="note">已登记 <code>${esc(picked.value)}</code>。</div>`);
+      stage = 3;
+      return install();
+    }
+    if (stage === 3) return install();
+    if (stage === 4) {
+      const r = await postJson('/api/tools/config/host-check', {name});
+      icChecks[name] = r.check;
+      const ok = r.check && r.check.state === 'done' && r.check.verdict === 'ok';
+      mark(4, ok ? 'ok' : 'fail', icProbeHtml(r.check, '重新检查') + icToolStates(r.check, name));
+      if (ok) stage = 5;
+      label();
+      return icReload();
+    }
+    closeDialog();
+    icReload();
+  });
+  sync();
+}
+
+/* ---- K8s 集群：名字、API Server（只认 https）、CA（必填，不能跳过证书校验）、只读令牌；或者贴一份 kubeconfig 由工具服务取出这三样 ----
+   令牌只写不读：页面上只看得到「已设置」和到期时间。要审批口令（加、改、删、测试）。kubectl 型工具多一个参数 cluster。 */
+const K8S_READONLY_YAML = `# 工具服务查 K8s 用的只读 ServiceAccount：kubectl 版的 kube_* 和 deploy/templates/k8s-api.yaml 都用它。
+# 用法、令牌怎么签和续、怎么撤销：docs/正式部署.md「K8s 只读账号」。
+#
+#   kubectl apply -f deploy/k8s-readonly.yaml
+#   kubectl -n doc2sop create token ops-readonly --duration=2160h
+#
+# 权限 = 内置的 view（各命名空间常见资源只读，读不了 Secret，看不到 Role / RoleBinding）
+#      + 下面的 extra（view 不含的集群级只读资源）。集群里有别的 CRD 要查就照样加 get/list/watch；
+# 里面有凭据的资源只给 list 或不给（见 wasmplugins）。撤销：kubectl delete -f deploy/k8s-readonly.yaml，签出的令牌随之失效。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: doc2sop
+  labels: {doc2sop/role: ops-readonly}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ops-readonly
+  namespace: doc2sop
+  labels: {doc2sop/role: ops-readonly}
+automountServiceAccountToken: false     # 只给工具服务签令牌用，不挂进任何 Pod
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: doc2sop-ops-readonly-view
+  labels: {doc2sop/role: ops-readonly}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: view}
+subjects:
+  - {kind: ServiceAccount, name: ops-readonly, namespace: doc2sop}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: doc2sop-ops-readonly-extra
+  labels: {doc2sop/role: ops-readonly}
+rules:
+  - apiGroups: [""]
+    resources: [nodes, persistentvolumes]
+    verbs: [get, list, watch]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingressclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [apiextensions.k8s.io]
+    resources: [customresourcedefinitions]
+    verbs: [get, list, watch]
+  - apiGroups: [coordination.k8s.io]     # kubectl describe node 要读节点的心跳 Lease
+    resources: [leases]
+    verbs: [get, list, watch]
+  - apiGroups: [gateway.networking.k8s.io]
+    resources: [gatewayclasses, gateways, httproutes, grpcroutes, tcproutes, tlsroutes, udproutes, referencegrants,
+                backendtlspolicies, listenersets]
+    verbs: [get, list, watch]
+  # Higress 插件：只给 list。巡检用 kube_list（-o wide 只出几列）看插件在不在就够了；不给 get，
+  # kube_yaml、kube_describe 读不到插件配置（里面常有第三方服务的 key）
+  - apiGroups: [extensions.higress.io]
+    resources: [wasmplugins]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: doc2sop-ops-readonly-extra
+  labels: {doc2sop/role: ops-readonly}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: doc2sop-ops-readonly-extra}
+subjects:
+  - {kind: ServiceAccount, name: ops-readonly, namespace: doc2sop}
+`;
+const K8S_PRINT_KUBECONFIG = `# 在集群上（有管理员 kubeconfig 的机器）执行：打印一份只含这个只读令牌的 kubeconfig，整段贴进页面
+TOKEN=$(kubectl -n doc2sop create token ops-readonly --duration=2160h)
+SERVER=$(kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.server}')
+CA=$(kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
+cat <<EOF
+apiVersion: v1
+kind: Config
+clusters: [{name: c, cluster: {server: $SERVER, certificate-authority-data: $CA}}]
+users: [{name: ops-readonly, user: {token: $TOKEN}}]
+contexts: [{name: c, context: {cluster: c, user: ops-readonly}}]
+current-context: c
+EOF
+# SERVER 是 https://127.0.0.1:6443 这类本机地址时，换成工具服务那台机器连得到的地址（要和 API Server 证书上的名字对得上）`;
+function icK8sToken(secret) {
+  const s = secret || {};
+  if (s.state !== 'set') return icSecretPill(s);
+  const left = s.expires ? (new Date(s.expires) - Date.now()) / 86400000 : null;
+  const cls = left === null ? 'ok' : left <= 0 ? 'bad' : left < 14 ? 'warn' : 'ok';
+  return `<span class="pill ${cls}">${left !== null && left <= 0 ? '已过期' : '已设置'}</span>${
+    s.expires ? `<div class="note">${esc(setAtText(s.expires))} 到期</div>` : ''}${s.subject ? `<div class="note"><code>${esc(s.subject)}</code></div>` : ''}`;
+}
+function icK8sRow(x, lock = '') {
+  const name = esc(x.name), off = lock ? ` disabled title="${esc(lock)}"` : '';
+  const t = x.test, danger = t && t.verdict === 'blocked';
+  return `<tr><td data-l="名称"><b>${name}</b>${x.label ? `<div class="note">${esc(x.label)}</div>` : ''}</td>
+    <td data-l="API Server"><code>${esc(x.server)}</code><div class="note">CA ${esc((x.ca_fingerprints || []).length)} 张 · ${esc(((x.ca_fingerprints || [])[0] || '').slice(0, 23))}…</div></td>
+    <td data-l="令牌">${icK8sToken(x.secret)}</td>
+    <td data-l="最近测试">${t ? `<span class="pill ${danger ? 'bad' : t.verdict === 'ok' ? 'ok' : 'warn'}">${esc(t.label)}</span><div class="note">${esc(t.at || '')}</div>` : '<span class="note">—</span>'}</td>
+    <td><div class="ops col"><button class="go" data-ic="k8s" data-name="${name}"${off}>修改</button><button data-ic="k8s" data-name="${name}"${off}>测试</button><button class="del" data-ic="k8s-del" data-name="${name}"${off}>删除</button></div></td></tr>`;
+}
+function icK8sCard(c, blocked, can) {
+  const k = c.k8s || {supported: false, why: c.error || '工具服务较旧'};
+  if (!k.supported) return `<div class="card"><h3>K8s 集群 <small>kubectl 工具查哪个集群</small><span class="ro">只读</span></h3><div class="note">${esc(k.why || '工具服务较旧，页面上不能加 K8s 集群')}</div></div>`;
+  const rows = (k.clusters || []).map(x => icK8sRow(x, blocked)).join('');
+  const add = `<button class="add" data-ic="k8s-add"${can ? '' : ` disabled title="${esc(blocked)}"`}>+ 添加 K8s 集群</button>`;
+  return `<div class="card"><h3>K8s 集群 <small>kubectl 工具查哪个集群</small>${add}</h3>
+    ${rows ? `<table class="ax stack"><tr><th>名称</th><th>API Server</th><th>令牌</th><th>最近测试</th><th></th></tr>${rows}</table>`
+      : `<div class="note">页面上还没加集群。${k.server_kubeconfig ? 'kubectl 工具现在用工具服务上配置的 kubeconfig。' : '工具服务上也没有配置 kubeconfig：kubectl 工具现在查不了任何集群。'}</div>`}
+    <div class="howto"><b>加了以后：</b>${(k.tools || []).length ? (k.tools || []).map(t => `<code>${esc(t)}</code>`).join('、') : 'kubectl 型工具'}多一个参数 <code>cluster</code>（选集群名），
+      ${k.server_kubeconfig ? '不填照旧用工具服务上配置的 kubeconfig' : '只有一个集群时不填就是它，多个时必须指定'}。只认<b>只读 ServiceAccount 的令牌</b>（建法在添加对话框里），
+      令牌只写不读，改了地址或 CA 要重新输入。「测试连接」会问 API Server 这个令牌能不能读 Secret、能不能写，能就标红。${k.kubectl ? '' : ' <b>工具服务那台机器上没有 kubectl：</b>装上以后这些工具才能用。'}</div></div>`;
+}
+const IC_K8S_UNSUPPORTED = `<details class="note"><summary>不支持的 kubeconfig 写法和原因</summary><ul class="ax">
+  <li><b>exec 插件、auth-provider</b>（云厂商、OIDC）：每次调用都要在工具服务上跑一个程序换令牌，等于让页面决定在服务器上执行什么</li>
+  <li><b>客户端证书和私钥</b>：K8s 吊销不了单张客户端证书，k3s、kubeadm 默认 kubeconfig 里的就是集群管理员证书——改用下面的只读账号</li>
+  <li><b>用户名密码、tokenFile、certificate-authority（文件路径）</b>：前者不安全，后两个是服务器上的文件</li>
+  <li><b>insecure-skip-tls-verify、http 地址、proxy-url</b>：令牌会发给冒充的服务器，或者明文经过网络</li></ul></details>`;
+function icK8sDialog(name) {
+  const k = infra.c.k8s || {};
+  const x = name ? (k.clusters || []).find(i => i.name === name) : null;
+  if (name && !x) return toast('页面上没有这个集群了，刷新看看', 'err');
+  const f = x ? (x.fields || {}) : {}, edit = !!x;
+  const body = `<div class="sum">${edit ? '名字改不了。改了地址或 CA，原来的令牌作废，要一起输入新的。' : ''}只认只读 ServiceAccount 的令牌：令牌只写不读，存在工具服务的私密目录里；
+      地址只认 https，CA 必填（没有跳过证书校验）。</div>
+    <div class="grid2">
+      <label class="fld">名字<input data-f="name" value="${esc(f.name || '')}"${edit ? ' disabled' : ''} maxlength="31" placeholder="小写字母开头，比如 prod"></label>
+      <label class="fld">显示名<input data-f="label" value="${esc(f.label || '')}" maxlength="40" placeholder="可以不填"></label>
+    </div>
+    <div class="chipset" data-how><label class="chk"><input type="radio" name="k8show" value="kc"${edit ? '' : ' checked'}><span>贴一份 kubeconfig</span></label>
+      <label class="chk"><input type="radio" name="k8show" value="manual"${edit ? ' checked' : ''}><span>逐项填写</span></label></div>
+    <div data-kind="kc">
+      <label class="fld">kubeconfig<textarea data-f="kubeconfig" rows="7" spellcheck="false" autocomplete="off" placeholder="apiVersion: v1&#10;kind: Config&#10;…"></textarea>
+        <span class="hint">只取当前 context 的地址、CA 和令牌；令牌不会显示出来，也不会回到页面上。</span></label>
+      <label class="fld" data-ctx hidden>context<select data-f="context"></select></label>
+      <div class="acts"><button type="button" class="btn" data-act="parse">解析看看</button></div>
+      <div data-parsed></div>
+    </div>
+    <div data-kind="manual">
+      <label class="fld">API Server 地址<input data-f="server" value="${esc(f.server || '')}" placeholder="https://10.0.0.5:6443"></label>
+      <label class="fld">CA 证书（PEM）<textarea data-f="ca" rows="5" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----">${esc(f.ca || '')}</textarea>
+        <span class="hint">集群的 CA：kubeconfig 里 certificate-authority-data 用 base64 解开就是它。只贴证书，不要贴私钥。</span></label>
+      <label class="fld">只读令牌<input type="password" data-f="token" autocomplete="new-password" spellcheck="false" placeholder="${edit && (x.secret || {}).state === 'set' ? '留空就不改' : ''}">
+        <span class="hint">${edit ? `现在：${esc((IC_SECRET[(x.secret || {}).state] || IC_SECRET.missing)[1])}。` : ''}ServiceAccount 的令牌（kubectl create token 输出的那一串）。</span></label>
+    </div>
+    ${IC_K8S_UNSUPPORTED}
+    <details class="note"><summary>在集群上建只读账号（和生产上那套一样：view 加几个集群级只读资源，读不了 Secret）</summary>
+      ${icCopy('① 用集群管理员的 kubeconfig 执行：kubectl apply -f - ，把下面整段贴进去（就是仓库里的 deploy/k8s-readonly.yaml）', K8S_READONLY_YAML)}
+      ${icCopy('② 签一个 90 天的令牌（到期前再签一个，在这里「修改」换上）', 'kubectl -n doc2sop create token ops-readonly --duration=2160h')}
+      ${icCopy('或者：打印一份只含这个令牌的 kubeconfig，整段贴到上面', K8S_PRINT_KUBECONFIG)}
+      <div class="note">撤销：<code>kubectl delete -f deploy/k8s-readonly.yaml</code>，签出的令牌随之失效。</div></details>
+    <div data-result></div>${icPassHtml()}`;
+  const wrap = icDialog(edit ? `修改 K8s 集群 ${esc(name)}` : '添加 K8s 集群', body,
+    `<button type="button" class="btn" data-dlgcancel>取消</button><button type="button" class="btn" data-act="test">测试连接</button><button type="button" class="btn warn" data-act="save">保存</button>`);
+  const how = () => (wrap.querySelector('input[name="k8show"]:checked') || {}).value || 'manual';
+  const sync = () => {
+    wrap.querySelector('[data-kind="kc"]').hidden = how() !== 'kc';
+    wrap.querySelector('[data-kind="manual"]').hidden = how() !== 'manual';
+  };
+  wrap.querySelectorAll('input[name="k8show"]').forEach(r => r.addEventListener('change', sync));
+  sync();
+  const contexts = list => {
+    const sel = icField(wrap, 'context'), was = sel.value;
+    sel.innerHTML = list.map(n => icOpt(n, n, was)).join('');
+    wrap.querySelector('[data-ctx]').hidden = list.length < 2;
+  };
+  wrap.icConflict = data => { if (data.contexts) contexts(data.contexts); };
+  const form = () => {
+    const cluster = {name: icField(wrap, 'name').value.trim()};
+    if (icField(wrap, 'label').value.trim()) cluster.label = icField(wrap, 'label').value.trim();
+    const body = {cluster};
+    if (how() === 'kc') {
+      body.kubeconfig = icField(wrap, 'kubeconfig').value;
+      if (!body.kubeconfig.trim()) throw new Error('要贴 kubeconfig');
+      if (!wrap.querySelector('[data-ctx]').hidden) body.context = icField(wrap, 'context').value;
+    } else {
+      cluster.server = icField(wrap, 'server').value.trim();
+      cluster.ca = icField(wrap, 'ca').value;
+      if (icField(wrap, 'token').value) body.token = icField(wrap, 'token').value;
+    }
+    if (edit) body.original = name;
+    return body;
+  };
+  const testBox = (title, p) => {
+    const danger = ((p && p.checks) || []).filter(k => k.danger);
+    return (danger.length ? `<div class="icbox warn" style="border-color:var(--danger);color:var(--danger)"><h4>⛔ 这个令牌权限太大</h4>${danger.map(k => esc(k.text)).join('<br>')}</div>` : '')
+      + icProbeBox(title, p, '测试连接');
+  };
+  wrap.querySelector('[data-act="parse"]').onclick = e => icRun(wrap, e.currentTarget, async () => {
+    const body = {kubeconfig: icField(wrap, 'kubeconfig').value};
+    if (!wrap.querySelector('[data-ctx]').hidden) body.context = icField(wrap, 'context').value;
+    const r = await postJson('/api/tools/config/cluster-parse', body);
+    contexts(r.contexts || []);
+    if ((r.contexts || []).length > 1) icField(wrap, 'context').value = r.context;
+    wrap.querySelector('[data-parsed]').innerHTML = `<div class="icbox"><h4>读出来的（context ${esc(r.context)}）</h4>
+      <div>API Server：<code>${esc(r.server)}</code></div><div>CA：${esc((r.ca_fingerprints || []).length)} 张，<code>${esc((r.ca_fingerprints || [])[0] || '')}</code></div>
+      <div>令牌：有${r.subject ? `，账号 <code>${esc(r.subject)}</code>` : ''}${r.expires ? `，${esc(setAtText(r.expires))} 到期` : ''}（令牌本身不显示）</div></div>`;
+  });
+  wrap.querySelector('[data-act="test"]').onclick = e => icRun(wrap, e.currentTarget, async () => {
+    const body = form();
+    body.passphrase = icPass(wrap, '测试也要输审批口令：测试会让工具服务带着令牌去连这个地址');
+    const r = await postJson('/api/tools/config/cluster-test', body);
+    wrap.querySelector('[data-result]').innerHTML = testBox(`测试连接${r.used_saved_secret ? '（用的是存着的令牌）' : ''}`, r.test);
+  });
+  wrap.querySelector('[data-act="save"]').onclick = e => icRun(wrap, e.currentTarget, async () => {
+    const body = form();
+    body.passphrase = icPass(wrap);
+    const r = await postJson('/api/tools/config/cluster-save', body);
+    await icReload();
+    icDialog(`${edit ? '已修改' : '已添加'} K8s 集群 ${esc(r.saved)}`, `<div class="sum">令牌：${esc(r.note)}。测试不通也已经存好；下面是保存之后用存着的令牌测的结果。</div>${testBox('测试连接', r.test)}`,
+      '<button type="button" class="btn pri" data-dlgcancel>好</button>');
+  });
+}
+function icK8sDeleteDialog(name) {
+  const wrap = icDialog(`删除 K8s 集群 ${esc(name)}`, `<div class="sum">令牌一起删掉，找不回来。之后 kubectl 工具的 cluster 参数里就没有它了（SOP 里写死了这个集群名的步骤会报「没有 K8s 集群」）。
+    集群上的只读账号还在：不用了就在集群上 <code>kubectl delete -f deploy/k8s-readonly.yaml</code>。</div>${icPassHtml()}`,
+    '<button type="button" class="btn" data-dlgcancel>取消</button><button type="button" class="btn warn" data-act="del">删除</button>');
+  wrap.querySelector('[data-act="del"]').onclick = e => icRun(wrap, e.currentTarget, async () => {
+    await postJson('/api/tools/config/cluster-delete', {name, passphrase: icPass(wrap)});
+    await icReload();
+    icDoneDialog(`已删除 K8s 集群 ${name}`, '令牌一起删了。');
+  });
+}
 const icInfraTab = () => mTab === 'tools' && tlTab === 'infra' && !!infra;
 $('msettings').addEventListener('click', e => {
   const b = e.target.closest('[data-ic]');
@@ -4951,7 +5362,9 @@ $('msettings').addEventListener('click', e => {
   const acts = {'conn-add': () => icConnDialog(''), conn: () => icConnDialog(name), 'conn-test': () => icConnDialog(name),
                 'conn-del': () => icDeleteDialog('conn', name), 'mcp-add': () => icMcpDialog(''), mcp: () => icMcpDialog(name),
                 'mcp-test': () => icMcpDialog(name), 'mcp-del': () => icDeleteDialog('mcp', name), 'host-add': () => icHostFormDialog(''),
-                host: () => icHostDialog(name), 'host-check': () => icCheckMain(name), 'host-del': () => icHostDeleteDialog(name)};
+                host: () => icHostDialog(name), 'host-check': () => icCheckMain(name), 'host-del': () => icHostDeleteDialog(name),
+                'host-quick': () => icQuickDialog(), 'k8s-add': () => icK8sDialog(''), k8s: () => icK8sDialog(name),
+                'k8s-del': () => icK8sDeleteDialog(name), 'cluster-del': () => icK8sDeleteDialog(name)};
   if (acts[b.dataset.ic]) acts[b.dataset.ic]();
 });
 // 对外开放的开关：打开要口令，关闭不要（只缩小能力）
