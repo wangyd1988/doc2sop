@@ -1,0 +1,527 @@
+{
+ "config": {
+  "good": {
+   "exists": true,
+   "problems": [],
+   "loose": "",
+   "robot_name": "doc2sop",
+   "contact": "王某某",
+   "unknown_reply": "once",
+   "markdown": true,
+   "paused": false,
+   "keep_days": 180,
+   "limits": {
+    "person_per_hour": 5,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 1000
+   },
+   "groups": [
+    {
+     "id": "1234567890123",
+     "name": "运维值班群",
+     "tools": [
+      "host_disk",
+      "container_stats"
+     ],
+     "categories": [
+      "运维"
+     ],
+     "mode": "kb",
+     "web": true
+    },
+    {
+     "id": "2345678901234",
+     "name": "研发交流群",
+     "tools": [],
+     "categories": null,
+     "mode": "kb",
+     "web": false
+    }
+   ],
+   "people": [
+    {
+     "id": "u_abc123",
+     "name": "王某某",
+     "tools": [
+      "host_uptime"
+     ],
+     "categories": null,
+     "mode": "smart",
+     "web": false
+    }
+   ],
+   "digest": [
+    {
+     "target": "王某某",
+     "weekday": 1,
+     "hour": 9,
+     "group": ""
+    },
+    {
+     "target": "运维值班群",
+     "weekday": 5,
+     "hour": 17,
+     "group": "1234567890123"
+    }
+   ]
+  },
+  "dingtalk_ids_under_ccwork": {
+   "exists": true,
+   "problems": [
+    "groups 里有一项（…56==）不像会话 ID，没有开通"
+   ],
+   "loose": "",
+   "robot_name": "",
+   "contact": "",
+   "unknown_reply": "once",
+   "markdown": false,
+   "paused": false,
+   "keep_days": null,
+   "limits": {
+    "person_per_hour": 20,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 3000
+   },
+   "groups": [
+    {
+     "id": "1001",
+     "name": "数字群",
+     "tools": [],
+     "categories": null,
+     "mode": "kb",
+     "web": false
+    }
+   ],
+   "people": [
+    {
+     "id": "manager1234",
+     "name": "张三",
+     "tools": [],
+     "categories": null,
+     "mode": "kb",
+     "web": false
+    }
+   ],
+   "digest": []
+  },
+  "misspelled_top_keys": {
+   "exists": true,
+   "problems": [
+    "不认识的配置项：platfrom、foo（只认 robot_name、contact、unknown_reply、markdown、paused、keep_days、limits、groups、people、digest），先按暂停处理"
+   ],
+   "loose": "",
+   "robot_name": "",
+   "contact": "",
+   "unknown_reply": "once",
+   "markdown": false,
+   "paused": true,
+   "keep_days": null,
+   "limits": {
+    "person_per_hour": 20,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 3000
+   },
+   "groups": [
+    {
+     "id": "1001",
+     "name": "群",
+     "tools": [],
+     "categories": null,
+     "mode": "kb",
+     "web": false
+    }
+   ],
+   "people": [],
+   "digest": []
+  },
+  "bad_limits": {
+   "exists": true,
+   "problems": [
+    "limits.person_per_hour 要是 1–1000 的整数",
+    "limits 里不认识 nope（只认 person_per_hour、group_per_hour、execute_per_hour、context_minutes、max_chars）",
+    "limits 写得不对，先按暂停处理"
+   ],
+   "loose": "",
+   "robot_name": "",
+   "contact": "",
+   "unknown_reply": "once",
+   "markdown": false,
+   "paused": true,
+   "keep_days": null,
+   "limits": {
+    "person_per_hour": 20,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 3000
+   },
+   "groups": [
+    {
+     "id": "1001",
+     "name": "群…1001",
+     "tools": [],
+     "categories": null,
+     "mode": "kb",
+     "web": false
+    }
+   ],
+   "people": [],
+   "digest": []
+  },
+  "limits_not_a_map": {
+   "exists": true,
+   "problems": [
+    "limits 要写成「名字: 数」",
+    "limits 写得不对，先按暂停处理"
+   ],
+   "loose": "",
+   "robot_name": "",
+   "contact": "",
+   "unknown_reply": "once",
+   "markdown": false,
+   "paused": true,
+   "keep_days": null,
+   "limits": {
+    "person_per_hour": 20,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 3000
+   },
+   "groups": [],
+   "people": [],
+   "digest": []
+  },
+  "groups_not_a_map": {
+   "exists": true,
+   "problems": [
+    "groups 要写成「ID: 设置」"
+   ],
+   "loose": "",
+   "robot_name": "",
+   "contact": "",
+   "unknown_reply": "once",
+   "markdown": false,
+   "paused": false,
+   "keep_days": null,
+   "limits": {
+    "person_per_hour": 20,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 3000
+   },
+   "groups": [],
+   "people": [],
+   "digest": []
+  },
+  "scope_with_unknown_key": {
+   "exists": true,
+   "problems": [
+    "groups.1001 里不认识 category（只认 name、tools、categories、mode、web），没有开通",
+    "people.u1 里不认识 nam（只认 name、tools、categories、mode、web），没有开通"
+   ],
+   "loose": "",
+   "robot_name": "",
+   "contact": "",
+   "unknown_reply": "once",
+   "markdown": false,
+   "paused": false,
+   "keep_days": null,
+   "limits": {
+    "person_per_hour": 20,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 3000
+   },
+   "groups": [],
+   "people": [],
+   "digest": []
+  },
+  "empty_categories": {
+   "exists": true,
+   "problems": [
+    "groups.1001.categories 写了，可一个能用的分类都没有（不写才是全部分类），没有开通",
+    "groups.1002.categories 里有一项写得不对：\u0001",
+    "groups.1002.categories 写了，可一个能用的分类都没有（不写才是全部分类），没有开通"
+   ],
+   "loose": "",
+   "robot_name": "",
+   "contact": "",
+   "unknown_reply": "once",
+   "markdown": false,
+   "paused": false,
+   "keep_days": null,
+   "limits": {
+    "person_per_hour": 20,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 3000
+   },
+   "groups": [],
+   "people": [],
+   "digest": []
+  },
+  "digest_problems": {
+   "exists": true,
+   "problems": [
+    "digest 第 1 项的 weekday 要是 1–7（周一到周日）",
+    "digest 第 2 项的 group 要是 groups 里开通了的群",
+    "digest 第 3 项没写 target（推送目标的名字）",
+    "digest 第 4 项要写成「target: 名字, weekday: 1, hour: 9」",
+    "digest 第 5 项的 hour 要是 0–23"
+   ],
+   "loose": "",
+   "robot_name": "",
+   "contact": "",
+   "unknown_reply": "once",
+   "markdown": false,
+   "paused": false,
+   "keep_days": null,
+   "limits": {
+    "person_per_hour": 20,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 3000
+   },
+   "groups": [
+    {
+     "id": "1001",
+     "name": "群",
+     "tools": [],
+     "categories": null,
+     "mode": "kb",
+     "web": false
+    }
+   ],
+   "people": [],
+   "digest": []
+  },
+  "mode_and_web": {
+   "exists": true,
+   "problems": [
+    "groups.1001.tools 里有一项写得不对：a b",
+    "groups.1001.mode 只能是 kb 或 smart，先按 kb",
+    "groups.1001.web 只能写 true 或 false"
+   ],
+   "loose": "",
+   "robot_name": "",
+   "contact": "",
+   "unknown_reply": "once",
+   "markdown": false,
+   "paused": false,
+   "keep_days": null,
+   "limits": {
+    "person_per_hour": 20,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 3000
+   },
+   "groups": [
+    {
+     "id": "1001",
+     "name": "群…1001",
+     "tools": [
+      "ok",
+      "3"
+     ],
+     "categories": null,
+     "mode": "kb",
+     "web": false
+    }
+   ],
+   "people": [],
+   "digest": []
+  },
+  "invalid_yaml": {
+   "exists": true,
+   "problems": [
+    "YAML 写错了，第 2 行第 1 列：expected the node content, but found '<stream end>'，谁也没开通"
+   ],
+   "loose": "",
+   "robot_name": "",
+   "contact": "",
+   "unknown_reply": "silent",
+   "markdown": false,
+   "paused": true,
+   "keep_days": null,
+   "limits": {
+    "person_per_hour": 20,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 3000
+   },
+   "groups": [],
+   "people": [],
+   "digest": []
+  },
+  "top_level_list": {
+   "exists": true,
+   "problems": [
+    "最外层要写成「键: 值」，谁也没开通"
+   ],
+   "loose": "",
+   "robot_name": "",
+   "contact": "",
+   "unknown_reply": "silent",
+   "markdown": false,
+   "paused": true,
+   "keep_days": null,
+   "limits": {
+    "person_per_hour": 20,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 3000
+   },
+   "groups": [],
+   "people": [],
+   "digest": []
+  },
+  "paused_text": {
+   "exists": true,
+   "problems": [
+    "paused 只能写 true 或 false，先按暂停处理",
+    "unknown_reply 只能是 once 或 silent，先按 silent（不回）"
+   ],
+   "loose": "",
+   "robot_name": "",
+   "contact": "",
+   "unknown_reply": "silent",
+   "markdown": false,
+   "paused": true,
+   "keep_days": null,
+   "limits": {
+    "person_per_hour": 20,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 3000
+   },
+   "groups": [],
+   "people": [],
+   "digest": []
+  },
+  "long_names": {
+   "exists": true,
+   "problems": [
+    "robot_name 最多 30 个字"
+   ],
+   "loose": "",
+   "robot_name": "",
+   "contact": "a b",
+   "unknown_reply": "once",
+   "markdown": false,
+   "paused": false,
+   "keep_days": null,
+   "limits": {
+    "person_per_hour": 20,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 3000
+   },
+   "groups": [],
+   "people": [],
+   "digest": []
+  },
+  "odd_ids": {
+   "exists": true,
+   "problems": [
+    "groups 里有一项（…8901）不像会话 ID，没有开通",
+    "groups 里有一项（…True）不像会话 ID，没有开通",
+    "groups 里有一项（…-5）不像会话 ID，没有开通",
+    "people 里有一项（…pace）不像用户 ID，没有开通",
+    "people 里有一项（…xxxx）不像用户 ID，没有开通"
+   ],
+   "loose": "",
+   "robot_name": "",
+   "contact": "",
+   "unknown_reply": "once",
+   "markdown": false,
+   "paused": false,
+   "keep_days": null,
+   "limits": {
+    "person_per_hour": 20,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 3000
+   },
+   "groups": [],
+   "people": [
+    {
+     "id": "ok_id",
+     "name": "用户…k_id",
+     "tools": [],
+     "categories": null,
+     "mode": "kb",
+     "web": false
+    }
+   ],
+   "digest": []
+  },
+  "keep_days": {
+   "exists": true,
+   "problems": [
+    "keep_days 要是 1–3650 的整数（目前只是占位，暂不自动删）"
+   ],
+   "loose": "",
+   "robot_name": "",
+   "contact": "",
+   "unknown_reply": "once",
+   "markdown": false,
+   "paused": false,
+   "keep_days": null,
+   "limits": {
+    "person_per_hour": 20,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 3000
+   },
+   "groups": [],
+   "people": [],
+   "digest": []
+  },
+  "empty": {
+   "exists": true,
+   "problems": [],
+   "loose": "",
+   "robot_name": "",
+   "contact": "",
+   "unknown_reply": "once",
+   "markdown": false,
+   "paused": false,
+   "keep_days": null,
+   "limits": {
+    "person_per_hour": 20,
+    "group_per_hour": 60,
+    "execute_per_hour": 6,
+    "context_minutes": 30,
+    "max_chars": 3000
+   },
+   "groups": [],
+   "people": [],
+   "digest": []
+  }
+ },
+ "format": {
+  "chat_rules": "\n\n**这次回答会发到云上协同的群聊或私聊里**：先给结论，尽量 800 字以内；少用表格（按 SOP 执行时的逐步表格照旧）；\n不要写「点击按钮」「在页面上打开」这类网页上的操作。",
+  "help_group_tools_web": "我是 doc2sop，在这里可以回答团队文档里的问题，还能查这些实际数据（只读）：磁盘。\n怎么问：@ 我再说问题，比如「kb-app 内存高怎么办」。同一个人 30 分钟内的追问会接着上文。\n命令（整条消息就是命令时才算）：\n• 新话题：不接上文，重新开始\n• 没答好 [补充说明]：记下上一条回答没答好，管理员会据此补文档\n• 全文：回答太长被截断时，发剩下的部分\n• 执行 / 执行 2 / 执行 SOP名 参数=值：按 SOP 查一遍（会调用只读工具，结果发在这里）\n• 误报 / 阈值不对 / 漏了一步 / 结论对：给上一次 SOP 执行的结论打分\n数据去向：问题和回答经云上协同服务器到 doc2sop 所在的服务器（存在对话记录里，管理员能在网页上看到，目前不自动删除），再发给模型网关和它后面的模型服务商；联网搜索时搜索词会发给搜索服务。\n有问题找 王某某。",
+  "help_group_plain": "我是 doc2sop，在这里可以回答团队文档里的问题（这里只查文档，不查实际数据）。\n怎么问：@ 我再说问题，比如「kb-app 内存高怎么办」。同一个人 30 分钟内的追问会接着上文。\n命令（整条消息就是命令时才算）：\n• 新话题：不接上文，重新开始\n• 没答好 [补充说明]：记下上一条回答没答好，管理员会据此补文档\n• 全文：回答太长被截断时，发剩下的部分\n数据去向：问题和回答经云上协同服务器到 doc2sop 所在的服务器（存在对话记录里，管理员能在网页上看到，目前不自动删除），再发给模型网关和它后面的模型服务商。",
+  "help_single_tools": "我是 doc2sop，在这里可以回答团队文档里的问题，还能查这些实际数据（只读）：a、b。\n怎么问：直接发问题，比如「kb-app 内存高怎么办」。同一个人 30 分钟内的追问会接着上文。\n命令（整条消息就是命令时才算）：\n• 新话题：不接上文，重新开始\n• 没答好 [补充说明]：记下上一条回答没答好，管理员会据此补文档\n• 全文：回答太长被截断时，发剩下的部分\n• 执行 / 执行 2 / 执行 SOP名 参数=值：按 SOP 查一遍（会调用只读工具，结果发在这里）\n• 误报 / 阈值不对 / 漏了一步 / 结论对：给上一次 SOP 执行的结论打分\n数据去向：问题和回答经云上协同服务器到 doc2sop 所在的服务器（存在对话记录里，管理员能在网页上看到，目前不自动删除），再发给模型网关和它后面的模型服务商。\n有问题找 李四。",
+  "test_push": "这是 doc2sop 的测试消息，发给推送目标「运维值班群」。收到它说明云上协同的推送能用：SOP 自动执行有异常、没跑成、没法判断时，按计划和告警规则上的设置推到这里。"
+ }
+}
