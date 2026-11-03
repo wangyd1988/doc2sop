@@ -27,6 +27,8 @@ from app.agent import ops_client
 from app.config import WEB_PASSWORD, WEB_USER
 from app.main import app
 
+# 经 SSH 隧道打开的页面：对端是本机，Host 也是本机地址（Host 是 testserver 的本机对端会被当成没登记的代理转来的）
+TUNNEL = "http://127.0.0.1:8765"
 POSIX = os.name == "posix"
 CONFIG = textwrap.dedent("""\
     tools:
@@ -258,6 +260,14 @@ class PasswordInstallRelayTests(_App):
                     self.assertEqual(response.status_code, 403)
                     self.assertIn("SSH 隧道", response.json()["detail"])
                     self.assertNotIn(self.SECRET, response.text)
+            # 本机对端，却像是经本机的反向代理、TCP 转发转来的：一样不收
+            for headers, base in (({"X-Forwarded-For": "203.0.113.9"}, TUNNEL), ({}, "http://117.72.91.19:8765"),
+                                  ({"X-Real-IP": "203.0.113.9"}, "http://localhost:8765")):
+                with self.subTest(headers=headers, base=base), \
+                        TestClient(app, client=("127.0.0.1", 50000), base_url=base) as client:
+                    response = client.post("/api/tools/config/host-install", auth=self.auth, json=self.body(),
+                                           headers=headers)
+                    self.assertEqual(response.status_code, 403)
         self.assertEqual(relayed, [])
         self.assertEqual(ops._approval["failures"], 0)
         self.assertNotIn(self.SECRET, "\n".join(logs.output))
@@ -268,7 +278,7 @@ class PasswordInstallRelayTests(_App):
             remote = self.client.get("/api/tools/config", auth=self.auth).json()["password_install"]
             self.assertEqual((remote["supported"], remote["local"]), (True, False))
             self.assertIn("SSH 隧道", remote["local_why"])
-            with TestClient(app, client=("127.0.0.1", 50000)) as local, self.assertLogs("kb", level="DEBUG") as logs:
+            with TestClient(app, client=("127.0.0.1", 50000), base_url=TUNNEL) as local, self.assertLogs("kb", level="DEBUG") as logs:
                 view = local.get("/api/tools/config", auth=self.auth).json()["password_install"]
                 self.assertEqual(view, {"supported": True, "why": "", "local": True, "local_why": ""})
                 response = local.post("/api/tools/config/host-install", auth=self.auth, json=self.body())
@@ -311,7 +321,7 @@ class OnboardRelayTests(_App):
                     self.assertEqual(response.status_code, 403)
         self.assertEqual(relayed, [])
         self.assertEqual(ops._approval["failures"], 0)
-        with TestClient(app, client=("127.0.0.1", 50000)) as local, self.assertLogs("kb", level="DEBUG") as logs:
+        with TestClient(app, client=("127.0.0.1", 50000), base_url=TUNNEL) as local, self.assertLogs("kb", level="DEBUG") as logs:
             response = local.post("/api/tools/config/host-onboard", auth=self.auth, json={"host": self.HOST, "passphrase": PASS})
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.headers["cache-control"], "no-store")

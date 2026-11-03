@@ -29,6 +29,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from app import automation_config, graph, notify, playbooks, runs
+from app import peer as peers
 from app.config import log
 
 PATH = "/api/alerts/hook"
@@ -427,7 +428,7 @@ async def hook(scope, receive_, send):
     settings = automation_config.load()
     if not settings.alert_token:
         return await JSONResponse({"detail": "Not Found"}, status_code=404)(scope, receive_, send)
-    peer = request.client.host if request.client else ""
+    peer = peers.address(request, "")
     if not automation_config.client_allowed(settings, peer):
         _log_once(peer, "alert hook: connection from %s refused (not in alerts.clients)")
         return await JSONResponse({"detail": "来源地址不在 alerts.clients 里"}, status_code=403)(scope, receive_, send)

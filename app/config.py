@@ -155,7 +155,8 @@ MCP_MAX_RESULT_CHARS = int(os.environ.get("MCP_MAX_RESULT_CHARS", "20000"))
 # 令牌不是浏览器会自动带上的凭据，DNS 重绑定拿它没办法。反向代理后面想再加一道，就把对外域名填上。
 # 注意 Host 头由客户端随便写：这只防 DNS 重绑定，不是访问控制；限制谁能连用下面的 MCP_CLIENTS
 MCP_ALLOWED_HOSTS = [h.strip() for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
-# 只接受这些来源的 /mcp 连接：TCP 对端地址，逗号分隔的 IP 或网段（如 127.0.0.1,::1 或 10.0.0.0/8）；留空不检查。
+# 只接受这些来源的 /mcp 连接：来源地址（直连时是 TCP 对端，经 TRUSTED_PROXIES 里的代理时是它转来的客户端地址，见 app/peer.py），
+# 逗号分隔的 IP 或网段（如 127.0.0.1,::1 或 10.0.0.0/8）；留空不检查。
 # 只经 SSH 隧道用时填 127.0.0.1,::1——隧道进来的连接对端是本机，公网来的不是。认令牌之前先查，不在名单里一律 403
 MCP_CLIENTS = [c.strip() for c in os.environ.get("MCP_CLIENTS", "").split(",") if c.strip()]
 # 多久检查一次工具、文档、SOP 有没有变化（变了就给连着的客户端发 list_changed）

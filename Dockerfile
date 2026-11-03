@@ -24,3 +24,6 @@ FROM base AS app
 COPY app /srv/app
 # 场景包随镜像发布（文档 + 工具定义 + SOP，见 docs/场景包.md）；compose 里再把 ./packs 挂上来盖住它，改包不用重建
 COPY packs /srv/packs
+# 启动器：不配 TLS 时等同上面 base 的 uvicorn 命令；配了 TLS_CERT_FILE / TLS_KEY_FILE 就说 HTTPS（app/serve.py）。
+# 写在 app 阶段而不是改 base 的 CMD：base 阶段的文本算进 release.sh 的依赖镜像哈希，改它会重建依赖
+CMD ["python", "-m", "app.serve"]

@@ -18,6 +18,9 @@ os.environ["OPS_URL"] = ""
 os.environ["OPS_TOKEN"] = ""
 os.environ["SANDBOX_URL"] = ""
 os.environ["SANDBOX_TOKEN"] = ""
+# HTTPS 与来源地址：按默认（不配 TLS、不信任任何代理）测；要测它们的用例自己传参数或 patch app.peer.TRUSTED。
+for _name in ("TRUSTED_PROXIES", "FORWARDED_ALLOW_IPS", "TLS_CERT_FILE", "TLS_KEY_FILE", "LOCAL_HTTP_PORT", "LISTEN_HOST"):
+    os.environ.pop(_name, None)
 # 智能模式按代码默认关着测；要测它的用例自己 patch app.main.SMART_MODE。
 os.environ["SMART_MODE"] = "false"
 # 工具申请的模型预审同理：开着会在后台调真实网关；要测它的用例自己 patch app.config.TOOL_PREREVIEW。

@@ -22,7 +22,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from app import approval, catalog, conversations, graph, jobs, models, packs, playbooks, runs, settings, workbench
+from app import approval, catalog, conversations, graph, jobs, models, packs, peer, playbooks, runs, settings, workbench
 from app import automation_api
 from app import categories as category_admin
 from app.agent import grow
@@ -126,6 +126,8 @@ class SameOriginOnly:
 
 
 app.add_middleware(SameOriginOnly)
+# 最外层：先把来源地址算对（可信代理、经没登记的代理转来的请求），见 app/peer.py。必须加在最后（加在最后的在最外层）
+app.add_middleware(peer.ClientAddress)
 
 
 def safe_name(filename: str) -> str:
@@ -781,7 +783,7 @@ def _passphrase(data: dict) -> str:
 
 def _approval_caller(request: Request) -> str:
     """谁、从哪里批的：只进工具服务的日志。"""
-    return f"web user={WEB_USER} ip={request.client.host if request.client else '-'}"
+    return f"web user={WEB_USER} ip={peer.address(request)}"
 
 
 def _ops_refused(exc: ops_client.OpsUnavailable) -> JSONResponse:
@@ -901,7 +903,7 @@ def _draft_wait(address: str) -> int:
 @app.post("/api/tools/check")
 def tools_check(body: ToolProposal, request: Request):
     """「检查一下」：对表单里的草稿做风险提示和自动检查（工具服务），打开了模型预审时再排一份预审。不入队，什么都不写。"""
-    address = request.client.host if request.client else "-"
+    address = peer.address(request)
     wait = _draft_wait(address)
     if wait:
         log.info("tool draft check refused: too frequent (ip=%s)", address)
@@ -967,11 +969,10 @@ CONFIG_ACTIONS = {"connection-save": "write", "connection-delete": "write", "con
                   "cluster-save": "write", "cluster-delete": "write", "cluster-test": "write", "cluster-parse": "probe"}
 # 用主机密码自动安装：请求里是目标主机的登录密码（往往是 root 的），只收本机来的请求（经 SSH 隧道打开的页面）。
 # 用账号密码添加机器（host-onboard）同理：它回的「添加流程的授权」能代替口令登记 host key、用密码安装，只发给经隧道打开的页面。
-# 前提：应用直接监听、前面没有反向代理，也没设 FORWARDED_ALLOW_IPS，request.client.host 就是 TCP 对端、伪造不了。
-# 以后加反向代理（或改 uvicorn 的转发设置）要重新评估这一条。
+# 「本机」由 app/peer.py 判断：直连（含内置 TLS）时看 TCP 对端；经 TRUSTED_PROXIES 里的代理时看它转来的真实地址；
+# 经没登记的代理、TCP 转发转进来的（回环对端却带转发头、Host 不是本机）一律不算本机。
 LOCAL_ONLY = {"host-install", "host-onboard"}
-LOCAL_ADDRESSES = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
-LOCAL_ONLY_REFUSAL = "请经 SSH 隧道打开页面（http://127.0.0.1:…）再用密码安装：密码不能经公网明文传输"
+LOCAL_ONLY_REFUSAL = "请经 SSH 隧道打开页面（127.0.0.1:…）再用密码安装：密码只收本机来的请求"
 # 贴 kubeconfig、CA 证书的请求可以大一些（工具服务那边 kubeconfig 最多 256KB）
 CONFIG_BODY_MAX = {"cluster-save": 320 * 1024, "cluster-test": 320 * 1024, "cluster-parse": 320 * 1024}
 # 回复里有只给一次的东西（添加流程的授权）：不让浏览器、代理缓存
@@ -1053,10 +1054,10 @@ def tools_config(request: Request):
     """「主机与数据源」：主配置的条目只读，页面上加的能改；老工具服务回 supported=False，页面照旧只读。"""
     data = ops_client.config_view(_approval_caller(request))
     if data.get("supported"):
-        address = request.client.host if request.client else ""
+        local = peer.is_local(request)
         data["password_install"] = {**ops_client.host_install_support(_approval_caller(request)),
-                                    "local": address in LOCAL_ADDRESSES, "local_why": "" if address in LOCAL_ADDRESSES
-                                    else LOCAL_ONLY_REFUSAL}
+                                    "local": local, "local_why": "" if local else LOCAL_ONLY_REFUSAL}
+        data["transport"] = peer.transport(request)
         data["k8s"] = ops_client.config_clusters(_approval_caller(request))
     return _with_sops(data) if data.get("supported") else data
 
@@ -1066,8 +1067,8 @@ async def tools_config_action(action: str, request: Request):
     kind = CONFIG_ACTIONS.get(action)
     if kind is None:
         raise HTTPException(404, "没有这个操作")
-    address = request.client.host if request.client else "-"
-    if action in LOCAL_ONLY and address not in LOCAL_ADDRESSES:
+    address = peer.address(request)
+    if action in LOCAL_ONLY and not peer.is_local(request):
         # 请求体不读、不转交：密码不经过这里的任何代码，也不消耗口令次数
         log.info("tools config %s refused: not from this machine (ip=%s)", action, address)
         raise HTTPException(403, LOCAL_ONLY_REFUSAL)

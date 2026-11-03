@@ -32,7 +32,7 @@ import anyio
 import yaml
 from langchain_core.messages import AIMessage
 
-from app import access, graph, mcp_server, playbooks
+from app import access, graph, mcp_server, peer, playbooks
 from app import main as app_main
 from app.agent import egress, grow, ops_client, registry, sop_tools, web_fetch, web_search
 from app.agent import loop as agent_loop
@@ -776,8 +776,8 @@ class ClientAddressTests(ExportCase):
         mcp_server._refused.clear()
         mcp_server._client_networks.cache_clear()
 
-    def post(self, peer, headers, app=None):
-        with TestClient(app or self.app, client=(peer, 50000)) as http:
+    def post(self, peer, headers, app=None, base_url="http://testserver"):
+        with TestClient(app or self.app, client=(peer, 50000), base_url=base_url) as http:
             return http.post("/mcp", json=INIT, headers=headers)
 
     def test_listed_peers_pass_and_everyone_else_gets_403_even_with_a_valid_token(self):
@@ -825,19 +825,43 @@ class ClientAddressTests(ExportCase):
             self.assertTrue(mcp_server.client_allowed("127.0.0.1"))
 
     def test_a_forged_x_forwarded_for_does_not_change_the_peer(self):
-        """uvicorn 默认开着 proxy headers，只信 FORWARDED_ALLOW_IPS（默认 127.0.0.1,::1）发来的 X-Forwarded-For。
-        这里套上 uvicorn 自己的中间件、用同样的默认值，和生产上一样。"""
-        from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
-        proxied = ProxyHeadersMiddleware(self.app, trusted_hosts="127.0.0.1,::1")
+        """来源地址由 app/peer.py 算（生产上它是 main.app 最外层的中间件，uvicorn 自己的 proxy headers 关着）。
+        默认不信任任何代理：公网来的伪造不了本机；本机对端带着转发头的，是没登记的本机代理转来的，一律不算本机。"""
+        tunnel = "http://127.0.0.1:8765"
+        plain = peer.ClientAddress(self.app, networks=())
         forged = {**bearer(self.secret), "X-Forwarded-For": "127.0.0.1"}
-        with patch.object(mcp_server, "MCP_CLIENTS", ["127.0.0.1", "::1"]):
-            self.assertEqual(self.post("203.0.113.7", forged, proxied).status_code, 403)      # 公网来的：头不算数
+        with patch.object(mcp_server, "MCP_CLIENTS", ["127.0.0.1", "::1"]), self.assertLogs("kb", "WARNING"):
+            self.assertEqual(self.post("203.0.113.7", forged, plain).status_code, 403)       # 公网来的：头不算数
             self.assertEqual(self.post("203.0.113.7", {**forged, "X-Forwarded-For": "::1, 127.0.0.1"},
-                                       proxied).status_code, 403)
-            self.assertEqual(self.post("127.0.0.1", forged, proxied).status_code, 200)        # 本机来的照常
-            # 本机的反向代理转来的：信它的 X-Forwarded-For，看到的是真实客户端，公网客户端照样 403
-            self.assertEqual(self.post("127.0.0.1", {**bearer(self.secret), "X-Forwarded-For": "203.0.113.7"},
-                                       proxied).status_code, 403)
+                                       plain).status_code, 403)
+            self.assertEqual(self.post("127.0.0.1", bearer(self.secret), plain, tunnel).status_code, 200)   # 隧道
+            self.assertEqual(self.post("::1", bearer(self.secret), plain, "http://[::1]:8765").status_code, 200)
+            # 没登记的本机代理转来的：带了转发头，或者 Host 不是本机地址，都按外部处理
+            self.assertEqual(self.post("127.0.0.1", forged, plain, tunnel).status_code, 403)
+            self.assertEqual(self.post("127.0.0.1", bearer(self.secret), plain, "https://kb.example.com").status_code,
+                             403)
+            # 登记了本机的代理：信它的 X-Forwarded-For，看到的是真实客户端；客户端自己伪造的那一段（左边）不算数
+            proxied = peer.ClientAddress(self.app, networks=peer.parse_trusted("127.0.0.1,::1"))
+            for chain in ("203.0.113.7", "127.0.0.1, 203.0.113.7", "::1,203.0.113.7:4431"):
+                with self.subTest(chain=chain):
+                    self.assertEqual(self.post("127.0.0.1", {**bearer(self.secret), "X-Forwarded-For": chain},
+                                               proxied, "https://kb.example.com").status_code, 403)
+            self.assertEqual(self.post("127.0.0.1", bearer(self.secret), proxied, tunnel).status_code, 200)
+
+    def test_requests_from_an_unlisted_proxy_never_match_any_list(self):
+        """来源记成 UNTRUSTED（不是 IP）：名单里写什么网段都不放；没配名单时照常（令牌还是要）。"""
+        plain = peer.ClientAddress(self.app, networks=())
+        forwarded = {**bearer(self.secret), "X-Forwarded-For": "10.1.2.3"}
+        for clients in (["127.0.0.1", "::1"], ["10.0.0.0/8"], ["0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"]):
+            with self.subTest(clients=clients), patch.object(mcp_server, "MCP_CLIENTS", clients), \
+                    self.assertLogs("kb", "WARNING") as logged:
+                mcp_server._refused.clear()
+                self.assertFalse(mcp_server.client_allowed(peer.UNTRUSTED))
+                self.assertEqual(self.post("127.0.0.1", forwarded, plain, "http://127.0.0.1:8765").status_code, 403)
+            self.assertIn(f"mcp connection from {peer.UNTRUSTED} refused", "\n".join(logged.output))
+        with patch.object(mcp_server, "MCP_CLIENTS", []):
+            self.assertTrue(mcp_server.client_allowed(peer.UNTRUSTED))
+            self.assertEqual(self.post("127.0.0.1", forwarded, plain, "http://127.0.0.1:8765").status_code, 200)
 
     def test_the_page_says_when_its_address_cannot_reach_mcp(self):
         with patch.object(mcp_server, "MCP_CLIENTS", ["127.0.0.1", "::1"]), \

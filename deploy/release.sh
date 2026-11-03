@@ -26,6 +26,11 @@
 #   BACKUP_DIR      --backup 时的备份目录                                                默认 <DATA_DIR 的上级>/backups
 #   KEEP_IMAGES     保留最近几个时间戳镜像                                                默认 2
 #   START_TIMEOUT   等新容器就绪的秒数                                                    默认 120
+#   TLS_DIR         内置 TLS 的证书目录（宿主机），只读挂到容器的 /tls；环境文件里 TLS_CERT_FILE=/tls/…   默认 不挂
+#
+# 预检：切换前先用新镜像跑 python -m app.serve --check（证书、TRUSTED_PROXIES、FORWARDED_ALLOW_IPS……），
+# 不通过就退出，旧容器不动。探活地址按环境文件：有 LOCAL_HTTP_PORT 走 http://127.0.0.1:它；配了 TLS_CERT_FILE 走
+# https://127.0.0.1:APP_PORT（只连回环，不校验证书：公司证书一般不含 127.0.0.1，回环上也没有中间人可防）；否则同以前。
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -84,6 +89,19 @@ PIP_INDEX_URL=$(setting PIP_INDEX_URL "")
 BACKUP_DIR=${BACKUP_DIR:-$(dirname "$DATA_DIR")/backups}
 KEEP_IMAGES=${KEEP_IMAGES:-2}
 START_TIMEOUT=${START_TIMEOUT:-120}
+TLS_DIR=$(setting TLS_DIR "")
+TLS_CERT=$(envfile_get TLS_CERT_FILE)
+LOCAL_HTTP_PORT=$(envfile_get LOCAL_HTTP_PORT)
+# 探活：本机明文口 > 内置 TLS（-k，只连回环）> 和以前一样的明文 PORT
+CURL_TLS=""
+if [ -n "$LOCAL_HTTP_PORT" ]; then
+  PROBE_URL="http://127.0.0.1:$LOCAL_HTTP_PORT"
+elif [ -n "$TLS_CERT" ]; then
+  PROBE_URL="https://127.0.0.1:$APP_PORT"
+  CURL_TLS="-k"
+else
+  PROBE_URL="http://127.0.0.1:$APP_PORT"
+fi
 REPO_NAME=${APP_IMAGE%%:*}
 PREV_CONTAINER="$APP_CONTAINER-prev"
 
@@ -113,6 +131,8 @@ BASE_TAG=$BASE_TAG
 BACKUP_DIR=$BACKUP_DIR
 KEEP_IMAGES=$KEEP_IMAGES
 START_TIMEOUT=$START_TIMEOUT
+TLS_DIR=$TLS_DIR
+PROBE_URL=$PROBE_URL
 IMAGE=${IMAGE_ARG:-（构建新镜像）}
 EOF
   exit 0
@@ -129,6 +149,12 @@ DATA_DIR=$(cd "$DATA_DIR" && pwd)
 WEB_USER=$(envfile_get WEB_USER)
 WEB_PASSWORD=$(envfile_get WEB_PASSWORD)
 [ -n "$WEB_USER" ] && [ -n "$WEB_PASSWORD" ] || die "环境文件里缺 WEB_USER / WEB_PASSWORD，没法探活和比对片段数"
+TLS_MOUNT=()
+if [ -n "$TLS_DIR" ]; then
+  [ -d "$TLS_DIR" ] || die "TLS_DIR 不是目录：$TLS_DIR"
+  TLS_DIR=$(cd "$TLS_DIR" && pwd)
+  TLS_MOUNT=(-v "$TLS_DIR:/tls:ro")
+fi
 if docker container inspect "$PREV_CONTAINER" >/dev/null 2>&1; then
   die "已存在 $PREV_CONTAINER：上次发版没有收尾。当前 $APP_CONTAINER 正常就 docker rm -f $PREV_CONTAINER；" \
       "要回到它就 docker rm -f $APP_CONTAINER && docker rename $PREV_CONTAINER $APP_CONTAINER && docker start $APP_CONTAINER"
@@ -139,17 +165,17 @@ curl_auth() {
   # Basic 凭据先 base64（只剩字母数字 +/=，不用考虑转义），再经 stdin 的 curl 配置传入，不出现在命令行（ps 看不到）
   local token
   token=$(printf '%s:%s' "$WEB_USER" "$WEB_PASSWORD" | base64 | tr -d '\n')
-  printf 'header = "Authorization: Basic %s"\n' "$token" | curl -s -K - "$@"
+  printf 'header = "Authorization: Basic %s"\n' "$token" | curl -s $CURL_TLS -K - "$@"
 }
 chunk_count() {
   # 片段总数；拿不到就输出空串
-  curl_auth -m 10 "http://127.0.0.1:$APP_PORT/api/documents" 2>/dev/null | parse_chunks 2>/dev/null || true
+  curl_auth -m 10 "$PROBE_URL/api/documents" 2>/dev/null | parse_chunks 2>/dev/null || true
 }
 running() { docker ps -q --filter "name=^${1}$" | grep -q .; }
 wait_ready() {
   local deadline=$(( $(date +%s) + START_TIMEOUT )) code
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    code=$(curl_auth -o /dev/null -w '%{http_code}' -m 5 "http://127.0.0.1:$APP_PORT/api/documents" 2>/dev/null || true)
+    code=$(curl_auth -o /dev/null -w '%{http_code}' -m 5 "$PROBE_URL/api/documents" 2>/dev/null || true)
     [ "$code" = "200" ] && return 0
     running "$APP_CONTAINER" || return 1    # 容器已经退出，不用再等
     sleep 2
@@ -197,6 +223,34 @@ if [ "$BACKUP" = 1 ]; then
   KB_DATA="$DATA_DIR" bash "$REPO/deploy/backup.sh" "$BACKUP_DIR"
 fi
 
+# ---- 预检（旧容器还在跑） --------------------------------------------------------
+# 新镜像的启动器自己查一遍配置：证书和私钥、TRUSTED_PROXIES、FORWARDED_ALLOW_IPS……不通过就到此为止，服务不中断。
+# 老镜像（没有 app/serve.py）查不了：只要环境文件里用了它不认识的设置就退出，否则照旧切换（回滚到老镜像就是这样）
+set +e
+PREFLIGHT=$(docker run --rm --network none --memory 256m --env-file "$ENV_FILE" \
+  ${TLS_MOUNT[@]+"${TLS_MOUNT[@]}"} "$NEW_IMAGE" python -m app.serve --check 2>&1)
+PREFLIGHT_CODE=$?
+set -e
+if [ "$PREFLIGHT_CODE" = 0 ]; then
+  printf '%s\n' "$PREFLIGHT" | sed 's/^/   /'
+elif [ "$PREFLIGHT_CODE" = 2 ]; then
+  printf '%s\n' "$PREFLIGHT" | sed 's/^/   /' >&2
+  die "预检没通过，没有切换（$APP_CONTAINER 照常运行）：按上面的提示改好环境文件再发版"
+else
+  case "$PREFLIGHT" in
+    *"No module named app.serve"*) ;;
+    *) printf '%s\n' "$PREFLIGHT" | tail -n 20 | sed 's/^/   /' >&2
+       die "预检没跑成（退出码 $PREFLIGHT_CODE），没有切换（$APP_CONTAINER 照常运行）" ;;
+  esac
+  NEW_ONLY=""
+  for name in TLS_CERT_FILE TLS_KEY_FILE LOCAL_HTTP_PORT LISTEN_HOST TRUSTED_PROXIES; do
+    [ -n "$(envfile_get "$name")" ] && NEW_ONLY="$NEW_ONLY $name"
+  done
+  [ -z "$NEW_ONLY" ] || die "镜像 $NEW_IMAGE 没有启动器（app/serve.py），不认识环境文件里的$NEW_ONLY：" \
+    "回到这个镜像之前先从环境文件里去掉它们（先备份），没有切换"
+  log "镜像 $NEW_IMAGE 没有启动器（老镜像），跳过预检"
+fi
+
 # ---- 切换 -------------------------------------------------------------------
 rollback() {
   echo "!! $1" >&2
@@ -224,9 +278,9 @@ if [ "$HAVE_OLD" = 1 ]; then
 fi
 log "启动 $APP_CONTAINER ← $NEW_IMAGE（host 网络，--memory $APP_MEM_LIMIT --cpus $APP_CPUS，$DATA_DIR → /data）"
 docker run -d --name "$APP_CONTAINER" --restart unless-stopped --network host \
-  --env-file "$ENV_FILE" -v "$DATA_DIR:/data" \
+  --env-file "$ENV_FILE" -v "$DATA_DIR:/data" ${TLS_MOUNT[@]+"${TLS_MOUNT[@]}"} \
   --memory "$APP_MEM_LIMIT" --cpus "$APP_CPUS" "$NEW_IMAGE" >/dev/null || rollback "新容器启动失败"
-wait_ready || rollback "新容器 $START_TIMEOUT s 内没有就绪（http://127.0.0.1:$APP_PORT/api/documents 不返回 200）"
+wait_ready || rollback "新容器 $START_TIMEOUT s 内没有就绪（$PROBE_URL/api/documents 不返回 200）"
 AFTER=$(chunk_count)
 if [ -n "$BEFORE" ]; then
   [ "$AFTER" = "$BEFORE" ] || rollback "片段总数不一致：切换前 $BEFORE，切换后 ${AFTER:-读不到}"

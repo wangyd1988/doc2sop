@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Body, HTTPException, Request
 
-from app import alerts, chat_bridge, chat_channel, chat_config, chat_format, chat_push, chat_store, notify, schedules
+from app import alerts, chat_bridge, chat_channel, chat_config, chat_format, chat_push, chat_store, notify, peer, schedules
 from app.agent import registry, web_search
 from app.chat_bridge import BridgeError
 from app.config import CHAT_BRIDGE_TOKEN, CHAT_BRIDGE_URL, WEB_USER, log
@@ -117,7 +117,7 @@ def chat_test_push(request: Request, data: dict = Body(...)):
             raise HTTPException(429, "同一个目标的测试消息每分钟最多一条")
         times.append(now)
         _tests["by_target"][target] = now
-    log.info("chat test push requested (user=%s ip=%s)", WEB_USER, request.client.host if request.client else "-")
+    log.info("chat test push requested (user=%s ip=%s)", WEB_USER, peer.address(request))
     try:
         reply = chat_push.test_push(target)
     except BridgeError as exc:

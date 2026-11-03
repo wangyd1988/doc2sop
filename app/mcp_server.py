@@ -16,10 +16,10 @@
 管不到这条直接挂在路由表上的 ASGI 端点，所以令牌校验就挂在 /mcp 自己身上（TokenGate）。每个请求现查库，吊销即时生效；
 2025 版客户端的会话绑定开它的令牌，别的令牌拿着同一个会话 id 只会得到 404。审计、限流见 access.py。
 
-来源：配了 MCP_CLIENTS 时，认令牌之前先看 TCP 对端地址（scope["client"]），不在名单里一律 403、不碰令牌库。只走 SSH 隧道时
-填 127.0.0.1,::1：隧道进来的连接对端是本机。MCP_ALLOWED_HOSTS 的 Host 检查防的是 DNS 重绑定——Host 头客户端随便写，
-不能当访问控制。对端地址只有在直连的对端属于 uvicorn 的 FORWARDED_ALLOW_IPS（默认 127.0.0.1,::1）时才会按
-X-Forwarded-For 改写，公网来的连接伪造不了。
+来源：配了 MCP_CLIENTS 时，认令牌之前先看来源地址（scope["client"]，由 app/peer.py 算好），不在名单里一律 403、不碰令牌库。
+只走 SSH 隧道时填 127.0.0.1,::1：隧道进来的连接对端是本机。MCP_ALLOWED_HOSTS 的 Host 检查防的是 DNS 重绑定——Host 头客户端
+随便写，不能当访问控制。来源地址只有在直连的对端属于 TRUSTED_PROXIES 时才按 X-Forwarded-For 改写，公网来的连接伪造不了；
+经没登记的本机代理转来的请求，来源是 peer.UNTRUSTED（不是 IP），配了 MCP_CLIENTS 时一律不放。
 
 图谱：一个 MCP 会话记一条执行（channel=mcp），外部调用照常记完整返回、播种实体，但不算结论质量、不触发 SOP 沉淀。
 2026 版客户端没有会话，同一枚令牌 SESSION_GAP 秒内的调用算同一个会话。
@@ -53,7 +53,8 @@ from pydantic import BaseModel, Field
 from starlette.authentication import AuthCredentials
 from starlette.routing import Route
 
-from app import access, approval, graph
+from app import access, approval, graph, serve
+from app import peer as peers
 from app.agent import kb_tools as kb
 from app.agent import registry, sop_tools
 from app.agent.loop import FAILURE_MARKS
@@ -497,6 +498,13 @@ def _log_refused(host):
     log.warning("mcp connection from %s refused: not in MCP_CLIENTS", _printable(host, 64))
 
 
+def exposed() -> bool:
+    """/mcp 是不是对本机以外开放：MCP_CLIENTS 没配，或者名单里有不是回环的网段。名单一项都没写对时谁也连不上，不算开放。"""
+    if not MCP_CLIENTS:
+        return True
+    return any(not network.is_loopback for network in _client_networks(tuple(MCP_CLIENTS)))
+
+
 def reachability(peer, host) -> dict:
     """管理页用：从打开页面的这个地址，按页面给出的接入地址（同一个 Host、同一个来源）连 /mcp 会不会被拒，为什么。"""
     reasons = []
@@ -725,11 +733,12 @@ def admin_router(gate) -> APIRouter:
                      for t in registry.exported_app_tools()]
         data = [{"name": n, "title": e.get("title") or n, "scope": "data"}
                 for n, e in sorted(registry.exported_data_tools().items())]
-        peer = request.client.host if request.client else ""
+        peer = peers.address(request, "")
         return {"enabled": True, "path": PATH, "tools": app_tools + data, "categories": store.all_categories(),
                 "sops": len(sop_tools.visible()), "scopes": list(access.SCOPES),
                 "defaults": {"rate_per_minute": MCP_RATE_PER_MINUTE, "max_result_chars": MCP_MAX_RESULT_CHARS},
-                "allowed_hosts": MCP_ALLOWED_HOSTS, "clients": MCP_CLIENTS,
+                "allowed_hosts": MCP_ALLOWED_HOSTS, "clients": MCP_CLIENTS, "exposed": exposed(),
+                "transport": {**peers.transport(request), "tls": serve.tls_status()},
                 "reachable": reachability(peer, request.headers.get("host", "")),
                 "switch": {**access.switch_state(), "reopen": approval.support_reason()},
                 "calls_total": access.count_calls(), "audit_days": MCP_AUDIT_DAYS}

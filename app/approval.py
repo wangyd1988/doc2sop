@@ -10,6 +10,7 @@ import time
 
 from fastapi import HTTPException, Request
 
+from app import peer
 from app.agent import ops_client
 from app.config import WEB_USER, log
 
@@ -42,7 +43,7 @@ async def json_body(request: Request) -> dict:
 
 
 def address(request: Request) -> str:
-    return request.client.host if request.client else "-"
+    return peer.address(request)
 
 
 def caller(request: Request) -> str:

@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 from starlette.routing import Route
 
-from app import alerts, automation_config, automation_page, autorun, catalog, gaps, mailer, playbooks, runs, schedules
+from app import alerts, automation_config, automation_page, autorun, catalog, gaps, mailer, peer, playbooks, runs, schedules
 from app.config import BOT_NAME, SCHEDULER, WEB_USER, log
 
 router = APIRouter()
@@ -302,7 +302,7 @@ async def save_settings(request: Request):
     请求体手动解析：FastAPI 的 422 会把输入（口令、授权码）回显出来。口令、授权码不保存、不记日志，也不出现在回复和报错里；
     新生成的告警令牌只在这一次的回复里。每个来源地址每分钟最多 SETTINGS_PER_MINUTE 次。"""
     data = await _settings_body(request)
-    address = request.client.host if request.client else "-"
+    address = peer.address(request)
     wait = _settings_wait(address)
     if wait:
         log.info("automation settings refused: too frequent (ip=%s)", address)
@@ -343,7 +343,7 @@ def test_mail(request: Request, data: dict = Body(...)):
             raise HTTPException(429, "同一个收件组的测试邮件每分钟最多一封")
         times.append(now)
         _test_mail["by_group"][group] = now
-    who = f"user={WEB_USER} ip={request.client.host if request.client else '-'}"
+    who = f"user={WEB_USER} ip={peer.address(request)}"
     log.info("test mail to group %s requested (%s)", group, who)
     subject = f"[{BOT_NAME}] 测试邮件：收件组「{group}」"
     text = (f"这是 {BOT_NAME} 的测试邮件，发给收件组「{group}」。\n收到它说明邮件设置能用："

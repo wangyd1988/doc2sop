@@ -65,9 +65,10 @@ class DockerfileTests(unittest.TestCase):
         self.assertEqual(list(parts), ["base", "app"], "app 必须是最后一个阶段：compose 不指定 target 时构建的就是它")
         base, app = parts["base"], parts["app"]
         self.assertTrue(any(line.startswith("RUN pip install") and "requirements.txt" in line for line in base))
-        self.assertTrue(any(line.startswith("CMD ") for line in base), "CMD 放在 base 里，release 镜像直接继承")
+        # base 里的 CMD 原样留着（改它会让依赖镜像的哈希变、要重建）；启动器的 CMD 写在 app 阶段和 Dockerfile.release
+        self.assertIn('CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8765} --workers 1"]', base)
         self.assertTrue(any(line.startswith("ARG PIP_INDEX_URL") for line in base))
-        self.assertEqual(app, ["COPY app /srv/app", "COPY packs /srv/packs"])
+        self.assertEqual(app, ["COPY app /srv/app", "COPY packs /srv/packs", 'CMD ["python", "-m", "app.serve"]'])
         # BASE_IMAGE 仍然是第一条指令，compose / release.sh 都靠它换国内镜像站
         first = next(line for line in DOCKERFILE.splitlines() if line.strip() and not line.startswith("#"))
         self.assertEqual(first, "ARG BASE_IMAGE=python:3.12-slim")
@@ -76,7 +77,8 @@ class DockerfileTests(unittest.TestCase):
     def test_release_dockerfile_only_copies_code_onto_the_base_image(self):
         parts = stages(RELEASE_DOCKERFILE)
         self.assertEqual(list(parts), ["${RUNTIME_IMAGE}"])
-        self.assertEqual(parts["${RUNTIME_IMAGE}"], ["COPY app /srv/app", "COPY packs /srv/packs"])
+        self.assertEqual(parts["${RUNTIME_IMAGE}"],
+                         ["COPY app /srv/app", "COPY packs /srv/packs", 'CMD ["python", "-m", "app.serve"]'])
         self.assertIn("ARG RUNTIME_IMAGE=", RELEASE_DOCKERFILE)
         self.assertNotIn("pip", RELEASE_DOCKERFILE)
 
@@ -98,7 +100,7 @@ class ReleaseScriptStaticTests(unittest.TestCase):
                 if re.search(rf"\b(echo|log|printf)\b.*\${secret}", line) and not re.search(r"\| *(curl|base64)", line):
                     self.fail(f"疑似把 {secret} 打印出来了：{line.strip()}")
         # 凭据 base64 后经 curl 的 stdin 配置传入，不进命令行
-        self.assertIn("curl -s -K -", SCRIPT_TEXT)
+        self.assertIn("curl -s $CURL_TLS -K -", SCRIPT_TEXT)
         self.assertIn("Authorization: Basic %s", SCRIPT_TEXT)
         self.assertNotIn("-u \"$WEB_USER", SCRIPT_TEXT)
         self.assertNotIn(". \"$ENV_FILE\"", SCRIPT_TEXT, "不能 source 环境文件")
