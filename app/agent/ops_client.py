@@ -274,6 +274,20 @@ def host_install_support(caller="") -> dict:
     return {"supported": bool(data.get("supported")), "why": str(data.get("why") or "")}
 
 
+OLD_SERVICE_CLUSTERS = "工具服务较旧，页面上不能加 K8s 集群：升级宿主机上的 ops_readonly.py（和 ops_exec.py 一起拷），或者照旧在宿主机上配 kubeconfig"
+
+
+def config_clusters(caller="") -> dict:
+    """页面上加的 K8s 集群（令牌只有状态）；老工具服务回 404 → supported=False，页面上只显示原因。"""
+    if not enabled():
+        return {"supported": False, "why": "未配置只读工具接口（OPS_URL / OPS_TOKEN）"}
+    try:
+        data = _request("/tools/config/clusters", timeout=10, headers=_caller_headers(caller))
+    except OpsUnavailable as exc:
+        return {"supported": False, "why": OLD_SERVICE_CLUSTERS if exc.status == 404 else str(exc)}
+    return {**data, "supported": bool(data.get("supported")), "why": ""}
+
+
 def config_bundle(name: str) -> dict:
     """页面加的主机的安装包：A 上那个文件原样（base64）和它的 sha256。"""
     try:

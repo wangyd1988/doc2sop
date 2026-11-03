@@ -759,9 +759,9 @@ APPROVAL_BODY_MAX = 64 * 1024
 OPS_REFUSALS = (400, 403, 404, 409, 423, 429, 501)
 
 
-async def _json_body(request: Request) -> dict:
+async def _json_body(request: Request, limit: int = APPROVAL_BODY_MAX) -> dict:
     body = await request.body()
-    if len(body) > APPROVAL_BODY_MAX:
+    if len(body) > limit:
         raise HTTPException(413, "请求体太大")
     try:
         data = json.loads(body or b"{}")
@@ -962,13 +962,20 @@ def tools_recheck_script(script: str, request: Request):
 CONFIG_ACTIONS = {"connection-save": "write", "connection-delete": "write", "connection-test": "write",
                   "mcp-save": "write", "mcp-delete": "write", "mcp-test": "write", "export": "export",
                   "host-save": "write", "host-delete": "write", "host-trust": "write",
-                  "host-scan": "probe", "host-check": "probe", "host-bundle": "probe", "host-install": "write"}
+                  "host-scan": "probe", "host-check": "probe", "host-bundle": "probe", "host-install": "write",
+                  "host-onboard": "write", "host-from": "write",
+                  "cluster-save": "write", "cluster-delete": "write", "cluster-test": "write", "cluster-parse": "probe"}
 # 用主机密码自动安装：请求里是目标主机的登录密码（往往是 root 的），只收本机来的请求（经 SSH 隧道打开的页面）。
+# 用账号密码添加机器（host-onboard）同理：它回的「添加流程的授权」能代替口令登记 host key、用密码安装，只发给经隧道打开的页面。
 # 前提：应用直接监听、前面没有反向代理，也没设 FORWARDED_ALLOW_IPS，request.client.host 就是 TCP 对端、伪造不了。
 # 以后加反向代理（或改 uvicorn 的转发设置）要重新评估这一条。
-LOCAL_ONLY = {"host-install"}
+LOCAL_ONLY = {"host-install", "host-onboard"}
 LOCAL_ADDRESSES = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 LOCAL_ONLY_REFUSAL = "请经 SSH 隧道打开页面（http://127.0.0.1:…）再用密码安装：密码不能经公网明文传输"
+# 贴 kubeconfig、CA 证书的请求可以大一些（工具服务那边 kubeconfig 最多 256KB）
+CONFIG_BODY_MAX = {"cluster-save": 320 * 1024, "cluster-test": 320 * 1024, "cluster-parse": 320 * 1024}
+# 回复里有只给一次的东西（添加流程的授权）：不让浏览器、代理缓存
+NO_STORE = {"host-onboard"}
 # 每个来源地址每分钟最多几次：要口令的写操作、试探（扫描 host key、检查连通、生成安装包）、对外开放的开关。工具服务那边另有输错锁定和全局名额
 CONFIG_LIMITS = {"write": (10, 60), "probe": (6, 60), "export": (30, 60)}
 _config_hits: dict = {}
@@ -1034,7 +1041,7 @@ def _with_sops(data: dict) -> dict:
 
 def _config_target(action: str, data: dict) -> str:
     """日志里写的对象：只有名字（截短），没有口令和凭据。"""
-    for key in ("connection", "server", "host"):
+    for key in ("connection", "server", "host", "cluster"):
         if isinstance(data.get(key), dict):
             value = data[key].get("name") or data[key].get("id")
             return str(value or "")[:64]
@@ -1050,6 +1057,7 @@ def tools_config(request: Request):
         data["password_install"] = {**ops_client.host_install_support(_approval_caller(request)),
                                     "local": address in LOCAL_ADDRESSES, "local_why": "" if address in LOCAL_ADDRESSES
                                     else LOCAL_ONLY_REFUSAL}
+        data["k8s"] = ops_client.config_clusters(_approval_caller(request))
     return _with_sops(data) if data.get("supported") else data
 
 
@@ -1063,7 +1071,7 @@ async def tools_config_action(action: str, request: Request):
         # 请求体不读、不转交：密码不经过这里的任何代码，也不消耗口令次数
         log.info("tools config %s refused: not from this machine (ip=%s)", action, address)
         raise HTTPException(403, LOCAL_ONLY_REFUSAL)
-    data = await _json_body(request)
+    data = await _json_body(request, CONFIG_BODY_MAX.get(action, APPROVAL_BODY_MAX))
     wait = _config_wait(kind, address)
     if wait:
         log.info("tools config %s refused: too frequent (ip=%s)", action, address)
@@ -1073,12 +1081,14 @@ async def tools_config_action(action: str, request: Request):
     except ops_client.OpsUnavailable as exc:
         log.info("tools config %s %r refused: %s", action, _config_target(action, data), exc.status or "unreachable")
         response = _ops_refused(exc)
-        extra = {key: exc.data[key] for key in ("confirm", "confirm_impact") if key in exc.data}
+        extra = {key: exc.data[key] for key in ("confirm", "confirm_impact", "ticket_refused", "contexts") if key in exc.data}
         if extra and response.status_code == 409:
             body = json.loads(response.body)
             return JSONResponse(_with_sops({**body, **extra}), status_code=409)
         return response
     log.info("tools config %s %r: done", action, _config_target(action, data))
+    if action in NO_STORE:
+        return JSONResponse(_with_sops(result), headers={"Cache-Control": "no-store"})
     return _with_sops(result)
 
 
