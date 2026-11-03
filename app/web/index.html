@@ -597,12 +597,20 @@ body.settings #mgroups, body.settings #mlist, body.settings #mdetail, body.setti
 .sf .result.err { background: color-mix(in srgb, var(--danger) 8%, transparent); }
 .sf .result ul { margin: 4px 0 0 18px; padding: 0; }
 .sf .warn { border: 1px solid #f59e0b; background: rgba(245,158,11,.08); border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-top: 10px; }
+/* 标红：明文又对外开放、经没登记的代理转来的请求 */
+.sf .warn.danger { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
 .sf .warn label { display: flex; grid-template-columns: none; gap: 8px; margin: 8px 0 0; }
 .sf .warn input { width: auto; }
 /* .sf .warn 是设置页里的提示框：别让它套到单栏页里的 pill warn、btn warn 上 */
 .sf .pill.warn { border: 1px solid transparent; border-radius: 999px; padding: 0 8px; font-size: 11.5px; margin: 0; }
 .sf .btn.warn { border: 0; border-radius: 9px; padding: 7px 14px; font-size: 13px; margin: 0; }
 .sf dl { display: grid; grid-template-columns: 110px 1fr; gap: 6px 10px; font-size: 13px; margin: 0; }
+/* 明文连接的横幅：页面不是 https、又不是从本机地址（SSH 隧道）打开的 */
+.plain-bar { display: flex; gap: 10px; align-items: flex-start; font-size: 12.5px; line-height: 1.6; padding: 8px 14px;
+  color: var(--danger); background: color-mix(in srgb, var(--danger) 9%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); }
+.plain-bar[hidden] { display: none; }
+.plain-bar span { flex: 1; }
+.plain-bar button { border: 0; background: none; color: inherit; cursor: pointer; font-size: 15px; line-height: 1; padding: 2px 4px; }
 .sf dt { color: var(--muted); } .sf dd { margin: 0; }
 .sf .note { font-size: 12px; color: var(--muted); line-height: 1.7; }
 .sf .note b { color: var(--text); }
@@ -1223,6 +1231,7 @@ details.rs pre.code { margin: 4px 0 0; font: 12px/1.5 ui-monospace, Consolas, mo
 <div id="toasts"></div>
 
 <main>
+  <div class="plain-bar" id="plainBar" role="alert" hidden><span></span><button type="button" title="本次不再提示" aria-label="关闭">×</button></div>
   <header id="top">
     <button class="nav-btn icon-only" id="menuBtn" title="菜单" aria-label="菜单">
       <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
@@ -4090,10 +4099,21 @@ function trustFlow(script) {
    设置页、「主机与数据源」的卡片里是同一个表单，「待审批」里的「现在设置」把它放进对话框。
    口令只在这次请求里用：提交就清空输入框，不进 localStorage、不进地址栏（输入框没有 name，表单不会自己提交出去）。 */
 const LOCAL_HOSTS = ['127.0.0.1', 'localhost', '::1', '[::1]'];
+// 页面是不是明文、又不是从本机地址打开的。浏览器地址栏的协议就是真实协议：经 HTTPS 反向代理打开时也是 https
+const plainPage = () => location.protocol !== 'https:' && !LOCAL_HOSTS.includes(location.hostname);
 function plainHint() {
-  return LOCAL_HOSTS.includes(location.hostname) ? ''
-    : `<div class="plain">⚠ 当前是明文连接（${esc(location.host)}），口令会以明文经过网络。经 SSH 隧道、从本机地址（127.0.0.1）打开更安全。</div>`;
+  return !plainPage() ? ''
+    : `<div class="plain">⚠ 当前是明文连接（${esc(location.host)}），口令会以明文经过网络。经 SSH 隧道、从本机地址（127.0.0.1）打开，或者让管理员给页面上 HTTPS 更安全。</div>`;
 }
+// 明文连接的横幅：网页登录用的是浏览器自带的 Basic 对话框，没有登录页可以提示，就在每一页顶上说一次（点 × 本次会话不再提示）
+(function plainBar() {
+  const bar = $('plainBar');
+  if (!plainPage() || sessionStorage.getItem('kb-plain-ok')) return;
+  bar.querySelector('span').textContent = `⚠ 这个页面是明文 HTTP（${location.host}）：网页密码每次请求都以明文经过网络，同一网络里的人可能看到。` +
+    '请经 SSH 隧道从 127.0.0.1 打开，或者让管理员上 HTTPS（docs/正式部署.md「HTTPS 与对外放开」）。';
+  bar.hidden = false;
+  bar.querySelector('button').onclick = () => { bar.hidden = true; sessionStorage.setItem('kb-plain-ok', '1'); };
+})();
 // 设置时间：带时区的按浏览器的时区显示；今年的只写月日和时分
 function setAtText(t) {
   const d = new Date(String(t || '').replace(' ', 'T'));
@@ -4394,7 +4414,7 @@ function paintInfra() {
     </ul>
     ${live ? '' : `<div class="banner">${esc(c.error || '工具服务较旧，页面上不能配置')}。下面只能看。</div>`}
     ${live && blocked ? `<div class="banner">${esc(blocked)}</div>` : ''}
-    ${can ? `<div class="howto" style="margin:0 0 14px">审批口令等同工具服务那台机器的 root（能批准以 root 运行的命令），只经 SSH 隧道打开页面再输：<code>ssh -N -L 8765:127.0.0.1:8765 root@宿主机</code>，再开 <code>http://127.0.0.1:8765</code>。
+    ${can ? `<div class="howto" style="margin:0 0 14px">审批口令等同工具服务那台机器的 root（能批准以 root 运行的命令），只在 HTTPS 或经 SSH 隧道打开的页面上输：<code>ssh -N -L 8765:127.0.0.1:8765 root@宿主机</code>，再开 <code>http://127.0.0.1:8765</code>（开了内置 HTTPS 的用 https://）。
       页面上加的连接只能用这里输入的凭据，引用不了服务器上的 <code>\${名字}</code>；凭据存好以后只看得到「已设置」，改了地址就要重新输入。</div>` : ''}
     <div class="card"><h3>主机 <small>命令型工具在哪些机器上跑</small>${live ? `<button class="add" data-ic="host-quick">+ 用账号密码添加机器</button>${
         add('host', '添加主机（分步）').replace('class="add"', 'class="add alt"')}` : add('host', '添加主机')}</h3>
@@ -4957,21 +4977,27 @@ async function icCheckMain(name) {
    每一步的结果都显示出来，失败停在那一步，可以重试；授权失效（过期、口令改过、锁定中……）就退回输审批口令。
    只在经 SSH 隧道打开的页面上能用：不是本机打开时，对话框里写清为什么、怎么开隧道。 */
 const IC_Q_STEP = {wait: ['', '没做'], run: ['', '进行中…'], ok: ['ok', '✓ 完成'], fail: ['bad', '✗ 没成'], ask: ['warn', '等你确认']};
-function icTunnelHtml() {
-  const port = location.port || (location.protocol === 'https:' ? '443' : '80');
+function icTunnelHtml(transport) {
+  // 隧道连到应用自己的端口（服务器告诉页面；老版本没有就用地址栏的端口）。开了内置 TLS 又留了本机明文口时连明文口
+  transport = transport || {};
+  const tls = transport.tls || {};
+  const port = tls.local_port || tls.port || location.port || (location.protocol === 'https:' ? '443' : '80');
+  const scheme = tls.builtin && !tls.local_port ? 'https' : 'http';
   const host = location.hostname.includes(':') ? `[${location.hostname}]` : location.hostname;
   return `<div class="sum">这个页面现在是经 <code>${esc(location.host)}</code> 打开的，不是本机地址。用账号密码添加机器要把目标主机的登录密码（往往是 root 的）和审批口令发给服务器，
-      明文经过网络不安全，所以只在经 SSH 隧道打开的页面上能用（服务器只收本机来的这类请求）。</div>
+      所以只在经 SSH 隧道打开的页面上能用（服务器只收本机来的这类请求）。</div>
+    ${transport.untrusted ? `<div class="icbox warn">服务器认为这个请求是经没登记的代理转来的（对端 ${esc(transport.peer || '')}），按外部来源处理：
+      前面有反向代理的，管理员要把它写进 <code>TRUSTED_PROXIES</code>。</div>` : ''}
     ${icCopy('① 在你自己的电脑上开一个隧道（Windows 的 PowerShell、macOS / Linux 的终端都行；登录服务器用你平时的 SSH 账号，窗口别关）',
       `ssh -N -L 8765:127.0.0.1:${port} root@${host}`)}
-    ${icCopy('② 在浏览器里打开下面这个地址（网页密码照旧），再点「用账号密码添加机器」', 'http://127.0.0.1:8765/tools')}
+    ${icCopy('② 在浏览器里打开下面这个地址（网页密码照旧），再点「用账号密码添加机器」', `${scheme}://127.0.0.1:8765/tools`)}
     <div class="note">隧道里传的东西是加密的；本机的 8765 端口被占用时，把两处的 8765 换成别的端口。</div>`;
 }
 function icQuickDialog() {
   const c = infra.c, ap = approvalInfo(), pw = c.password_install || {};
   const why = icBlocked(c, ap) || (!pw.supported ? (pw.why || '工具服务较旧，没有这个功能') : '');
   const close = '<button type="button" class="btn pri" data-dlgcancel>知道了</button>';
-  if (!pw.local) return icDialog('用账号密码添加机器', icTunnelHtml() + (why ? `<div class="icbox warn">另外：${esc(why)}</div>` : ''), close);
+  if (!pw.local) return icDialog('用账号密码添加机器', icTunnelHtml(c.transport) + (why ? `<div class="icbox warn">另外：${esc(why)}</div>` : ''), close);
   if (why) return icDialog('用账号密码添加机器', `<div class="icbox warn"><h4>现在用不了</h4>${esc(why)}</div>
     <div class="note">也可以用「添加主机（分步）」，照页面上给的命令在目标主机上手工安装。</div>`, close);
   const froms = [...new Set((c.hosts || []).filter(h => h.origin === 'page').flatMap(h => h.from || []))];
@@ -5606,6 +5632,44 @@ function axSwitchHtml(sw) {
       <div class="howto">工具服务坏了打不开时，在宿主机上执行 <code>docker exec kb-app python -m app.access open</code>（不要口令：能登宿主机就等于有 root）。</div></div>`;
 }
 const AX_CHANGE = {'switch-on': '打开', 'switch-off': '关闭', 'token-delete': '删令牌', 'calls-purge': '清除调用记录', 'token-categories': '令牌分类'};
+/* 接入地址卡上的「连接」几行：这次连接是不是 HTTPS（浏览器地址栏说了算）、服务器证书、你的来源、经没登记的代理转来的请求。
+   明文、又对本机以外开放 /mcp 时标红：令牌和查询结果会明文经过网络。 */
+function axTransportHtml(s) {
+  const t = s.transport || {}, tls = t.tls || {}, ev = t.events || {};
+  const https = location.protocol === 'https:', local = LOCAL_HOSTS.includes(location.hostname);
+  const names = list => (list || []).map(n => `<code>${esc(n)}</code>`).join('、') || '—';
+  const conn = https ? `<span class="pill ok">HTTPS</span> ${t.via ? `经可信代理 <code>${esc(t.via)}</code>` : tls.builtin ? '应用自己的证书' : '经 HTTPS 代理'}`
+    : local ? '<span class="pill warn">明文 HTTP</span> 从本机地址打开（SSH 隧道本身是加密的）'
+    : '<span class="pill bad">明文 HTTP</span> 令牌、页面密码都以明文经过网络';
+  const out = [`<dt>连接</dt><dd>${conn}</dd>`];
+  if (tls.builtin) {
+    out.push(`<dt>服务器证书</dt><dd>${tls.problem ? `<span class="bad">${esc(tls.problem)}</span>`
+      : `给 ${names(tls.names)} 签发，到 ${esc(tls.not_after || '?')}（还剩 ${esc(String(tls.days_left))} 天）`}
+      ${tls.warning ? `<div class="warn${tls.days_left < 0 ? ' danger' : ''}">${esc(tls.warning)}</div>` : ''}</dd>`);
+  }
+  const plainPort = !tls.builtin && tls.listen_host !== '127.0.0.1';
+  if (s.exposed && ((!https && !local) || plainPort)) {
+    const why = !(s.clients || []).length ? '没配 MCP_CLIENTS（谁都能连）' : `MCP_CLIENTS 含本机以外的地址（${(s.clients || []).join('、')}）`;
+    out.push(`<dt>风险</dt><dd><div class="warn danger"><b>/mcp 对本机以外开放：${esc(why)}，</b>${!https && !local
+      ? '而这个页面是明文连接：令牌和查询结果会明文经过网络。先上 HTTPS，再放开来源。'
+      : `应用端口 ${esc(String(tls.port || ''))} 本身是明文、对所有地址监听：别人可以绕过 HTTPS 代理直接连它。设 <code>LISTEN_HOST=127.0.0.1</code>，或者用防火墙只让代理连。`}
+      见 docs/正式部署.md「HTTPS 与对外放开」。</div></dd>`);
+  }
+  const host = location.hostname.includes(':') ? `[${location.hostname}]` : location.hostname;
+  out.push(`<dt>给别人的地址</dt><dd>${https ? `就是上面这个。${tls.builtin ? '用私有 CA 签的证书时，使用的人先导入 CA 证书（ca.crt）；不要让客户端跳过证书校验。' : ''}`
+    : `上了 HTTPS 以后是 <code>https://${esc(host)}:端口${esc(s.path)}</code>（有域名就写域名）；${local ? '经隧道的人用上面这个地址。' : '现在这个明文地址不要发给别人。'}`}
+    ${(s.allowed_hosts || []).length ? `<div class="note">只接受 Host 为 ${names(s.allowed_hosts)} 的请求：对外用的名字或 IP 要在里面。</div>`
+      : s.exposed ? '<div class="note">建议把对外用的名字或 IP 写进 <code>MCP_ALLOWED_HOSTS</code>（防 DNS 重绑定）。</div>' : ''}</dd>`);
+  out.push(`<dt>你的来源</dt><dd>${t.untrusted ? '<span class="bad">经没登记的代理转来，来源不明</span>' : `<code>${esc(t.client || '—')}</code>`}${t.via ? `（经可信代理 <code>${esc(t.via)}</code>）` : ''}</dd>`);
+  const bad = ev.untrusted, hint = ev.private;
+  if (bad) out.push(`<dt>代理配置</dt><dd><div class="warn danger"><b>${axTime(bad.at * 1000)} 收到从 <code>${esc(bad.peer)}</code> 转来的请求（${esc(bad.why)}，共 ${bad.count} 次），
+      但 <code>TRUSTED_PROXIES</code> 没登记它</b>：这些请求一律按外部来源处理，只收本机的功能、MCP_CLIENTS 里的本机地址都不放行。
+      它是你的反向代理，就把它的地址写进 <code>TRUSTED_PROXIES</code>，并让它传 <code>X-Forwarded-For</code>、<code>X-Forwarded-Proto</code>、原样的 <code>Host</code>；
+      是 TCP 转发（realm、stunnel……）就别这样接，改用内置 TLS。</div></dd>`);
+  else if (hint) out.push(`<dt>代理配置</dt><dd><div class="warn">${axTime(hint.at * 1000)} 收到私网地址 <code>${esc(hint.peer)}</code> 带转发头的请求（${esc(hint.why)}）。
+      它要是你的反向代理，就写进 <code>TRUSTED_PROXIES</code>，不然看到的来源都是它；是客户端那边的正向代理就不用管。</div></dd>`);
+  return out.join('\n');
+}
 function axChangesHtml(list) {
   return `<div class="card"><h3>操作记录 <small>开关、删令牌、清除调用记录、分类改动带来的令牌白名单变化；只增不删，页面上删不掉</small></h3>
     ${list.length ? `<table class="ax stack"><tr><th>时间</th><th>操作</th><th>内容</th><th>谁、从哪里</th></tr>${list.map(c =>
@@ -5686,8 +5750,9 @@ async function renderAccess() {
     <p class="lead">外部智能体（Claude Code、GitHub Copilot、Cursor…）经 MCP 接入：查知识库、按 SOP 排查、调宿主机开放的只读工具。
       每个客户端一枚令牌，库里只存哈希；<code>/mcp</code> 只认令牌，不认这个页面的密码。</p>
     ${axSwitchHtml(s.switch || {on: true})}
-    <div class="card"><h3>接入地址 <small>对内网开放时前面放反向代理和 TLS，换成 https 的地址（docs/正式部署.md「对外接入」）</small></h3>
+    <div class="card"><h3>接入地址 <small>对外放开前先上 HTTPS（docs/正式部署.md「HTTPS 与对外放开」）</small></h3>
       <dl><dt>地址</dt><dd><code>${esc(url)}</code></dd>
+        ${axTransportHtml(s)}
         ${(s.clients || []).length ? `<dt>来源</dt><dd>只接受来自 ${s.clients.map(c => `<code>${esc(c)}</code>`).join('、')} 的连接</dd>` : ''}
         <dt>知识库</dt><dd>${byScope('knowledge')}</dd>
         <dt>SOP</dt><dd>${byScope('sop')}；启用的 SOP ${s.sops} 个，每个一条提示词（客户端里的「▶ 执行」）</dd>
@@ -6540,7 +6605,7 @@ function autoSettingsHtml(st, hook) {
   const names = (st.groups || []).map(g => g.name), canTest = !!(st.mail || {}).configured && names.length > 0;
   const banner = locks.all ? `<div class="banner">${esc(locks.all)}</div>`
     : locks.pass ? `<div class="banner">${esc(locks.pass)}：要口令的改动先做不了，不要口令的照常能做。</div>`
-    : `<div class="howto" style="margin:0 0 14px">审批口令等同工具服务那台机器的 root，只经 SSH 隧道打开页面再输：<code>ssh -N -L 8765:127.0.0.1:8765 root@服务器</code>，再开 <code>http://127.0.0.1:8765</code>。
+    : `<div class="howto" style="margin:0 0 14px">审批口令等同工具服务那台机器的 root，只在 HTTPS 或经 SSH 隧道打开的页面上输：<code>ssh -N -L 8765:127.0.0.1:8765 root@服务器</code>，再开 <code>http://127.0.0.1:8765</code>（开了内置 HTTPS 的用 https://）。
       授权码、令牌只写不读：存好以后页面上只看得到「已设置」。</div>`;
   return `<h3 class="as-h">邮件与告警入口的设置</h3>
     <ul class="tiers">

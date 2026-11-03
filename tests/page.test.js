@@ -66,10 +66,11 @@ check('手机上的占位文字是短的', html.includes("NARROW.matches ? '问�
 
 // 审批口令的卡片（设置页、主机与数据源）：每种状态给对的表单，每种状态都写上忘了怎么重设
 const lineOf = re => scripts.join('\n').match(re)[0];
-const passCode = [/^const esc = .*$/m, /^const setCmd = .*$/m, /^const unlockIn = .*$/m, /^const LOCAL_HOSTS = .*$/m].map(lineOf)
+const passCode = [/^const esc = .*$/m, /^const setCmd = .*$/m, /^const unlockIn = .*$/m, /^const LOCAL_HOSTS = .*$/m,
+  /^const plainPage = .*$/m].map(lineOf)
   .concat(['plainHint', 'setAtText', 'passWho', 'passFormHtml', 'passCard', 'passUnset', 'todoCounts'].map(extract)).join('\n');
-const passFns = host => new Function('location', `${passCode}\nreturn {passCard, passFormHtml, passWho, setAtText, passUnset, todoCounts};`)(
-  {hostname: host, host: `${host}:8765`});
+const passFns = (host, protocol = 'http:') => new Function('location', `${passCode}\nreturn {passCard, passFormHtml, passWho, setAtText, passUnset, todoCounts};`)(
+  {hostname: host, host: `${host}:8765`, protocol});
 const P = passFns('127.0.0.1');
 const base = {max_failures: 5, lock_minutes: 15, min_length: 12, page_set: true, problem: '',
               command: 'python3 /opt/ops/ops_readonly.py set-approval-passphrase'};
@@ -101,6 +102,7 @@ check('输入框没有 name：表单不会把口令带进地址栏', /\bname=/.t
 check('来源地址转义', P.passWho({set_by: 'page', set_from: '<img src=x>'}).includes('<img'), false);
 check('从本机打开不提示明文', unset.includes('明文连接'), false);
 check('不是从本机打开时提示明文', passFns('10.0.0.5').passFormHtml({...base, configured: false}).includes('明文连接（10.0.0.5:8765）'), true);
+check('HTTPS 打开的不提示明文', passFns('doc2sop.autos', 'https:').passFormHtml({...base, configured: false}).includes('明文连接'), false);
 check('今年的设置时间只写月日时分', P.setAtText(`${new Date().getFullYear()}-11-01 11:30:00`), '11-01 11:30');
 check('往年的带上年份', P.setAtText('2020-03-04 05:06:07'), '2020-03-04 05:06');
 check('没有设置时间', P.setAtText(''), '');
@@ -370,6 +372,16 @@ check('隧道说明：给出 ssh -L 命令和本机地址', [tunnel.includes('ss
 const tunnelEvil = new Function('location', `${lineOf(/^const esc = .*$/m)}\n${extract('icCopy')}\n${extract('icTunnelHtml')}\nreturn icTunnelHtml;`)(
   {hostname: evil, host: evil, port: '', protocol: 'https:'})();
 check('隧道说明：地址转义', tunnelEvil.includes('<img'), false);
+const tunnelWith = transport => new Function('location', `${lineOf(/^const esc = .*$/m)}\n${extract('icCopy')}\n${extract('icTunnelHtml')}\nreturn icTunnelHtml;`)(
+  {hostname: 'doc2sop.autos', host: 'doc2sop.autos:9443', port: '9443', protocol: 'https:'})(transport);
+check('隧道说明：开了内置 TLS、留了本机明文口时，隧道连明文口', [tunnelWith({tls: {builtin: true, port: 9443, local_port: 8765}})
+  .includes('ssh -N -L 8765:127.0.0.1:8765 root@doc2sop.autos'), tunnelWith({tls: {builtin: true, port: 9443, local_port: 8765}})
+  .includes('http://127.0.0.1:8765/tools')], [true, true]);
+check('隧道说明：只有内置 TLS 时，隧道连 HTTPS 端口、用 https 打开', [tunnelWith({tls: {builtin: true, port: 9443}}).includes('8765:127.0.0.1:9443'),
+  tunnelWith({tls: {builtin: true, port: 9443}}).includes('https://127.0.0.1:8765/tools')], [true, true]);
+check('隧道说明：经反向代理打开时，隧道连应用自己的端口，不是代理的', tunnelWith({tls: {builtin: false, port: 8765}}).includes('8765:127.0.0.1:8765 '), true);
+check('隧道说明：经没登记的代理转来时写明 TRUSTED_PROXIES', [tunnelWith({untrusted: true, peer: evil}).includes('TRUSTED_PROXIES'),
+  tunnelWith({untrusted: true, peer: evil}).includes('<img')], [true, false]);
 check('主机卡片：「用账号密码添加机器」不灰掉（点开说明原因）', /data-ic="host-quick">\+ 用账号密码添加机器</.test(html), true);
 const quick = extract('icQuickDialog');
 check('添加机器：口令只在第一步核对，之后带票据', [/host-onboard', \{host, passphrase: icPass\(wrap\)\}/.test(quick),
@@ -546,6 +558,44 @@ check('对话的来源按平台写', [html.includes('${esc(chatName(c.source.pla
   check('工具分组列表：分组名转义', GRP([{name: evil, total: 2}]).includes('<img'), false);
   check('工具卡片：分组的输入框和下拉提示都转义', /value="\$\{esc\(t\.group \|\| ''\)\}"/.test(html) && html.includes('`<option value="${esc(g)}">`'), true);
   check('工具卡片：主配置里的分组转义', html.includes("主配置里是「${esc(t.group_base || '其他')}」"), true);
+}
+
+// ---------- HTTPS：接入地址卡上的连接、证书、风险、经没登记的代理转来的请求；明文横幅 ----------
+{
+  const TX = loc => new Function('location', [/^const esc = .*$/m, /^const axTime = .*$/m, /^const LOCAL_HOSTS = .*$/m].map(lineOf)
+    .concat([extract('axTransportHtml')]).join('\n') + '\nreturn axTransportHtml;')(loc);
+  const pub = TX({protocol: 'http:', hostname: '117.72.91.19', host: '117.72.91.19:8765'});
+  const sec = TX({protocol: 'https:', hostname: 'doc2sop.autos', host: 'doc2sop.autos:9443'});
+  const tun = TX({protocol: 'http:', hostname: '127.0.0.1', host: '127.0.0.1:8765'});
+  const base = {path: '/mcp', clients: [], allowed_hosts: [], exposed: true,
+                transport: {client: '203.0.113.9', tls: {builtin: false, port: 8765, listen_host: '0.0.0.0'}, events: {}}};
+  const plainOpen = pub(base);
+  check('明文又对外开放：标红，写明令牌明文', [plainOpen.includes('warn danger'), plainOpen.includes('令牌和查询结果会明文经过网络'),
+    plainOpen.includes('没配 MCP_CLIENTS')], [true, true, true]);
+  check('明文、只给本机（MCP_CLIENTS 全是回环）：不标红', pub({...base, exposed: false, clients: ['127.0.0.1', '::1']}).includes('warn danger'), false);
+  const tls = {builtin: true, port: 9443, listen_host: '0.0.0.0', local_port: 8765, names: ['doc2sop.autos', evil],
+               not_after: '2027-02-01', days_left: 90, warning: ''};
+  const good = sec({...base, allowed_hosts: ['doc2sop.autos'], transport: {...base.transport, tls}});
+  check('内置 TLS：HTTPS、证书的名字和到期日、不标红、名字转义', [good.includes('pill ok">HTTPS'), good.includes('2027-02-01'),
+    good.includes('warn danger'), good.includes('<img'), good.includes('不要让客户端跳过证书校验')], [true, true, false, false, true]);
+  const expired = sec({...base, transport: {...base.transport, tls: {...tls, days_left: -2, warning: '服务器证书已经过期'}}});
+  check('证书过期：标红', expired.includes('warn danger">服务器证书已经过期'), true);
+  const bypass = sec({...base, transport: {...base.transport, via: '127.0.0.1'}});
+  check('经 HTTPS 代理、应用端口却是明文的 0.0.0.0：提醒设 LISTEN_HOST', [bypass.includes('经可信代理'), bypass.includes('LISTEN_HOST=127.0.0.1')],
+    [true, true]);
+  check('经代理、应用只听回环：不标红', sec({...base, transport: {...base.transport, via: '127.0.0.1',
+    tls: {builtin: false, port: 8765, listen_host: '127.0.0.1'}}}).includes('warn danger'), false);
+  check('经隧道打开：明文但不标红', tun({...base, exposed: false}).includes('pill warn">明文 HTTP'), true);
+  const proxied = tun({...base, exposed: false, transport: {...base.transport, untrusted: true, client: 'untrusted-proxy',
+    events: {untrusted: {at: 1700000000, peer: evil, why: evil, count: 3}}}});
+  check('经没登记的代理转来：标红，写明 TRUSTED_PROXIES，转义', [proxied.includes('warn danger'), proxied.includes('TRUSTED_PROXIES'),
+    proxied.includes('来源不明'), proxied.includes('<img')], [true, true, true, false]);
+  const hinted = tun({...base, exposed: false, transport: {...base.transport, events: {private: {at: 1700000000, peer: '10.0.0.9', why: 'x', count: 1}}}});
+  check('私网地址带转发头：黄色提示', [hinted.includes('10.0.0.9'), hinted.includes('warn danger')], [true, false]);
+  // 横幅：明文、又不是本机地址时才挂；点 × 只在本次会话不再提示
+  check('明文横幅：按地址栏协议判断，sessionStorage 记关闭', [html.includes('id="plainBar"'),
+    /const plainPage = \(\) => location\.protocol !== 'https:' && !LOCAL_HOSTS\.includes\(location\.hostname\)/.test(html),
+    html.includes("sessionStorage.setItem('kb-plain-ok', '1')")], [true, true, true]);
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败`);

@@ -255,7 +255,8 @@ class ServeSettingsTests(unittest.TestCase):
         self.assertEqual((built.host, built.port, built.workers, built.proxy_headers, built.ssl),
                          ("0.0.0.0", 8765, 1, False, None))
         self.assertEqual(serve.describe(config), ["http://0.0.0.0:8765"])
-        self.assertEqual(serve.tls_status({}), {"builtin": False, "local_port": None})
+        self.assertEqual(serve.tls_status({}), {"builtin": False, "port": 8765, "listen_host": "0.0.0.0",
+                                                "local_port": None})
 
     def test_refusals(self):
         for env, needle in (({"LISTEN_HOST": "10.0.0.5"}, "LISTEN_HOST"), ({"PORT": "x"}, "PORT"),
@@ -349,6 +350,11 @@ class CertScriptTests(unittest.TestCase):
         self.assertIn("不要放进 TLS_DIR", self.done.stdout)
         self.assertIn("TLS_CERT_FILE=/tls/server.crt", self.done.stdout)
         self.assertEqual(serve.check_tls(str(self.base / "tls" / "server.crt"), str(self.base / "tls" / "server.key"))[0], [])
+        status = serve.tls_status({"TLS_CERT_FILE": str(self.base / "tls" / "server.crt"), "PORT": "9443",
+                                   "TLS_KEY_FILE": str(self.base / "tls" / "server.key"), "LOCAL_HTTP_PORT": "8765"})
+        self.assertEqual((status["builtin"], status["port"], status["local_port"], status["warning"]), (True, 9443, 8765, ""))
+        self.assertIn("kb.internal", status["names"])
+        self.assertGreater(status["days_left"], 800)
 
     def test_python_trusts_only_the_names_on_the_certificate(self):
         """Python（OpenSSL）认这个 CA：证书上的名字能连；CA 签出名字约束以外的证书，客户端拒绝。"""

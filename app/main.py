@@ -22,7 +22,8 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from app import approval, catalog, conversations, graph, jobs, models, packs, peer, playbooks, runs, settings, workbench
+from app import approval, catalog, conversations, graph, jobs, models, packs, peer, playbooks, runs, serve, settings
+from app import workbench
 from app import automation_api
 from app import categories as category_admin
 from app.agent import grow
@@ -1057,7 +1058,7 @@ def tools_config(request: Request):
         local = peer.is_local(request)
         data["password_install"] = {**ops_client.host_install_support(_approval_caller(request)),
                                     "local": local, "local_why": "" if local else LOCAL_ONLY_REFUSAL}
-        data["transport"] = peer.transport(request)
+        data["transport"] = {**peer.transport(request), "tls": serve.tls_status()}
         data["k8s"] = ops_client.config_clusters(_approval_caller(request))
     return _with_sops(data) if data.get("supported") else data
 

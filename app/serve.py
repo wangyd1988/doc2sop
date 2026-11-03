@@ -137,9 +137,10 @@ _status_cache = {}
 def tls_status(environ=None, now=None) -> dict:
     """页面用：这个进程是不是自己说 HTTPS（内置 TLS）、服务器证书到哪天、给哪些名字签的、还剩几天。"""
     config = settings(environ)
+    base = {"port": config["port"], "listen_host": config["host"], "local_port": config["local_port"]}
     if not (config["cert"] and config["key"]):
-        return {"builtin": False, "local_port": None}
-    out = {"builtin": True, "port": config["port"], "local_port": config["local_port"]}
+        return {"builtin": False, **base}
+    out = {"builtin": True, **base}
     try:
         stamp = os.stat(config["cert"]).st_mtime
         cached = _status_cache.get(config["cert"])
