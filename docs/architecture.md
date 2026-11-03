@@ -163,6 +163,13 @@ kb-app 聊天线程（chat_channel）── 白名单（chat.yaml）→ 收件�
 `chat_inbox`、`chat_unknown`（没开通的只记 ID 和次数）、`chat_notify`、`chat_push_log`、`chat_state`。图谱的渠道多一个 `chat`，
 执行记录的触发方式多一个 `chat`（「💬 群聊」）；旧版本读到不认识的值原样显示。部署见 [`正式部署.md`](正式部署.md#云上协同群聊机器人)。
 
+**钉钉**：另一个转接程序 `doc2sop-dingtalk`（`deploy/dingtalk/dingtalk_bridge.py`，127.0.0.1:8795）说同一套本地接口，事件的 `platform`
+是 `dingtalk`；kb-app 同一时刻只连一个。它主动连钉钉的 Stream 通道（出站 WebSocket，apt 的 python3-websocket，TCP 和 TLS 自己建好再交给它），
+回复用消息里的会话回复地址（过期改走机器人发消息接口），流式包缓冲成每问最多两条（「正在查」+ 答案）；`/status` 报 `platform` 和
+`formats`（支持 markdown）。kb-app 侧：`chat.yaml` 的 `platform` 决定白名单的 ID 格式；和转接程序报的平台对不上就不取消息、不推送；
+`chat_notify`、`chat_push_log` 多一列 `platform`（推送设置记着保存时的平台）；面向用户的平台名（提示词、帮助里的数据去向、标题）按来源写，
+云上协同那条路逐字节不变（`tests/test_chat_ccwork_unchanged.py`）。部署见 [`正式部署.md`](正式部署.md#钉钉群聊机器人)。
+
 ## 组织运行图谱（graph.db）
 
 文档 → SOP → 工具 原本是一条单向流，工具查到的真实数据和人对一次回答的判断答完就丢。
@@ -360,6 +367,8 @@ deploy/
 ├── backup.sh          每日备份
 ├── ccwork/            云上协同转接程序 ccwork_bridge.py（宿主机 systemd，收 MQTT、发 HTTPS，本地接口 127.0.0.1:8796）和它的
 │                      单元、环境文件、推送目标示例；crypto_vectors.py（加解密对照数据）、check_upstream.sh（官方开发包有新提交就提醒）
+├── dingtalk/          钉钉转接程序 dingtalk_bridge.py（宿主机 systemd，出站连钉钉 Stream、发 HTTPS，本地接口 127.0.0.1:8795）和它的
+│                      单元、环境文件、推送目标示例
 ├── container-guard.sh 内存超阈值才重启容器，配 systemd timer 每天跑一次
 └── embedding/
     ├── server.py          向量服务（FastEmbed ONNX，OpenAI 兼容 /v1/embeddings）

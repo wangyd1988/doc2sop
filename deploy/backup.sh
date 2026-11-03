@@ -52,9 +52,11 @@ for f in /opt/ops/ops_tools.yaml /opt/ops/ops_tools.overrides.yaml /opt/ops/ops_
          /opt/ops/ops_tools.page.yaml /opt/ops/ops_tools.page.known_hosts /opt/ops/ops_tools.page.log; do
   [ -f "$f" ] && { mkdir -p "$WORK/ops"; cp -a "$f" "$WORK/ops/"; }
 done
-# 云上协同转接程序的推送目标（名字 → 群 ID / 用户 ID，没有密钥）；凭据在 /etc/doc2sop-ccwork.env，不带
+# 群聊转接程序的推送目标（名字 → 群 ID / 用户 ID，没有密钥）；凭据在 /etc/doc2sop-ccwork.env、/etc/doc2sop-dingtalk.env，不带
 f=/etc/doc2sop-ccwork/targets.yaml
 [ -f "$f" ] && { mkdir -p "$WORK/ccwork"; cp -a "$f" "$WORK/ccwork/"; }
+f=/etc/doc2sop-dingtalk/targets.yaml
+[ -f "$f" ] && { mkdir -p "$WORK/dingtalk"; cp -a "$f" "$WORK/dingtalk/"; }
 
 OUT="$DEST/kb-$STAMP.tgz"
 tar -czf "$OUT" -C "$WORK" .
