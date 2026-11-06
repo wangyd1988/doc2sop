@@ -93,8 +93,19 @@ CREATE TABLE IF NOT EXISTS access_changes (
   count INTEGER
 );
 """)
-db.commit()
+
+
+def _migrate(conn):
+    """后加的列补上（老库的旧行取默认值）。via：调用从哪条路来，'' 是外部客户端，'page' 是管理页「测一下」「试调」
+    在进程内转给 /mcp 的（app/mcp_probe.py）。回滚到老镜像时，老代码 SELECT * 多一列无害、INSERT 写明了列名，不受影响。"""
+    if "via" not in {row[1] for row in conn.execute("PRAGMA table_info(mcp_calls)")}:
+        conn.execute("ALTER TABLE mcp_calls ADD COLUMN via TEXT NOT NULL DEFAULT ''")
+    conn.commit()
+
+
+_migrate(db)
 lock = threading.Lock()
+VIAS = ("", "page")
 
 
 class AccessError(ValueError):
@@ -341,22 +352,34 @@ def verify(token):
                   max_result_chars=row["max_result_chars"] or MCP_MAX_RESULT_CHARS)
 
 
+def describe(token):
+    """管理页「测一下」用：明文令牌 → 令牌信息（含状态：有效、已吊销、已过期），库里没有时 None。
+    只读：不更新最近使用，不算限流。/mcp 本身不用它——对外只回一个 401，不告诉人令牌是吊销了还是不存在。"""
+    token = str(token or "").strip()
+    if not token.startswith(PREFIX) or len(token) > 200:
+        return None
+    with lock:
+        row = db.execute("SELECT * FROM mcp_tokens WHERE token_hash = ?", (_hash(token),)).fetchone()
+    return _view(row) if row else None
+
+
 # --- 审计 ---------------------------------------------------------------------------
 
 _pruned = {"at": 0.0}
 
 
-def record_call(client, kind, name, args, result_chars, duration_ms, ok, error="", execution_id=None, session=""):
-    """记一次对外调用。参数截到 ARGS_CHARS 字；每天顺手清一次超过保留期的记录。"""
+def record_call(client, kind, name, args, result_chars, duration_ms, ok, error="", execution_id=None, session="",
+                via=""):
+    """记一次对外调用。参数截到 ARGS_CHARS 字；每天顺手清一次超过保留期的记录。via 见 VIAS。"""
     text = json.dumps(args if isinstance(args, dict) else {}, ensure_ascii=False, default=str)
     if len(text) > ARGS_CHARS:
         text = text[:ARGS_CHARS] + "…"
     with lock:
         db.execute("INSERT INTO mcp_calls (at, token_id, client, kind, name, args, result_chars, duration_ms, ok,"
-                   " error, execution_id, session) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                   " error, execution_id, session, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                    (_iso(_now()), client.id, client.name, kind, str(name)[:120], text, int(result_chars or 0),
                     max(0, int(duration_ms or 0)), 1 if ok else 0, str(error or "")[:300], execution_id,
-                    str(session or "")[:64]))
+                    str(session or "")[:64], via if via in VIAS else ""))
         if time.monotonic() - _pruned["at"] > 86400:
             _pruned["at"] = time.monotonic()
             cutoff = _iso(_now() - timedelta(days=MCP_AUDIT_DAYS))

@@ -66,6 +66,7 @@ from app.rag import store
 PATH = "/mcp"
 SERVER_NAME = "doc2sop"
 CLIENT_KEY = "doc2sop.client"        # TokenGate 把令牌对应的 Client 放进 ASGI scope 的这个键
+VIA_KEY = "doc2sop.via"              # 管理页在进程内转来的请求（app/mcp_probe.py）在 scope 里放 "page"；HTTP 头伪造不了
 SESSION_GAP = 1800                   # 没有会话 id 的客户端：同一令牌这么久没调用，下一次算新会话
 SESSION_IDLE = 1800                  # 2025 版会话闲置多久关掉（SDK 的默认值）
 MAX_SESSIONS = 200                   # 2025 版会话最多同时开多少个（小机器，SDK 默认的一万太多）
@@ -109,6 +110,12 @@ def client_of(ctx) -> access.Client:
 def session_of(ctx) -> str:
     request = getattr(ctx, "request", None)
     return (request.headers.get("mcp-session-id") or "")[:64] if request is not None else ""
+
+
+def via_of(ctx) -> str:
+    """调用从哪条路来：管理页的「测一下」「试调」是 "page"，外部客户端是 ""（审计里区分）。"""
+    request = getattr(ctx, "request", None)
+    return request.scope.get(VIA_KEY, "") if request is not None else ""
 
 
 def agent_of(ctx) -> str:
@@ -194,7 +201,7 @@ def _clip(text, limit):
     return text[:limit] + f"\n…（已截断：超过这枚令牌单次返回的上限 {limit} 字，缩小范围再查）"
 
 
-def call_tool(client, name, args, session="", agent=""):
+def call_tool(client, name, args, session="", agent="", via=""):
     """执行一次对外工具调用：(给客户端的文字, 成没成功)。审计、图谱都在这里记。"""
     started = time.monotonic()
     args = args if isinstance(args, dict) else {}
@@ -234,7 +241,7 @@ def call_tool(client, name, args, session="", agent=""):
     ok = not output.startswith(FAILURE_MARKS)
     output = _clip(output, client.max_result_chars)
     duration = int((time.monotonic() - started) * 1000)
-    _audit(client, "tool", name, args, output, duration, ok, execution_id, session)
+    _audit(client, "tool", name, args, output, duration, ok, execution_id, session, via=via)
     return output, ok
 
 
@@ -243,21 +250,25 @@ def _printable(text, limit=120):
     return "".join(ch if ch.isprintable() else "?" for ch in str(text))[:limit]
 
 
-def _audit(client, kind, name, args, output, duration, ok, execution_id=None, session="", error=""):
+def _audit(client, kind, name, args, output, duration, ok, execution_id=None, session="", error="", via=""):
     if not ok and not error:
         error = output.splitlines()[0][:200] if output else ""
     try:
-        access.record_call(client, kind, name, args, len(output), duration, ok, error, execution_id, session)
+        if via:
+            access.record_call(client, kind, name, args, len(output), duration, ok, error, execution_id, session,
+                               via=via)
+        else:
+            access.record_call(client, kind, name, args, len(output), duration, ok, error, execution_id, session)
     except Exception:
         log.warning("failed to audit mcp call %s", _printable(name), exc_info=True)
-    log.info("mcp %s client=%s(%s) %s ok=%s chars=%d ms=%d execution=%s", kind, client.id, _printable(client.name),
-             _printable(name), ok, len(output), duration, execution_id or "-")
+    log.info("mcp %s client=%s(%s) %s ok=%s chars=%d ms=%d execution=%s%s", kind, client.id, _printable(client.name),
+             _printable(name), ok, len(output), duration, execution_id or "-", f" via={via}" if via else "")
 
 
-def refuse(client, kind, name, args, session=""):
+def refuse(client, kind, name, args, session="", via=""):
     """限流：不执行，记一笔审计。"""
     text = f"[未执行] 调用太频繁：这枚令牌每分钟最多调用 {client.rate_per_minute} 次，请稍后再试"
-    _audit(client, kind, name, args, text, 0, False, None, session, error="rate_limited")
+    _audit(client, kind, name, args, text, 0, False, None, session, error="rate_limited", via=via)
     return text
 
 
@@ -396,11 +407,12 @@ def build_server():
         client = client_of(ctx)
         watcher.seen(ctx)
         args = dict(params.arguments or {})
+        via = via_of(ctx)
         if not access.allow_call(client):
-            text = await anyio.to_thread.run_sync(refuse, client, "tool", params.name, args, session_of(ctx))
+            text = await anyio.to_thread.run_sync(refuse, client, "tool", params.name, args, session_of(ctx), via)
             return types.CallToolResult(content=[types.TextContent(type="text", text=text)], is_error=True)
         text, ok = await anyio.to_thread.run_sync(call_tool, client, params.name, args, session_of(ctx),
-                                                  agent_of(ctx))
+                                                  agent_of(ctx), via)
         return types.CallToolResult(content=[types.TextContent(type="text", text=text)], is_error=not ok)
 
     async def on_list_prompts(ctx, params):
