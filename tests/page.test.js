@@ -598,5 +598,101 @@ check('对话的来源按平台写', [html.includes('${esc(chatName(c.source.pla
     html.includes("sessionStorage.setItem('kb-plain-ok', '1')")], [true, true, true]);
 }
 
+// ---------- 对外接入：快速上手、配置示例、测一下、试调 ----------
+{
+  const F = ['axCats', 'axSample', 'axClientSnippets', 'axSnippetHtml', 'axPickAddress', 'axConfigHtml', 'axAsks', 'axQuickHtml', 'axFix',
+    'axStepsHtml', 'axFormHtml', 'axArgsFrom', 'axTryResultHtml', 'axTryHtml', 'axCallsHtml'];
+  const AX = new Function([/^const esc = .*$/m, /^const axTime = .*$/m, /^const SCOPE_NAMES = .*$/m, /^const AX_HOLDER = .*$/m, /^const shq = .*$/m,
+    /^const AX_STEP = .*$/m, /^const axType = .*$/m].map(lineOf).concat(F.map(extract)).join('\n') + `\nreturn {${F.join(',')}};`)();
+  const URL = 'https://117.72.91.19:9443/mcp', SECRET = 'd2s_0123456789ab_secretpart';
+  const ids = list => list.map(c => c.id);
+  const holder = AX.axClientSnippets(URL, '', null);
+  check('配置示例：九种客户端', ids(holder), ['claude', 'vscode', 'cursor', 'cherry', 'cline', 'dify', 'codex', 'curl', 'python']);
+  check('没有令牌时用占位（VS Code 用弹框要令牌，不放占位）', holder.filter(c => !c.code.includes('<你的令牌>')).map(c => c.id), ['vscode']);
+  const filled = AX.axClientSnippets(URL, SECRET, {name: 'kb_search', args: {query: '报销'}});
+  check('刚签发的令牌填进片段（VS Code 除外）', filled.filter(c => !c.code.includes(SECRET)).map(c => c.id), ['vscode']);
+  check('每个片段都有地址', filled.every(c => c.code.includes(URL)), true);
+  const parsed = id => JSON.parse(filled.find(c => c.id === id).code);
+  check('VS Code：http 类型、弹框要令牌', [parsed('vscode').servers.doc2sop.type, parsed('vscode').servers.doc2sop.headers.Authorization,
+    parsed('vscode').inputs[0].password], ['http', 'Bearer ${input:doc2sop-token}', true]);
+  check('Cursor：url + headers', parsed('cursor').mcpServers.doc2sop, {url: URL, headers: {Authorization: 'Bearer ' + SECRET}});
+  check('Cline：一定写 streamableHttp', parsed('cline').mcpServers.doc2sop.type, 'streamableHttp');
+  check('Cherry Studio：请求头一行一个、等号隔开', filled.find(c => c.id === 'cherry').code.includes(`Authorization=Bearer ${SECRET}`), true);
+  const curl = filled.find(c => c.id === 'curl').code;
+  check('curl：握手拿会话、initialized、列工具、调用、关会话', ['mcp-session-id', 'notifications/initialized', 'tools/list', '"name":"kb_search"', '-X DELETE',
+    "Accept: application/json, text/event-stream"].map(x => curl.includes(x)), [true, true, true, true, true, true]);
+  check('curl：Windows 提示用 WSL / Git Bash', curl.includes('WSL / Git Bash'), true);
+  const py = filled.find(c => c.id === 'python');
+  check('Python：SDK 2.x 写法，注明 1.x', [py.code.includes('from mcp.client.streamable_http import streamable_http_client'), py.code.includes('httpx2'),
+    py.code.includes('"mcp>=2.3,<3"'), py.note.includes('streamablehttp_client')], [true, true, true, true]);
+  check('Codex：令牌从环境变量取', filled.find(c => c.id === 'codex').code.includes('--bearer-token-env-var DOC2SOP_TOKEN'), true);
+  const evilUrl = "https://h/mcp'$(id)<img src=x onerror=alert(1)>";
+  const shell = AX.axClientSnippets(evilUrl, "d2s_x'y", null).find(c => c.id === 'claude').code;
+  check('shell 参数单引号转义：地址、令牌里的单引号改不了命令', [shell.includes("'https://h/mcp'\\''$(id)"), shell.includes("Bearer d2s_x'\\''y")], [true, true]);
+  const html2 = AX.axSnippetHtml(AX.axClientSnippets(evilUrl, '', null), 'python');
+  check('片段显示时转义、选中的标签高亮', [html2.includes('<img'), /data-axtab="python" class="on"/.test(html2)], [false, true]);
+  const addrs = [{url: 'http://127.0.0.1:8765/mcp', host: '127.0.0.1:8765', label: '本页地址'}, {url: URL, host: '117.72.91.19:9443', label: '证书里的名字'}];
+  check('接入地址：经隧道打开时默认给 HTTPS 地址；HTTPS 页面用本页', [AX.axPickAddress(addrs, false, true), AX.axPickAddress([addrs[1]], true, false),
+    AX.axPickAddress([addrs[0]], false, true)], [URL, URL, 'http://127.0.0.1:8765/mcp']);
+  const card = AX.axConfigHtml([...addrs, {url: evilUrl, host: 'x', label: evil}], addrs[0].url, '', null, 'claude');
+  check('配置示例卡：候选地址、标签转义；隧道地址写明只有开着隧道的人能用', [card.includes('<img'), card.includes('不要让客户端跳过证书校验'),
+    AX.axConfigHtml([{...addrs[0], label: '经 SSH 隧道'}], addrs[0].url, '', null, 'claude').includes('ssh -N -L')], [false, true, true]);
+  check('片段里有明文令牌时提醒别贴进群里', AX.axConfigHtml(addrs, URL, SECRET, null, 'claude').includes('别贴进群里'), true);
+  check('试调例子：有知识库用 kb_search，只有 SOP 用 sop_list', [AX.axSample([{name: 'sop_list'}, {name: 'kb_search'}]).name, AX.axSample([{name: 'sop_list'}]).name],
+    ['kb_search', 'sop_list']);
+  const asks = AX.axAsks({tools: [{name: 'kb_search', scope: 'knowledge'}, {name: 'sop_get', scope: 'sop'}, {name: 'host_disk', title: evil, scope: 'data'}],
+    categories: [evil], sop_titles: [evil]});
+  check('快速上手：按开放的范围、分类、SOP 生成例子', asks.length, 5);
+  const quick = AX.axQuickHtml(asks);
+  check('快速上手：四步、例子转义', [quick.split('<li><b>').length - 1, quick.includes('<img')], [4, false]);
+  check('没开放工具时不给例子', AX.axAsks({tools: [], categories: []}), []);
+  // 测一下：每一步的结果、没通时说人话
+  const ctx = {clients: ['127.0.0.1', evil], allowed: ['117.72.91.19']};
+  check('令牌不对 / 已吊销', [AX.axFix({code: 'invalid_token'}, {...ctx, token: null}).includes('复制少了字符'),
+    AX.axFix({code: 'invalid_token'}, {...ctx, token: {name: evil, status: 'revoked', revoked_at: '2026-11-01T00:00:00+00:00'}}).includes('吊销')], [true, true]);
+  const notAllowed = AX.axFix({code: 'client_not_allowed'}, {...ctx, source: evil});
+  check('来源不在 MCP_CLIENTS：写明来源和名单、要改 .env、转义', [notAllowed.includes('MCP_CLIENTS'), notAllowed.includes('.env'), notAllowed.includes('<img')], [true, true, false]);
+  check('Host 不在名单、总开关、超时、没有工具', [AX.axFix({code: 'invalid_host'}, {...ctx, host: 'a:1'}).includes('MCP_ALLOWED_HOSTS'),
+    AX.axFix({code: 'disabled'}, ctx).includes('重新打开'), AX.axFix({code: 'timeout'}, ctx).includes('时限'), AX.axFix({code: 'no_tools'}, ctx).includes('export')],
+    [true, true, true, true]);
+  const okRun = AX.axStepsHtml({ok: true, source: evil, host: '117.72.91.19:9443', tools: [{name: 'kb_search'}],
+    token: {name: evil, scopes: ['knowledge'], categories: null, rate_per_minute: 60, max_result_chars: 20000},
+    call: {tool: 'kb_catalog', text: evil, chars: 30},
+    steps: [{step: 'initialize', ok: true, ms: 12, detail: evil}, {step: 'tools/call', ok: true, code: 'skipped', detail: '只有数据工具'}]}, ctx);
+  check('通了：写令牌、范围、工具数，服务端文字转义，说明测的是哪一侧', [okRun.includes('✓ 通了'), okRun.includes('看得到 1 个工具'), okRun.includes('<img'),
+    okRun.includes('客户端在别的机器上时')], [true, true, false, true]);
+  const bad = AX.axStepsHtml({ok: false, source: '203.0.113.9', host: 'h', tools: [], token: null,
+    steps: [{step: 'initialize', ok: false, status: 401, code: 'invalid_token', ms: 3}, {step: 'initialized', ok: null, code: 'not_run'}]}, ctx);
+  check('没通：标 ✗、给出怎么修、后面的写没跑', [bad.includes('✗ 没通'), bad.includes('复制少了字符'), bad.includes('这一步没跑')], [true, true, true]);
+  check('接口报错（比如 429）照原话显示、转义', AX.axStepsHtml({error: evil}, ctx).includes('<img'), false);
+  // 试调：按 inputSchema 生成表单、表单 → 参数
+  const tool = {name: 'demo', inputSchema: {type: 'object', required: ['q'], properties: {
+    q: {type: 'string', description: evil}, n: {type: 'integer', minimum: 1, maximum: 5, default: 3}, x: {type: 'number'},
+    mode: {enum: ['a', 'b']}, on: {type: 'boolean'}, ids: {type: 'array'}, opt: {type: ['string', 'null']}}}};
+  const form = AX.axFormHtml(tool);
+  check('表单：各类型的输入框、必填星号、说明转义', [(form.match(/data-axarg=/g) || []).length, form.includes('<textarea data-axarg="ids"'),
+    form.includes('type="number" step="1" min="1" max="5"'), form.includes('<span class="bad">*</span>'), form.includes('<img')], [7, true, true, true, false]);
+  check('不要参数的工具', AX.axFormHtml({name: 't', inputSchema: {type: 'object'}}).includes('不要参数'), true);
+  check('表单 → 参数：类型转换、空的不传', AX.axArgsFrom(tool, {q: 'x', n: '2', x: '1.5', mode: '1', on: 'false', ids: '[1]', opt: ''}),
+    {args: {q: 'x', n: 2, x: 1.5, mode: 'b', on: false, ids: [1]}});
+  check('必填没填、整数不对、JSON 不对', [AX.axArgsFrom(tool, {}).error, AX.axArgsFrom(tool, {q: 'x', n: '1.5'}).error, AX.axArgsFrom(tool, {q: 'x', ids: '[1'}).error],
+    ['「q」必填', '「n」要是整数', '「ids」不是合法的 JSON']);
+  const tried = AX.axTryResultHtml({ok: true, steps: [{step: 'tools/call', ok: true, ms: 40}], result: {is_error: false, text: evil, raw: {result: {x: evil}}}}, ctx);
+  check('试调结果：文字和原始回复都转义，原始回复折叠', [tried.includes('<img'), tried.includes('<details class="ax-raw">'), tried.includes('40 ms')], [false, true, true]);
+  check('试调握手没通：按步骤显示', AX.axTryResultHtml({ok: false, steps: [{step: 'initialize', ok: false, code: 'disabled'}], result: null}, ctx).includes('重新打开'), true);
+  const tryForm = AX.axTryHtml([{name: 'kb_search', title: evil, description: evil, inputSchema: {type: 'object'}}], '');
+  check('试调：工具下拉、名字和说明转义', [tryForm.includes('id="axTryTool"'), tryForm.includes('<img')], [true, false]);
+  const callsCard = AX.axCallsHtml([{at: '2026-11-06T00:00:00+00:00', client: evil, kind: 'tool', name: 'kb_catalog', args: {}, ok: true,
+    result_chars: 10, duration_ms: 5, via: 'page'}], 1, 180);
+  check('最近调用：页面试调有标记、客户端名转义', [callsCard.includes('页面试调'), callsCard.includes('<img')], [true, false]);
+  // 令牌：只在内存里，离开这一页就清掉；请求期间按钮灰掉
+  check('令牌不进 localStorage / sessionStorage', /(localStorage|sessionStorage)\.setItem\([^)]*(axToken|token)/i.test(html), false);
+  check('令牌框是密码框、不自动填', html.includes('<input id="axToken" type="password" autocomplete="off"'), true);
+  check('离开这一页清掉令牌和测试结果', html.includes("axIssued = null; axToken = ''; axProbe = null; axTry = null;"), true);
+  check('测一下、试调在跑时按钮灰掉', [/async function axRunProbe\(\) \{[\s\S]*?axBusy\(true\)/.test(html), /async function axRunTry\(\) \{[\s\S]*?axBusy\(true\)/.test(html)],
+    [true, true]);
+  check('原来只在签发那一刻出现的片段函数没了', html.includes('function axSnippets('), false);
+}
+
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

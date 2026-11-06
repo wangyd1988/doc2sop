@@ -626,6 +626,27 @@ body.settings #mgroups, body.settings #mlist, body.settings #mdetail, body.setti
 .sf pre.ax { background: var(--panel-2); border-radius: 8px; padding: 8px 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; margin: 6px 0 10px; }
 .sf ul.ax { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.8; }
 .sf .result button { font-size: 12.5px; padding: 6px 14px; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); color: var(--text); }
+/* 对外接入页：快速上手、配置示例的客户端切换和复制、测一下的步骤、试调的表单和返回 */
+.sf ol.ax-steps { margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.8; }
+.sf ul.ax-ask { margin: 2px 0 0; padding-left: 18px; color: var(--muted); font-size: 12.5px; }
+.sf .ax-tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; margin: 4px 0 8px; }
+.sf .ax-tabs button { flex-shrink: 0; font-size: 12.5px; padding: 5px 12px; border-radius: 999px; background: var(--panel-2); color: var(--text); border: 1px solid transparent; }
+.sf .ax-tabs button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.sf .ax-snip { position: relative; }
+.sf .ax-snip .cp { position: absolute; top: 6px; right: 6px; font-size: 12px; padding: 3px 10px; border-radius: 6px; background: var(--panel); border: 1px solid var(--border); color: var(--text); }
+.sf pre.ax.code { font: 12px/1.55 ui-monospace, Consolas, monospace; white-space: pre; overflow-x: auto; word-break: normal; max-height: 420px; }
+.sf .ax-snip pre.ax.code { padding-right: 64px; }
+.sf ul.ax-res { list-style: none; margin: 8px 0; padding: 0; }
+.sf ul.ax-res li { display: grid; grid-template-columns: 18px 1fr auto; gap: 2px 8px; padding: 5px 0; border-bottom: 1px dashed var(--border); }
+.sf ul.ax-res .ic.ok { color: var(--ok); } .sf ul.ax-res .ic.bad { color: var(--danger); } .sf ul.ax-res .ic.skip { color: var(--muted); }
+.sf ul.ax-res .ms { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.sf ul.ax-res .fix { grid-column: 2 / 4; font-size: 12.5px; color: var(--text); }
+.sf details.ax-raw { margin-top: 6px; }
+.sf details.ax-raw > summary { cursor: pointer; font-size: 12.5px; color: var(--accent); }
+.sf .card h4 { font-size: 13px; margin: 18px 0 10px; }
+.sf .card h4 small { font-weight: 400; color: var(--muted); font-size: 12px; }
+.sf .ax-form textarea { font: 12px/1.5 ui-monospace, Consolas, monospace; padding: 8px 11px; border-radius: 8px; border: 1px solid var(--border);
+                        background: var(--panel-2); color: var(--text); width: 100%; box-sizing: border-box; min-height: 60px; }
 .md-doc .hd { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .md-doc .hd .ico { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 700; }
 .md-doc .hd .nm { font-weight: 650; font-size: 14.5px; word-break: break-all; }
@@ -3274,7 +3295,7 @@ function go(name, opts = {}) {
   $('pg-chat').classList.toggle('on', name === 'chat');
   $('pg-manage').classList.toggle('on', !['home', 'chat'].includes(name));
   if (!['home', 'chat'].includes(name)) {
-    if (changed) { mGroup = null; mSearch = ''; tlEditing = null; tlProposing = false; pbEditing = null; pbPicking = false; mItem = null; axIssued = null; autoForm = null; }
+    if (changed) { mGroup = null; mSearch = ''; tlEditing = null; tlProposing = false; pbEditing = null; pbPicking = false; mItem = null; axIssued = null; axToken = ''; axProbe = null; axTry = null; autoForm = null; }
     mTab = name;
     localStorage.setItem('kb-mtab', name);
   }
@@ -5656,7 +5677,10 @@ function axTransportHtml(s) {
       见 docs/正式部署.md「HTTPS 与对外放开」。</div></dd>`);
   }
   const host = location.hostname.includes(':') ? `[${location.hostname}]` : location.hostname;
+  const named = tls.builtin && !tls.problem && (tls.names || []).find(n => !String(n).startsWith('*'));
+  const namedUrl = named ? `https://${String(named).includes(':') ? `[${named}]` : named}${tls.port && tls.port !== 443 ? ':' + tls.port : ''}${s.path}` : '';
   out.push(`<dt>给别人的地址</dt><dd>${https ? `就是上面这个。${tls.builtin ? '用私有 CA 签的证书时，使用的人先导入 CA 证书（ca.crt）；不要让客户端跳过证书校验。' : ''}`
+    : namedUrl ? `应用自己开着 HTTPS：给别人用 <code>${esc(namedUrl)}</code>（下面「配置示例」里可以选）；${local ? '经隧道的人用上面这个地址。' : '现在这个明文地址不要发给别人。'}`
     : `上了 HTTPS 以后是 <code>https://${esc(host)}:端口${esc(s.path)}</code>（有域名就写域名）；${local ? '经隧道的人用上面这个地址。' : '现在这个明文地址不要发给别人。'}`}
     ${(s.allowed_hosts || []).length ? `<div class="note">只接受 Host 为 ${names(s.allowed_hosts)} 的请求：对外用的名字或 IP 要在里面。</div>`
       : s.exposed ? '<div class="note">建议把对外用的名字或 IP 写进 <code>MCP_ALLOWED_HOSTS</code>（防 DNS 重绑定）。</div>' : ''}</dd>`);
@@ -5701,14 +5725,255 @@ function axPurgeDialog() {
     } catch (err) { $('dlgErr').textContent = err.message; btn.disabled = err.status === 423; pass.focus(); }
   };
 }
-function axSnippets(url, secret) {
-  const headers = {Authorization: 'Bearer ' + secret};
-  return `<div class="note" style="margin-top:10px"><b>Claude Code</b></div>
-    <pre class="ax">claude mcp add --transport http doc2sop ${esc(url)} --header "Authorization: Bearer ${esc(secret)}"</pre>
-    <div class="note"><b>VS Code（GitHub Copilot）</b>：工作区的 .vscode/mcp.json</div>
-    <pre class="ax">${esc(JSON.stringify({servers: {doc2sop: {type: 'http', url, headers}}}, null, 2))}</pre>
-    <div class="note"><b>Cursor</b>：~/.cursor/mcp.json</div>
-    <pre class="ax">${esc(JSON.stringify({mcpServers: {doc2sop: {url, headers}}}, null, 2))}</pre>`;
+/* 配置示例（常驻）：每个客户端放哪里、片段、注意事项（格式按各客户端的官方文档或源码核对过，见 docs/工具.md「对外 MCP 出口」）。
+   没有令牌时用占位；刚签发的、在「测一下」里粘贴的令牌会填进去。片段是纯文本，显示时才转义；
+   JSON 用 JSON.stringify，shell 参数用单引号转义：地址、令牌里有怪字符也改变不了命令的意思。 */
+const AX_HOLDER = '<你的令牌>';
+const shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
+function axSample(tools) {
+  const names = (tools || []).map(t => t.name);
+  if (names.includes('kb_search')) return {name: 'kb_search', args: {query: '报销流程'}};
+  if (names.includes('sop_list')) return {name: 'sop_list', args: {}};
+  return {name: names[0] || 'kb_search', args: names[0] ? {} : {query: '报销流程'}};
+}
+function axClientSnippets(url, secret, sample) {
+  const token = secret || AX_HOLDER, bearer = 'Bearer ' + token, json = o => JSON.stringify(o, null, 2);
+  const call = sample || {name: 'kb_search', args: {query: '报销流程'}};
+  const rpc = (id, method, params) => JSON.stringify({jsonrpc: '2.0', ...(id == null ? {} : {id}), method, ...(params ? {params} : {})});
+  const init = {protocolVersion: '2025-11-25', capabilities: {}, clientInfo: {name: 'curl', version: '1'}};
+  const curl = [
+    '# Linux、macOS、WSL、Git Bash 里执行（Windows 的 PowerShell 不是 bash：用 WSL / Git Bash，或者用 Python 那一段）',
+    `URL=${shq(url)}`, `TOKEN=${shq(token)}`,
+    `H=(-H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream')`,
+    '# 0. 只测网络和证书：回 401 就说明连得上、证书也没问题（这一步没带令牌）',
+    `curl -sS -o /dev/null -w '%{http_code}\\n' -X POST "$URL"`,
+    '# 1. 握手：响应头里的 mcp-session-id 就是会话',
+    `SID=$(curl -sS -D - -o /dev/null "\${H[@]}" "$URL" -d ${shq(rpc(1, 'initialize', init))} | tr -d '\\r' | awk -F': ' 'tolower($1)=="mcp-session-id"{print $2}')`,
+    'echo "会话：$SID"      # 空的：令牌不对（401）或者被拒（403、421），去页面上「测一下」看原因',
+    `S=(-H "mcp-session-id: $SID" -H 'mcp-protocol-version: 2025-11-25')`,
+    '# 2. 告诉服务端握手完了（回 202，没有正文）',
+    `curl -sS "\${H[@]}" "\${S[@]}" "$URL" -d ${shq(rpc(null, 'notifications/initialized'))}`,
+    '# 3. 列工具：回的是 SSE，内容在 data: 那一行',
+    `curl -sS "\${H[@]}" "\${S[@]}" "$URL" -d ${shq(rpc(2, 'tools/list'))}`,
+    `# 4. 调一次 ${call.name}`,
+    `curl -sS "\${H[@]}" "\${S[@]}" "$URL" -d ${shq(rpc(3, 'tools/call', {name: call.name, arguments: call.args}))}`,
+    '# 5. 用完关掉会话（每枚令牌最多同时开 10 个，不关要闲置半小时才回收）',
+    `curl -sS -o /dev/null -w '%{http_code}\\n' -X DELETE "\${H[@]}" "\${S[@]}" "$URL"`].join('\n');
+  const py2 = [
+    '# pip install "mcp>=2.3,<3"      （官方 SDK 2.x；1.x 的写法在下面的说明里）',
+    'import asyncio, os', '', 'import httpx2', 'from mcp import Client', 'from mcp.client.streamable_http import streamable_http_client', '',
+    `URL = ${JSON.stringify(url)}`, `TOKEN = os.environ.get("DOC2SOP_TOKEN", ${JSON.stringify(token)})`, '', '',
+    'async def main():',
+    '    async with httpx2.AsyncClient(headers={"Authorization": f"Bearer {TOKEN}"}, timeout=60) as http:',
+    '        async with Client(streamable_http_client(URL, http_client=http)) as client:',
+    '            tools = await client.list_tools()',
+    '            print([t.name for t in tools.tools])',
+    `            result = await client.call_tool(${JSON.stringify(call.name)}, ${JSON.stringify(call.args)})`,
+    '            print(result.content[0].text)', '', '', 'asyncio.run(main())'].join('\n');
+  return [
+    {id: 'claude', name: 'Claude Code', where: '命令行（装好 Claude Code 后，在哪个目录执行都行）',
+     code: `claude mcp add --transport http --scope user doc2sop ${shq(url)} \\\n  --header ${shq('Authorization: ' + bearer)}`,
+     note: '--scope user：所有项目都能用。想跟着项目走就换成 --scope project（写进项目的 .mcp.json）——那个文件要提交的话别写明文令牌，'
+       + '写成 "Authorization": "Bearer ${DOC2SOP_TOKEN}"，Claude Code 会从环境变量里取。装好后在 Claude Code 里输入 /mcp 能看到 doc2sop。'},
+    {id: 'vscode', name: 'VS Code（Copilot）', where: '工作区的 .vscode/mcp.json；或者命令面板「MCP: Open User Configuration」（所有工作区都能用）',
+     code: json({inputs: [{type: 'promptString', id: 'doc2sop-token', description: 'doc2sop 令牌', password: true}],
+                 servers: {doc2sop: {type: 'http', url, headers: {Authorization: 'Bearer ${input:doc2sop-token}'}}}}),
+     note: '第一次连接时 VS Code 会弹框要令牌，存进它自己的密钥库，文件里不落明文——所以这一段里没有令牌，弹框时粘贴。在 Copilot 的 Agent 模式里用。'},
+    {id: 'cursor', name: 'Cursor', where: '~/.cursor/mcp.json（所有项目）或项目里的 .cursor/mcp.json',
+     code: json({mcpServers: {doc2sop: {url, headers: {Authorization: bearer}}}}),
+     note: '不想把令牌写进文件：值写成 "Bearer ${env:DOC2SOP_TOKEN}"，Cursor 从环境变量里取。'},
+    {id: 'cherry', name: 'Cherry Studio', where: '设置 → MCP 服务器 → 添加 → 快速创建',
+     code: ['名称：doc2sop', '类型：可流式传输的 HTTP (streamableHttp)', `URL：${url}`, '请求头（一行一个，等号隔开）：', `Authorization=${bearer}`].join('\n'),
+     note: '也可以「从 JSON 导入」：粘贴 Cline 那一段（"type": "streamableHttp"）。'},
+    {id: 'cline', name: 'Cline', where: 'Cline 面板 → MCP Servers → Configure MCP Servers（打开 cline_mcp_settings.json）',
+     code: json({mcpServers: {doc2sop: {type: 'streamableHttp', url, headers: {Authorization: bearer}, disabled: false}}}),
+     note: '"type": "streamableHttp" 一定要写：不写时 Cline 按老的 SSE 方式连，连不上。'},
+    {id: 'dify', name: 'Dify', where: '工具 → MCP → 添加 MCP 服务 (HTTP)',
+     code: [`服务端点 URL：${url}`, '名称和图标：doc2sop', '服务器标识符：doc2sop', '请求头 → 添加请求头', '  请求头名称：Authorization', `  请求头值：${bearer}`, '超时时间：60'].join('\n'),
+     note: '是 Dify 的服务器去连，不是你的浏览器：这个地址要从 Dify 那台机器上连得通；配了 MCP_CLIENTS 时，要放行的是 Dify 服务器的地址。'
+       + '认证里的「使用动态客户端注册」关掉（这里用的是固定令牌，不是 OAuth）。'},
+    {id: 'codex', name: 'Codex CLI', where: '命令行，或者手写 ~/.codex/config.toml',
+     code: ['# Codex 只从环境变量取令牌：', `export DOC2SOP_TOKEN=${shq(token)}      # Windows：setx DOC2SOP_TOKEN "令牌"，再开一个新窗口`,
+            `codex mcp add doc2sop --url ${shq(url)} --bearer-token-env-var DOC2SOP_TOKEN`, '', '# 等同于在 ~/.codex/config.toml 里写：',
+            '[mcp_servers.doc2sop]', `url = ${JSON.stringify(url)}`, 'bearer_token_env_var = "DOC2SOP_TOKEN"'].join('\n'),
+     note: ''},
+    {id: 'curl', name: 'curl', where: '任何有 bash 和 curl 的机器：在客户端那台机器上跑，连网络、证书一起测',
+     code: curl, note: '标准的 MCP 请求：Accept 要同时带 application/json 和 text/event-stream，否则 406；POST 回的是 SSE。'},
+    {id: 'python', name: 'Python', where: '自己写程序调；令牌从环境变量 DOC2SOP_TOKEN 取（没设时用片段里的）',
+     code: py2, note: '官方 SDK 1.x（pip install "mcp>=1.8,<2"）的写法：from mcp import ClientSession；from mcp.client.streamable_http import streamablehttp_client；'
+       + 'async with streamablehttp_client(URL, headers={"Authorization": f"Bearer {TOKEN}"}) as (read, write, _)，'
+       + '再 async with ClientSession(read, write) as session，await session.initialize() 之后同样 list_tools()、call_tool()。'}];
+}
+function axSnippetHtml(list, active) {
+  const cur = list.find(c => c.id === active) || list[0];
+  return `<div class="ax-tabs">${list.map(c => `<button type="button" data-axtab="${esc(c.id)}" class="${c.id === cur.id ? 'on' : ''}">${esc(c.name)}</button>`).join('')}</div>
+    <div class="note"><b>放哪里</b>：${esc(cur.where)}</div>
+    <div class="ax-snip"><pre class="ax code">${esc(cur.code)}</pre><button type="button" class="cp" data-axcp="${esc(cur.id)}">复制</button></div>
+    ${cur.note ? `<div class="note">${esc(cur.note)}</div>` : ''}`;
+}
+// 接入地址候选（服务端给的；老版本没有就用本页地址）和默认选哪个：本页是本机明文（SSH 隧道）、又有 HTTPS 地址时，默认给别人用的 HTTPS 地址
+function axAddresses(s) {
+  return (s.addresses || []).length ? s.addresses : [{url: location.origin + s.path, host: location.host, label: '本页地址'}];
+}
+function axPickAddress(list, https, local) {
+  const secure = list.find(a => a.url.startsWith('https://'));
+  return (!https && local && secure ? secure : list[0]).url;
+}
+function axConfigHtml(list, url, secret, sample, active) {
+  const addr = list.find(a => a.url === url) || list[0];
+  return `<div class="card" id="axConfig"><h3>配置示例 <small>选客户端、复制</small></h3>
+  <div class="note">格式按各客户端的官方文档或源码核对过。</div>
+    <label><span>接入地址<i>给使用的人哪个地址</i></span><select id="axAddrSel">${list.map(a =>
+      `<option value="${esc(a.url)}" ${a.url === addr.url ? 'selected' : ''}>${esc(a.url)}（${esc(a.label)}）</option>`).join('')}</select></label>
+    ${addr.label === '经 SSH 隧道' ? '<div class="note">这个地址只有开着 SSH 隧道（<code>ssh -N -L 端口:127.0.0.1:端口 用户@宿主机</code>）的人能用。</div>' : ''}
+    <div class="note">${secret ? '令牌已经填进下面的片段：<b>片段里是明文令牌</b>，发给使用的人时走私聊，别贴进群里、工单里。'
+      : `片段里的 <code>${esc(AX_HOLDER)}</code> 换成令牌；刚签发、或在下面「测一下」里粘贴了令牌，这里会自动填好。`}</div>
+    <div id="axSnip">${axSnippetHtml(axClientSnippets(addr.url, secret, sample), active)}</div>
+    <div class="howto">客户端要信任服务器证书：正式证书（比如 Let's Encrypt）不用做什么；私有 CA 签的要先导入 ca.crt。<b>不要让客户端跳过证书校验。</b></div></div>`;
+}
+/* 快速上手：四步；「在客户端里这样问」按这次开放的范围、分类、SOP 生成 */
+function axAsks(s) {
+  const has = sc => (s.tools || []).some(t => t.scope === sc), out = [];
+  const cat = (s.categories || [])[0], data = (s.tools || []).find(t => t.scope === 'data');
+  if (has('knowledge')) {
+    out.push(`用 doc2sop 查一下${cat ? `「${cat}」里` : ''}关于 ××× 的规定，回答时注明出处`);
+    out.push('doc2sop 的知识库里有哪些文档？');
+  }
+  if (has('sop')) {
+    out.push('doc2sop 里有哪些 SOP？哪个适合排查 ×××？');
+    if ((s.sop_titles || [])[0]) out.push(`按 doc2sop 的 SOP「${s.sop_titles[0]}」走一遍，按它给的格式汇报`);
+  }
+  if (data) out.push(`用 doc2sop 的「${data.title || data.name}」查一下 ×××`);
+  return out;
+}
+function axQuickHtml(asks) {
+  return `<div class="card"><h3>快速上手 <small>第一次接入照着做</small></h3><ol class="ax-steps">
+    <li><b>签发令牌</b>：在下面「签发令牌」里，每个人、每个客户端一枚；明文只显示一次。</li>
+    <li><b>复制配置</b>：「配置示例」里选客户端、选接入地址，复制到客户端的配置里（刚签发的令牌会自动填进去）。</li>
+    <li><b>测一下</b>：把令牌粘到「测一下」，几步都是 ✓ 再交给使用的人；不通时那里写着哪一步、为什么、怎么修。</li>
+    <li><b>在客户端里这样问</b>（问题里点名 doc2sop，客户端更容易想到用它）：${asks.length
+      ? `<ul class="ax-ask">${asks.map(a => `<li>${esc(a)}</li>`).join('')}</ul>` : '现在没有开放任何工具，先签发带范围的令牌。'}</li></ol></div>`;
+}
+
+/* 测一下、试调（app/mcp_probe.py）：令牌只在 axToken 里（不进 localStorage、地址栏），离开这一页就清掉 */
+const AX_STEP = {initialize: '握手（initialize）', initialized: '握手完成（notifications/initialized）', 'tools/list': '列工具（tools/list）', 'tools/call': '调一次工具（tools/call）', close: '关会话（DELETE）'};
+let axToken = '', axProbe = null, axTry = null, axTryName = '', axAddr = '', axClient = 'claude';
+// 一步没通：说人话、给出怎么修。ctx：来源、Host、令牌、MCP_CLIENTS、MCP_ALLOWED_HOSTS；返回 HTML（服务端来的文字都转义）
+function axFix(row, ctx) {
+  const t = ctx.token, list = xs => (xs || []).map(x => `<code>${esc(x)}</code>`).join('、') || '—';
+  switch (row.code) {
+    case 'invalid_token':
+      if (t && t.status === 'revoked') return `令牌「${esc(t.name)}」已在 ${axTime(t.revoked_at)} 吊销：签发一枚新的。`;
+      if (t && t.status === 'expired') return `令牌「${esc(t.name)}」已在 ${axTime(t.expires_at)} 过期：签发一枚新的。`;
+      return '令牌不对：多半是复制少了字符，或者不是这里签发的。重新复制；丢了就吊销、重签（库里只存哈希，找不回明文）。';
+    case 'client_not_allowed':
+      return `你的来源 <code>${esc(ctx.source || '未知')}</code> 不在 <code>MCP_CLIENTS</code>（${list(ctx.clients)}）里。要在宿主机的 <code>/opt/kb-app/.env</code> 里把客户端的地址加进去再发版；页面上改不了。`;
+    case 'disabled': return '对外接入的总开关关着：点上面「重新打开…」（要审批口令）。';
+    case 'invalid_host':
+      return `客户端用的地址 <code>${esc(ctx.host)}</code> 不在 <code>MCP_ALLOWED_HOSTS</code>（${list(ctx.allowed)}）里：客户端换成名单里的地址，或者在宿主机 .env 里加上它再发版。`;
+    case 'rate_limited': case 'too_many_requests': return '这枚令牌的请求太频繁了：等一分钟再试；常常不够用就签一枚每分钟次数更高的。';
+    case 'too_many_sessions': return '这枚令牌同时开着的会话太多：关掉不用的客户端，或者等闲置的会话半小时后自动回收。';
+    case 'unavailable': return '对外出口还没启动：看应用日志（<code>docker logs kb-app</code>）。';
+    case 'timeout': return '服务端没在时限内回：知识库检索或工具服务慢。稍后再试；一直超时就看应用日志和工具服务。';
+    case 'no_tools': return '这枚令牌的范围里没有开放的工具：签发时多选几个范围；数据工具要宿主机在工具服务主配置里标 <code>export</code>。';
+    case 'tool_error': return '工具执行失败（原因在上面）；令牌和连接都是好的。';
+    default: return `服务端回了意料之外的内容${row.status ? `（HTTP ${esc(String(row.status))}）` : ''}：看应用日志。`;
+  }
+}
+function axStepsHtml(r, ctx) {
+  if (r.error) return `<div class="result err">${esc(r.error)}</div>`;
+  const t = r.token, c = {...ctx, token: t, source: r.source, host: r.host};
+  const rows = (r.steps || []).map(row => {
+    const ic = row.ok === false ? ['bad', '✗'] : row.ok && row.code !== 'skipped' ? ['ok', '✓'] : ['skip', '—'];
+    const fix = row.ok === false ? axFix(row, c) : row.code === 'not_run' ? '前面没通，这一步没跑。' : '';
+    return `<li><span class="ic ${ic[0]}">${ic[1]}</span><span>${esc(AX_STEP[row.step] || row.step)}${row.detail ? `：${esc(row.detail)}` : ''}</span>
+      <span class="ms">${row.ms ? esc(String(row.ms)) + ' ms' : ''}</span>${fix ? `<div class="fix">${fix}</div>` : ''}</li>`;
+  }).join('');
+  const who = t ? `令牌「${esc(t.name)}」：${(t.scopes || []).map(sc => esc(SCOPE_NAMES[sc] || sc)).join('、')}，分类 ${axCats(t.categories)}，`
+    + `每分钟 ${esc(String(t.rate_per_minute))} 次，单次最多 ${esc(String(t.max_result_chars))} 字。` : '';
+  const head = r.ok ? `<b>✓ 通了。</b>${who}看得到 ${(r.tools || []).length} 个工具；用同一个地址和令牌配客户端就行。` : '<b>✗ 没通</b>：看下面标 ✗ 的那一步。';
+  return `<div class="result ${r.ok ? 'ok' : 'err'}">${head}<ul class="ax-res">${rows}</ul>
+    ${r.call ? `<details class="ax-raw"><summary>${esc(r.call.tool)} 的返回（${esc(String(r.call.chars))} 字，只显示开头）</summary><pre class="ax code">${esc(r.call.text)}</pre></details>` : ''}
+    <div class="note">这是在服务器这一侧、按你现在的来源 <code>${esc(r.source || '未知')}</code>、Host <code>${esc(r.host || '')}</code> 测的。
+      客户端在别的机器上时，到那台机器上跑「配置示例 → curl」的第 0 步，测网络和证书。</div></div>`;
+}
+// 试调的表单：按 inputSchema 生成。字符串、数字、整数、布尔、枚举各有输入框；数组、对象或认不出的类型填 JSON
+const axType = p => (Array.isArray(p.type) ? p.type.find(x => x !== 'null') : p.type) || '';
+function axFormHtml(tool) {
+  const sc = tool.inputSchema || {}, props = sc.properties || {}, req = sc.required || [];
+  const names = Object.keys(props);
+  if (!names.length) return '<div class="note">这个工具不要参数。</div>';
+  return names.map(n => {
+    const p = props[n] || {}, t = axType(p), attr = `data-axarg="${esc(n)}"`;
+    const about = p.description || p.title || '';
+    const hint = [about, p.default !== undefined && !about.includes('默认') ? `默认 ${JSON.stringify(p.default)}` : ''].filter(Boolean).join('；');
+    let input;
+    if (Array.isArray(p.enum)) input = `<select ${attr}><option value="">（不填）</option>${p.enum.map((v, i) => `<option value="${i}">${esc(typeof v === 'string' ? v : JSON.stringify(v))}</option>`).join('')}</select>`;
+    else if (t === 'boolean') input = `<select ${attr}><option value="">（不填）</option><option value="true">是（true）</option><option value="false">否（false）</option></select>`;
+    else if (t === 'integer' || t === 'number') input = `<input ${attr} type="number" ${t === 'integer' ? 'step="1"' : 'step="any"'}${p.minimum !== undefined ? ` min="${esc(String(p.minimum))}"` : ''}${p.maximum !== undefined ? ` max="${esc(String(p.maximum))}"` : ''}>`;
+    else if (t === 'string') input = `<input ${attr} type="text" autocomplete="off">`;
+    else input = `<textarea ${attr} placeholder="JSON，比如 [] 或 {}"></textarea>`;
+    return `<label><span>${esc(n)}${req.includes(n) ? ' <span class="bad">*</span>' : ''}${hint ? `<i>${esc(hint.slice(0, 200))}</i>` : ''}</span>${input}</label>`;
+  }).join('');
+}
+// 表单里填的（name → 输入框的值）→ 调用参数；空的不传；必填没填、类型不对时给一句话
+function axArgsFrom(tool, values) {
+  const sc = tool.inputSchema || {}, props = sc.properties || {}, req = sc.required || [], args = {};
+  for (const [n, p] of Object.entries(props)) {
+    const raw = values[n], t = axType(p || {});
+    if (raw === undefined || raw === null || raw === '') {
+      if (req.includes(n)) return {error: `「${n}」必填`};
+      continue;
+    }
+    if (Array.isArray(p.enum)) args[n] = p.enum[+raw];
+    else if (t === 'boolean') args[n] = raw === 'true';
+    else if (t === 'integer' || t === 'number') {
+      const v = Number(raw);
+      if (!Number.isFinite(v) || (t === 'integer' && !Number.isInteger(v))) return {error: `「${n}」要是${t === 'integer' ? '整数' : '数字'}`};
+      args[n] = v;
+    } else if (t === 'string') args[n] = raw;
+    else {
+      try { args[n] = JSON.parse(raw); } catch (e) { return {error: `「${n}」不是合法的 JSON`}; }
+    }
+  }
+  return {args};
+}
+function axTryResultHtml(r, ctx) {
+  if (r.error || !r.result) return axStepsHtml(r, ctx);
+  const res = r.result, call = (r.steps || []).find(x => x.step === 'tools/call');
+  return `<div class="result ${res.is_error ? 'err' : 'ok'}"><b>${res.is_error ? '✗ 工具返回了错误' : '✓ 调用成功'}</b>${call && call.ms ? `，${esc(String(call.ms))} ms` : ''}
+    <pre class="ax code">${esc(res.text || '（空）')}</pre>
+    <details class="ax-raw"><summary>原始 JSON-RPC 回复</summary><pre class="ax code">${esc(JSON.stringify(res.raw, null, 2))}</pre></details></div>`;
+}
+function axTryHtml(tools, name) {
+  if (!tools.length) return '';
+  const tool = tools.find(t => t.name === name) || tools[0];
+  return `<h4>试调 <small>选一个工具、填参数，用这枚令牌调一次；照常记进「最近调用」，标「页面试调」</small></h4>
+    <label><span>工具</span><select id="axTryTool">${tools.map(t => `<option value="${esc(t.name)}" ${t.name === tool.name ? 'selected' : ''}>${esc(t.name)}${t.title && t.title !== t.name ? ' · ' + esc(t.title) : ''}</option>`).join('')}</select></label>
+    ${tool.description ? `<div class="note">${esc(tool.description.slice(0, 400))}</div>` : ''}
+    <div class="ax-form" id="axTryForm">${axFormHtml(tool)}</div>
+    <div class="row"><button class="pri" id="axTryGo">调用</button><span class="note">数据工具会真的去宿主机上执行（只读）。</span></div>
+    <div id="axTryOut"></div>`;
+}
+function axProbeHtml(issued) {
+  return `<div class="card" id="axProbeCard"><h3>测一下 · 试调 <small>用令牌真实走一遍 /mcp</small></h3>
+    <div class="note">令牌、来源（MCP_CLIENTS）、总开关、Host（MCP_ALLOWED_HOSTS）、范围、分类、限额都照外部客户端的规矩来；页面的登录替代不了令牌。</div>
+    <label><span>令牌<i>只在这一页里用，不保存</i></span><input id="axToken" type="password" autocomplete="off" spellcheck="false" placeholder="d2s_ 开头的那一串"></label>
+    <div class="row"><button class="pri" id="axProbeGo">测一下</button>${issued ? '<button id="axUseIssued">用刚签发的</button>' : ''}
+      <span class="note">按「配置示例」里选的接入地址测：握手、列工具、调一次只读工具（知识库目录或 SOP 列表），最后关掉会话。</span></div>
+    <div id="axProbeOut"></div></div>`;
+}
+function axCallsHtml(calls, total, days) {
+  return `<div class="card" id="axCalls"><h3>最近调用 <small>每次工具、提示词调用都记：客户端、参数、返回大小、耗时、成败</small></h3>
+      <div class="row"><span class="note">共 ${esc(String(total))} 条，显示最近 ${calls.length} 条；自动保留 ${esc(String(days || 180))} 天。</span>
+        <button id="axPurge" ${total ? '' : 'disabled'}>清除…</button></div>
+      ${calls.length ? `<table class="ax stack"><tr><th>时间</th><th>客户端</th><th>调用</th><th>参数</th><th>结果</th><th>耗时</th></tr>
+        ${calls.map(c => `<tr><td data-l="时间">${axTime(c.at)}</td><td data-l="客户端">${esc(c.client)}${c.via === 'page' ? ' <span class="pill">页面试调</span>' : ''}</td>
+          <td data-l="调用">${c.kind === 'prompt' ? '提示词 ' : ''}<code>${esc(c.name)}</code></td>
+          <td data-l="参数"><code>${esc((typeof c.args === 'string' ? c.args : JSON.stringify(c.args)).slice(0, 160))}</code></td>
+          <td data-l="结果" class="${c.ok ? '' : 'bad'}">${c.ok ? esc(String(c.result_chars)) + ' 字' : esc(c.error || '失败')}</td><td data-l="耗时">${esc(String(c.duration_ms))} ms</td></tr>`).join('')}</table>`
+        : '<div class="note">还没有外部调用。</div>'}
+    </div>`;
 }
 async function renderAccess() {
   const r = await fetch('/api/mcp');
@@ -5716,11 +5981,11 @@ async function renderAccess() {
     // 关着时不藏：说明它是什么、打开后能做什么、在宿主机上怎么打开
     $('msettings').innerHTML = `<div class="sf">
       <h2>对外接入 <span class="pill off" style="vertical-align:3px">没有打开</span></h2>
-      <p class="lead">让同事的 Claude Code、GitHub Copilot、Cursor 这类外部智能体经 MCP 接进来：查知识库、按 SOP 排查、调宿主机开放的只读工具。
+      <p class="lead">让同事的 Claude Code、VS Code（Copilot）、Cursor、Cherry Studio、Cline、Dify 这类外部智能体经 MCP 接进来：查知识库、按 SOP 排查、调宿主机开放的只读工具。
         每个客户端一枚令牌，库里只存哈希；<code>/mcp</code> 只认令牌，不认这个页面的密码。</p>
       <div class="card"><h3>打开后这里能做什么</h3><ul class="ax">
         <li><b>签发令牌</b>：给每个客户端一枚，限定范围（知识库、SOP、数据工具）和文档分类，可设有效期、随时吊销</li>
-        <li><b>接入片段</b>：Claude Code、VS Code、Cursor 的配置直接复制</li>
+        <li><b>配置示例和一键测试</b>：Claude Code、VS Code、Cursor、Cherry Studio、Cline、Dify、Codex、curl、Python 的配置直接复制；粘贴令牌测通，在页面上试调工具</li>
         <li><b>调用记录</b>：每次调用记客户端、工具、参数、返回大小、耗时、成败</li>
         <li><b>导出 SKILL.md</b>：每个启用的 SOP 一个目录，放进客户端离线使用</li></ul></div>
       <div class="card"><h3>在宿主机上打开 <small>页面上的开关只在服务器打开以后才能用</small></h3>
@@ -5728,7 +5993,7 @@ async function renderAccess() {
           <li>编辑 <code>/opt/kb-app/.env</code>，加上 <code>MCP_ENABLED=true</code></li>
           <li>只让经 SSH 隧道的本机连接进来（推荐）：<code>MCP_CLIENTS=127.0.0.1,::1</code>、<code>MCP_ALLOWED_HOSTS=127.0.0.1,localhost</code></li>
           <li>重新发版：<code>bash deploy/release.sh</code>（命令全文见 docs/正式部署.md「对外接入」）</li>
-          <li>回到这一页签发令牌，把接入片段交给使用的人</li></ol>
+          <li>回到这一页签发令牌，按「配置示例」配好客户端，「测一下」通了再交给使用的人</li></ol>
         <div class="howto">数据工具默认一个都不对外，要在工具服务的主配置里给工具加 <code>export: true</code>。打开前先看 docs/工具.md「对外 MCP 出口」里的安全说明：
           知识库片段和工具返回会进入外部智能体用的模型服务商；外部智能体通常能执行命令、改文件，要对写操作保持人工确认。</div></div>
       <div class="card ghost"><h3>令牌 <small>打开后显示</small></h3><table class="ax"><tr><th>名字</th><th>范围</th><th>有效期至</th><th>最近使用</th><th>状态</th></tr>
@@ -5742,14 +6007,18 @@ async function renderAccess() {
     fetch('/api/mcp/calls?limit=30').then(x => x.json()).catch(() => ({})),
     fetch('/api/mcp/changes').then(x => x.json()).then(x => x.changes || []).catch(() => [])]);
   const calls = callData.calls || [];
-  axState = {tokens, reopen: (s.switch || {}).reopen || '', total: callData.total ?? s.calls_total ?? calls.length};
+  const addresses = axAddresses(s);
+  if (!addresses.some(a => a.url === axAddr)) axAddr = axPickAddress(addresses, location.protocol === 'https:', LOCAL_HOSTS.includes(location.hostname));
+  axState = {tokens, reopen: (s.switch || {}).reopen || '', total: callData.total ?? s.calls_total ?? calls.length,
+             addresses, sample: axSample(s.tools), clients: s.clients || [], allowed: s.allowed_hosts || [], auditDays: s.audit_days};
   const url = location.origin + s.path;
   const byScope = sc => s.tools.filter(t => t.scope === sc).map(t => `<code>${esc(t.name)}</code>`).join('、') || '无';
   $('msettings').innerHTML = `<div class="sf">
     <h2>对外接入</h2>
-    <p class="lead">外部智能体（Claude Code、GitHub Copilot、Cursor…）经 MCP 接入：查知识库、按 SOP 排查、调宿主机开放的只读工具。
+    <p class="lead">外部智能体（Claude Code、VS Code（Copilot）、Cursor、Cherry Studio、Cline、Dify…）经 MCP 接入：查知识库、按 SOP 排查、调宿主机开放的只读工具。
       每个客户端一枚令牌，库里只存哈希；<code>/mcp</code> 只认令牌，不认这个页面的密码。</p>
     ${axSwitchHtml(s.switch || {on: true})}
+    ${axQuickHtml(axAsks(s))}
     <div class="card"><h3>接入地址 <small>对外放开前先上 HTTPS（docs/正式部署.md「HTTPS 与对外放开」）</small></h3>
       <dl><dt>地址</dt><dd><code>${esc(url)}</code></dd>
         ${axTransportHtml(s)}
@@ -5773,8 +6042,11 @@ async function renderAccess() {
         <input id="axChars" type="number" min="1000" placeholder="单次返回 ${s.defaults.max_result_chars} 字"></div></label>
       <div class="row"><button class="pri" id="axIssue">签发</button><span class="note">范围不会超过这个页面看得到的；数据工具还要宿主机先标 export。</span></div>
       ${axIssued ? `<div class="result ok"><b>令牌「${esc(axIssued.token.name)}」已签发。</b>明文只显示这一次，离开这一页就看不到了，请现在交给使用的人：
-        <pre class="ax">${esc(axIssued.secret)}</pre><button id="axCopy">复制令牌</button>${axSnippets(url, axIssued.secret)}</div>` : ''}
+        <pre class="ax">${esc(axIssued.secret)}</pre><button id="axCopy">复制令牌</button>
+        <div class="note">已经填进下面「配置示例」的片段里；点「测一下」旁边的「用刚签发的」可以马上测。</div></div>` : ''}
     </div>
+    ${axConfigHtml(addresses, axAddr, axSecret(), axState.sample, axClient)}
+    ${axProbeHtml(!!axIssued)}
     <div class="card"><h3>令牌 <small>吊销后下一个请求就失效；已吊销、已过期的可以删掉记录（调用记录照样留着）</small></h3>
       ${tokens.length ? `<table class="ax stack"><tr><th>名字</th><th>范围</th><th>分类</th><th>有效期至</th><th>最近使用</th><th>状态</th><th></th></tr>
         ${tokens.map(t => { const st = TOKEN_STATE[t.status] || ['', t.status]; return `<tr><td data-l="名字">${esc(t.name)}<div class="note"><code>${esc(t.id)}</code></div></td>
@@ -5783,15 +6055,7 @@ async function renderAccess() {
           <td>${t.status === 'active' ? `<button data-axrevoke="${esc(t.id)}">吊销</button>` : `<button data-axremove="${esc(t.id)}">删除</button>`}</td></tr>`; }).join('')}</table>`
         : '<div class="note">还没有令牌。</div>'}
     </div>
-    <div class="card"><h3>最近调用 <small>每次工具、提示词调用都记：客户端、参数、返回大小、耗时、成败</small></h3>
-      <div class="row"><span class="note">共 ${axState.total} 条，显示最近 ${calls.length} 条；自动保留 ${esc(String(s.audit_days || 180))} 天。</span>
-        <button id="axPurge" ${axState.total ? '' : 'disabled'}>清除…</button></div>
-      ${calls.length ? `<table class="ax stack"><tr><th>时间</th><th>客户端</th><th>调用</th><th>参数</th><th>结果</th><th>耗时</th></tr>
-        ${calls.map(c => `<tr><td data-l="时间">${axTime(c.at)}</td><td data-l="客户端">${esc(c.client)}</td><td data-l="调用">${c.kind === 'prompt' ? '提示词 ' : ''}<code>${esc(c.name)}</code></td>
-          <td data-l="参数"><code>${esc((typeof c.args === 'string' ? c.args : JSON.stringify(c.args)).slice(0, 160))}</code></td>
-          <td data-l="结果" class="${c.ok ? '' : 'bad'}">${c.ok ? c.result_chars + ' 字' : esc(c.error || '失败')}</td><td data-l="耗时">${c.duration_ms} ms</td></tr>`).join('')}</table>`
-        : '<div class="note">还没有外部调用。</div>'}
-    </div>
+    ${axCallsHtml(calls, axState.total, s.audit_days)}
     ${axChangesHtml(changes)}
     <div class="card"><h3>接入须知</h3><ul class="ax">
       <li><b>外部客户端对写操作要保持人工确认。</b>这里的工具全部只读，但外部智能体通常能执行命令、改文件；知识库文档和工具输出都可能夹带指令，诱导它做坏事。</li>
@@ -5799,8 +6063,75 @@ async function renderAccess() {
       <li>知识库片段和工具返回会进入外部智能体所用的模型服务商，不再只经过自己的模型网关；只开放不涉及个人的数据。</li>
       <li>令牌只存哈希：丢了就吊销重签，找不回来。</li></ul></div>
   </div>`;
+  $('axToken').value = axToken;
+  axPaintProbe();
   paintChat();
 }
+// 片段里填哪枚令牌：刚签发的，或者「测一下」里粘贴的；都没有就是占位
+function axSecret() {
+  return (axIssued && axIssued.secret) || axToken.trim().replace(/^bearer\s+/i, '') || '';
+}
+function axCtx() {
+  return {clients: axState.clients, allowed: axState.allowed};
+}
+function axPaintSnippets() {
+  const box = $('axConfig');
+  if (box) box.outerHTML = axConfigHtml(axState.addresses, axAddr, axSecret(), axState.sample, axClient);
+}
+function axPaintProbe() {
+  const out = $('axProbeOut');
+  if (!out) return;
+  out.innerHTML = axProbe ? axStepsHtml(axProbe, axCtx()) + (axProbe.ok ? axTryHtml(axProbe.tools || [], axTryName) : '') : '';
+  if (axTry && $('axTryOut')) $('axTryOut').innerHTML = axTryResultHtml(axTry, axCtx());
+}
+async function axPaintCalls() {
+  const d = await fetch('/api/mcp/calls?limit=30').then(x => x.json()).catch(() => null);
+  const box = $('axCalls');
+  if (!d || !box || mTab !== 'access') return;
+  axState.total = d.total ?? axState.total;
+  box.outerHTML = axCallsHtml(d.calls || [], axState.total, axState.auditDays);
+}
+function axHost() {
+  return (axState.addresses.find(a => a.url === axAddr) || axState.addresses[0] || {}).host || '';
+}
+const AX_BUSY = ['axProbeGo', 'axUseIssued', 'axTryGo'];
+// 测一下、试调在跑时把按钮都灰掉（服务端也限了同时最多两个）
+function axBusy(on) {
+  AX_BUSY.forEach(id => { if ($(id)) $(id).disabled = on; });
+}
+async function axRunProbe() {
+  const token = axSecretOf(axToken);
+  if (!token) { $('axToken').focus(); return toast('先粘贴令牌', 'err'); }
+  if (!token.startsWith('d2s_')) return toast('这不像这里签发的令牌：应该是 d2s_ 开头的一串', 'err', 6000);
+  axBusy(true);
+  $('axProbeOut').innerHTML = '<div class="note">正在测…</div>';
+  try { axProbe = await postJson('/api/mcp/probe', {token, host: axHost()}); }
+  catch (err) { axProbe = {error: err.message}; }
+  axTry = null; axTryName = '';
+  axBusy(false);
+  if (mTab !== 'access') return;
+  axPaintProbe();
+  axPaintCalls();
+}
+async function axRunTry() {
+  const tool = ((axProbe && axProbe.tools) || []).find(t => t.name === $('axTryTool').value);
+  if (!tool) return;
+  const values = {};
+  document.querySelectorAll('#axTryForm [data-axarg]').forEach(el => { values[el.dataset.axarg] = el.value; });
+  const {args, error} = axArgsFrom(tool, values);
+  if (error) return toast(error, 'err');
+  const token = axSecretOf(axToken);
+  if (!token) return toast('先粘贴令牌', 'err');
+  axBusy(true);
+  $('axTryOut').innerHTML = '<div class="note">正在调用…</div>';
+  try { axTry = await postJson('/api/mcp/try', {token, host: axHost(), tool: tool.name, arguments: args}); }
+  catch (err) { axTry = {error: err.message}; }
+  axBusy(false);
+  if (mTab !== 'access' || !$('axTryOut')) return;
+  $('axTryOut').innerHTML = axTryResultHtml(axTry, axCtx());
+  axPaintCalls();
+}
+const axSecretOf = text => String(text || '').trim().replace(/^bearer\s+/i, '');
 
 /* ---------- 群聊机器人（docs/正式部署.md「云上协同」「钉钉」）：对外接入页最下面一张卡片 ----------
    没打开时（/api/chat/status 是 404）什么都不加。谁能用、能查什么、推到哪都在服务器上配，这里只看、只发测试消息。 */
@@ -5864,7 +6195,24 @@ $('msettings').addEventListener('click', async e => {
     } catch (err) { toast(err.message, 'err', 8000); }
     return paintChat();
   }
+  const tab = e.target.closest('[data-axtab]');
+  if (tab) { axClient = tab.dataset.axtab; return axPaintSnippets(); }
+  const cp = e.target.closest('[data-axcp]');
+  if (cp) {
+    const snip = axClientSnippets(axAddr, axSecret(), axState.sample).find(c => c.id === cp.dataset.axcp);
+    if (snip && navigator.clipboard) navigator.clipboard.writeText(snip.code).then(() => toast('已复制', 'ok'));
+    else toast('浏览器不允许脚本复制（非 https），请手动选中复制', '', 6000);
+    return;
+  }
   const id = e.target.id;
+  if (id === 'axUseIssued') {
+    axToken = (axIssued && axIssued.secret) || '';
+    $('axToken').value = axToken;
+    axPaintSnippets();
+    return axRunProbe();
+  }
+  if (id === 'axProbeGo') return axRunProbe();
+  if (id === 'axTryGo') return axRunTry();
   if (id === 'axAllCats') {
     document.querySelectorAll('[data-axcat]').forEach(x => { x.disabled = e.target.checked; if (e.target.checked) x.checked = false; });
     return;
@@ -5918,6 +6266,18 @@ $('msettings').addEventListener('click', async e => {
     axIssued = d;
     return renderAccess();
   }
+});
+
+// 对外接入页的输入：令牌框（只进内存）、接入地址、试调选的工具
+$('msettings').addEventListener('input', e => {
+  if (mTab !== 'access' || e.target.id !== 'axToken') return;
+  axToken = e.target.value;
+  if (!axIssued) axPaintSnippets();
+});
+$('msettings').addEventListener('change', e => {
+  if (mTab !== 'access') return;
+  if (e.target.id === 'axAddrSel') { axAddr = e.target.value; return axPaintSnippets(); }
+  if (e.target.id === 'axTryTool') { axTryName = e.target.value; axTry = null; return axPaintProbe(); }
 });
 
 $('mgroups').addEventListener('click', e => {
