@@ -130,6 +130,7 @@ flowchart LR
 
 项目页面和对外出口是同一个注册表的两个出口，权限看「类别 × 出口」：外网（`web_search`、`web_fetch`）、计算、流程类不对外，
 所以对外出口不经过出网规则。令牌在管理页「对外接入」签发，只存哈希；每次调用审计（access.db）、记进图谱（`channel=mcp`）。
+管理页的「测一下」「试调」（app/mcp_probe.py）在进程内把请求交给同一个 TokenGate，来源、Host、令牌照真实检查，审计标 `via=page`。
 详见 [`工具.md`](工具.md) 的「对外 MCP 出口」。
 
 ## 云上协同（`CHAT_BRIDGE_URL`，默认关）
