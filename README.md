@@ -21,7 +21,7 @@ Turn your team's docs into agent SOPs — executed only with the read-only tools
 只要 Docker 和一把模型 key（推荐[硅基流动](https://cloud.siliconflow.cn)：同一把 key 同时有对话模型和向量模型）：
 
 ```bash
-git clone https://github.com/wangyd1988/doc2sop.git && cd doc2sop
+git clone https://github.com/Inspur-Data/doc2sop.git && cd doc2sop
 cp .env.example .env        # 只改两处：WEB_PASSWORD（登录密码）、LLM_API_KEY（你的 key）
 docker compose up -d --build
 # 打开 http://127.0.0.1:8765 ，用户名 admin。几十秒后三个演示场景包导入完成，点示例问题就能看到上面两段效果
@@ -116,7 +116,7 @@ docker compose up -d --build
 - 联网搜索依赖 LiteLLM 网关的 `/v1/search`，直连厂商时不可用；网关样例见 [`litellm/config.yaml`](litellm/config.yaml)。
 - 部署拓扑（应用 / 网关 / 自托管向量与重排模型）、问答与入库链路、代码结构：[`docs/architecture.md`](docs/architecture.md)。
 
-本地跑测试：`pip install -r requirements.txt && python -m unittest discover -s tests -t .`
+本地跑测试：`pip install -r requirements.txt && python -m unittest discover -s tests -t .`；分支、PR 与提交约定见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
 
 ## Roadmap
 
