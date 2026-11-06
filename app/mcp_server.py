@@ -735,19 +735,24 @@ class TokenBody(BaseModel):
 
 
 def admin_router(gate) -> APIRouter:
+    from app import mcp_probe      # 它要用这里的 PATH、VIA_KEY：放在函数里导入，免得循环导入
     router = APIRouter()
+    mcp_probe.install(router, gate)
 
     @router.get("/api/mcp")
     def status(request: Request):
         """出口现状：开放了哪些工具（应用内 + 宿主机标了 export 的）、现有分类、默认限额；
-        reachable：从打开页面的这个地址，用页面给的接入地址连不连得上（来源、Host 不在名单里时页面提示）。"""
+        reachable：从打开页面的这个地址，用页面给的接入地址连不连得上（来源、Host 不在名单里时页面提示）；
+        addresses：页面上配置示例、测一下可选的接入地址；sop_titles：快速上手里「可以这样问」的例子用。"""
         app_tools = [{"name": t.name, "title": t.contract.get("title") or t.name, "scope": registry.scope_of(t.name)}
                      for t in registry.exported_app_tools()]
         data = [{"name": n, "title": e.get("title") or n, "scope": "data"}
                 for n, e in sorted(registry.exported_data_tools().items())]
         peer = peers.address(request, "")
+        sops = sop_tools.visible()
         return {"enabled": True, "path": PATH, "tools": app_tools + data, "categories": store.all_categories(),
-                "sops": len(sop_tools.visible()), "scopes": list(access.SCOPES),
+                "sops": len(sops), "sop_titles": [p["name"] for p in sops[:5]], "scopes": list(access.SCOPES),
+                "addresses": mcp_probe.addresses(request),
                 "defaults": {"rate_per_minute": MCP_RATE_PER_MINUTE, "max_result_chars": MCP_MAX_RESULT_CHARS},
                 "allowed_hosts": MCP_ALLOWED_HOSTS, "clients": MCP_CLIENTS, "exposed": exposed(),
                 "transport": {**peers.transport(request), "tls": serve.tls_status()},
